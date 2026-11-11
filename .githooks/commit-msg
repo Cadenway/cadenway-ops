@@ -1,0 +1,9 @@
+#!/bin/sh
+# Checks the commit message against Conventional Commits (commitlint.config.mjs).
+
+if [ ! -x node_modules/.bin/commitlint ]; then
+  echo "commit-msg: commitlint is not installed; run 'pnpm install' first." >&2
+  exit 1
+fi
+
+exec node_modules/.bin/commitlint --edit "$1"

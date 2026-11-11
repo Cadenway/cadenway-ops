@@ -1,0 +1,19 @@
+#!/bin/sh
+# Refuses a push to main (it only receives squash-merged pull requests), then runs the format check
+# that pull-request CI runs again.
+#
+# ALLOW_MAIN_PUSH=1 and WP_SKIP_PUSH_CHECKS=1 are escape hatches for a human maintainer; agents never
+# set them.
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [ "$remote_ref" = "refs/heads/main" ] && [ "${ALLOW_MAIN_PUSH:-}" != "1" ]; then
+    echo "pre-push: main only receives squash-merged pull requests; push a work branch." >&2
+    exit 1
+  fi
+done
+
+if [ "${WP_SKIP_PUSH_CHECKS:-}" = "1" ]; then
+  exit 0
+fi
+
+pnpm format:check
