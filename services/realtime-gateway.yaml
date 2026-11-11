@@ -1,0 +1,35 @@
+# Definition of realtime-gateway for Docker Compose. CI copies this file into
+# waypoint-ops/services/realtime-gateway.yaml on each release: keep it self-contained.
+#
+# Exposed through Traefik on realtime.<domain> only: it joins `edge` (what Traefik serves) and
+# `internal` (Redis and the broker). No port is published; Traefik reaches the container on `edge`.
+services:
+  realtime-gateway:
+    image: ghcr.io/${GHCR_OWNER}/waypoint-realtime-gateway:${REALTIME_GATEWAY_VERSION}
+    restart: unless-stopped
+    environment:
+      PORT: '3001'
+      REDIS_URL: ${REDIS_URL}
+      NATS_URL: ${NATS_URL}
+    networks:
+      - edge
+      - internal
+    labels:
+      traefik.enable: 'true'
+      traefik.http.routers.realtime-gateway.rule: Host(`realtime.${DOMAIN}`)
+      traefik.http.services.realtime-gateway.loadbalancer.server.port: '3001'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3001/health/ready']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+# Declared identically by waypoint-ops and by every definition it includes.
+networks:
+  edge: {}
+  internal: {}

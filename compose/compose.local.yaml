@@ -1,0 +1,182 @@
+# Development overrides only: the same stack on a workstation.
+#
+#   cp .env.example .env        (once; Compose reads compose/.env)
+#   docker compose -f compose.yaml -f compose.local.yaml --profile core up -d
+#   docker compose -f compose.yaml -f compose.local.yaml watch task-service
+#
+# Every deployable is built from its sibling folder (clone the repositories flat, side by side) and
+# rebuilt by `watch` when its sources change. `core` starts the first version (identity, task,
+# notification, API gateway, web application); `full` starts everything. Browsers resolve
+# `*.localhost` to the machine: http://app.waypoint.localhost, http://mail.waypoint.localhost.
+#
+# MinIO is not here yet: its image is no longer published on Docker Hub, and the local object store
+# is chosen with the storage service.
+
+x-data: &data
+  postgres:
+    condition: service_healthy
+  nats:
+    condition: service_healthy
+
+x-redis: &redis
+  redis:
+    condition: service_healthy
+
+services:
+  traefik:
+    # Plain HTTP on one entry point: no certificate and no redirection on a workstation.
+    command: !override
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=waypoint_edge
+      - --entrypoints.web.address=:80
+      - --ping=true
+    ports: !override
+      - '127.0.0.1:${TRAEFIK_HTTP_PORT:-80}:80'
+
+  mailpit:
+    image: axllent/mailpit:v1.29.0@sha256:0f93f36075f5f6fe428655d94299dda59b9a533d3fe9ce62909a72ac6fe455a9
+    restart: unless-stopped
+    networks:
+      - edge
+      - internal
+    labels:
+      traefik.enable: 'true'
+      traefik.http.routers.mailpit.rule: Host(`mail.${DOMAIN}`)
+      traefik.http.services.mailpit.loadbalancer.server.port: '8025'
+    healthcheck:
+      test: ['CMD', '/mailpit', 'readyz']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
+  api-gateway:
+    profiles: [core, full]
+    build: ../../waypoint-api-gateway
+    develop:
+      watch:
+        - action: rebuild
+          path: ../../waypoint-api-gateway/src
+    depends_on: *redis
+
+  realtime-gateway:
+    profiles: [full]
+    build: ../../waypoint-realtime-gateway
+    develop:
+      watch:
+        - action: rebuild
+          path: ../../waypoint-realtime-gateway/src
+    depends_on:
+      <<: *redis
+      nats:
+        condition: service_healthy
+
+  identity-service:
+    profiles: [core, full]
+    build: ../../waypoint-identity-service
+    develop:
+      watch:
+        - action: rebuild
+          path: ../../waypoint-identity-service/src
+    depends_on: *data
+
+  organization-service:
+    profiles: [full]
+    build: ../../waypoint-organization-service
+    develop:
+      watch:
+        - action: rebuild
+          path: ../../waypoint-organization-service/src
+    depends_on: *data
+
+  billing-service:
+    profiles: [full]
+    build: ../../waypoint-billing-service
+    develop:
+      watch:
+        - action: rebuild
+          path: ../../waypoint-billing-service/src
+    depends_on: *data
+
+  task-service:
+    profiles: [core, full]
+    build: ../../waypoint-task-service
+    develop:
+      watch:
+        - action: rebuild
+          path: ../../waypoint-task-service/src
+    depends_on: *data
+
+  document-service:
+    profiles: [full]
+    build: ../../waypoint-document-service
+    develop:
+      watch:
+        - action: rebuild
+          path: ../../waypoint-document-service/src
+    depends_on: *data
+
+  storage-service:
+    profiles: [full]
+    build: ../../waypoint-storage-service
+    develop:
+      watch:
+        - action: rebuild
+          path: ../../waypoint-storage-service/src
+    depends_on: *data
+
+  notification-service:
+    profiles: [core, full]
+    build: ../../waypoint-notification-service
+    develop:
+      watch:
+        - action: rebuild
+          path: ../../waypoint-notification-service/src
+    depends_on: *data
+
+  automation-service:
+    profiles: [full]
+    build: ../../waypoint-automation-service
+    develop:
+      watch:
+        - action: rebuild
+          path: ../../waypoint-automation-service/src
+    depends_on: *data
+
+  integration-service:
+    profiles: [full]
+    build: ../../waypoint-integration-service
+    develop:
+      watch:
+        - action: rebuild
+          path: ../../waypoint-integration-service/src
+    depends_on: *data
+
+  search-service:
+    profiles: [full]
+    build: ../../waypoint-search-service
+    develop:
+      watch:
+        - action: rebuild
+          path: ../../waypoint-search-service/src
+    depends_on: *data
+
+  webapp:
+    profiles: [core, full]
+    build: ../../waypoint-webapp
+    develop:
+      watch:
+        - action: rebuild
+          path: ../../waypoint-webapp/src
+
+  website:
+    profiles: [full]
+    build: ../../waypoint-website
+    develop:
+      watch:
+        - action: rebuild
+          path: ../../waypoint-website/src

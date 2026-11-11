@@ -1,0 +1,29 @@
+# Definition of document-service for Docker Compose. CI copies this file into
+# waypoint-ops/services/document-service.yaml on each release: keep it self-contained.
+#
+# Internal service: no Traefik label, no published port. Secret values (the database URL carries a
+# password) are referenced by name; they live in waypoint-ops.
+services:
+  document-service:
+    image: ghcr.io/${GHCR_OWNER}/waypoint-document-service:${DOCUMENT_SERVICE_VERSION}
+    restart: unless-stopped
+    environment:
+      PORT: '3014'
+      DATABASE_URL: ${DOCUMENT_SERVICE_DATABASE_URL}
+      NATS_URL: ${NATS_URL}
+    networks:
+      - internal
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3014/health/ready']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+# Declared identically by waypoint-ops and by every service definition it includes.
+networks:
+  internal: {}
