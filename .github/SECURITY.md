@@ -17,10 +17,10 @@ Please include:
 
 ## What to expect
 
-| Step | Target |
-| --- | --- |
-| Acknowledgement of your report | 3 working days |
-| First assessment (confirmed or not, severity) | 10 working days |
+| Step                                             | Target                                    |
+| ------------------------------------------------ | ----------------------------------------- |
+| Acknowledgement of your report                   | 3 working days                            |
+| First assessment (confirmed or not, severity)    | 10 working days                           |
 | Fix or mitigation for a confirmed critical issue | as fast as possible, with regular updates |
 
 We keep you informed of progress and credit you in the advisory unless you prefer otherwise.

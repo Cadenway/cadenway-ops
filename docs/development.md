@@ -35,14 +35,14 @@ The scripts below are this repository's contract. While the repository is being 
 create them with these exact names; afterwards, use them and never an ad-hoc equivalent. Run the
 narrowest check that covers the change first, then widen:
 
-| Changed            | Minimum check                                                                                                   |
-| ------------------ | --------------------------------------------------------------------------------------------------------------- |
-| Compose or Traefik | `docker compose … config -q`, `yamllint .`                                                                      |
-| Ansible            | `ansible-lint ansible/`, `ansible-playbook --syntax-check`, then `--check` on a staging host when the user asks |
-| Terraform          | `terraform fmt -check`, `terraform validate`; `plan` only when the user asks                                    |
-| Agent script       | `shellcheck agent/*.sh`                                                                                         |
-| Environments       | `docker compose … config -q` with the environment's `versions.env`                                              |
-| Docs or agent instructions only | Scoped formatting and link review |
+| Changed                         | Minimum check                                                                                                   |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Compose or Traefik              | `docker compose … config -q`, `yamllint .`                                                                      |
+| Ansible                         | `ansible-lint ansible/`, `ansible-playbook --syntax-check`, then `--check` on a staging host when the user asks |
+| Terraform                       | `terraform fmt -check`, `terraform validate`; `plan` only when the user asks                                    |
+| Agent script                    | `shellcheck agent/*.sh`                                                                                         |
+| Environments                    | `docker compose … config -q` with the environment's `versions.env`                                              |
+| Docs or agent instructions only | Scoped formatting and link review                                                                               |
 
 Report the commands you actually ran and their results; a check you did not run is reported as not
 run.
