@@ -1,0 +1,9 @@
+# Issue chooser of waypoint-ops. Replace <org> with the GitHub organization name once it is chosen.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/<org>/waypoint-ops/security/advisories/new
+    about: Report it privately, never in a public issue. See .github/SECURITY.md.
+  - name: Get help
+    url: https://github.com/<org>/waypoint-ops/blob/main/.github/SUPPORT.md
+    about: Where to look before opening an issue.

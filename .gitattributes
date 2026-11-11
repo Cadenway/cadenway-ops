@@ -1,0 +1,31 @@
+# Normalize text in the repository and use LF in the working tree.
+* text=auto eol=lf
+
+# Windows command scripts use CRLF in the working tree.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# SVG is text; keep it reviewable and normalized.
+*.svg text eol=lf
+
+# Binary assets must not be normalized or merged as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.avif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.7z binary
+*.mp4 binary
+*.webm binary
+*.wasm binary

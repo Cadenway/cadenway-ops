@@ -1,0 +1,28 @@
+# Waypoint editor conventions.
+# Each repository is self-contained and stops EditorConfig lookup here.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Markdown uses trailing spaces for hard line breaks.
+[*.{md,mdx}]
+trim_trailing_whitespace = false
+
+# Python follows the conventional four-space indentation.
+[*.py]
+indent_size = 4
+
+# Make recipes require tabs.
+[{Makefile,makefile,GNUmakefile,*.mk}]
+indent_style = tab
+indent_size = tab
+
+# Windows command scripts use Windows line endings.
+[*.{bat,cmd}]
+end_of_line = crlf

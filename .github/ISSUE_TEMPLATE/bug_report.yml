@@ -1,0 +1,92 @@
+name: Bug report
+description: Something in waypoint-ops does not work as expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. **A security problem must not be reported here**: follow
+        .github/SECURITY.md instead. Never paste a token, a password or personal data.
+
+  - type: input
+    id: task
+    attributes:
+      label: Waypoint task
+      description: The task id, if one already tracks this bug.
+      placeholder: WAY-482
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, including the exact error message.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: The expected behavior, and the contract or document that defines it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run this command, from this folder
+        2. See this output
+        3. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      options:
+        - Production
+        - Staging
+        - Local stack
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - 'Terraform (OVH resources)'
+        - 'Ansible (VPS setup, backups)'
+        - 'Docker Compose and Traefik'
+        - 'GitOps agent'
+        - 'Environments and versions'
+        - 'Local stack'
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Commit
+      description: The commit of main you ran.
+      placeholder: a1b2c3d
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant output, with secrets removed.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues and found no duplicate.
+          required: true
+        - label: This report contains no secret, token or personal data.
+          required: true

@@ -1,0 +1,19 @@
+# Code owners of waypoint-ops. The last matching pattern wins.
+#
+# The rules stay commented until the GitHub organization and its teams exist: replace <org> and the
+# team names, then uncomment them. An owner that does not exist makes GitHub report the file as
+# invalid.
+
+# * @<org>/maintainers
+
+# OVH resources.
+# /terraform/ @<org>/maintainers
+
+# Production versions and secrets.
+# /environments/prod/ @<org>/maintainers
+
+# VPS setup and backups.
+# /ansible/ @<org>/maintainers
+
+# CI and Terraform workflows, templates and these rules.
+# /.github/ @<org>/maintainers

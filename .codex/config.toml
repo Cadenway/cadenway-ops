@@ -1,0 +1,7 @@
+model = "gpt-6.1-terra"
+model_reasoning_effort = "high"
+developer_instructions = "Before editing or reviewing files, read the applicable path-scoped rules in .codex/rules/; their YAML paths identify the scope. Read rules without paths for every task. Follow AGENTS.md and the repository quality gates. Codex hooks are guardrails, not a complete enforcement boundary; shell edits and other tools may bypass patch hooks. Never read secrets."
+
+[mcp_servers.context7]
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]

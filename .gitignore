@@ -1,0 +1,47 @@
+# Local environment files; commit examples, never secrets.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Local assistant and editor state.
+.claude/settings.local.json
+.idea/
+*.swp
+*.swo
+
+# Operating system files.
+.DS_Store
+Thumbs.db
+
+# Node.js dependencies and package-manager caches.
+node_modules/
+.pnpm-store/
+.npm/
+
+# Build outputs and caches.
+dist/
+coverage/
+.cache/
+.turbo/
+*.tsbuildinfo
+
+# Package-manager logs.
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Terraform working files, state, and plans; keep .terraform.lock.hcl tracked.
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+*.tfplan
+tfplan
+crash.log
+
+# Ansible local state and retry files.
+.ansible/
+*.retry
+.vault_pass*

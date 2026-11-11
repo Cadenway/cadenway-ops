@@ -1,0 +1,29 @@
+{
+  "description": "Waypoint repository guardrails and formatting. Review before trusting.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"let p=process.cwd(),f=require('fs'),x=require('path');while(!f.existsSync(x.join(p,'.codex/hooks/adapter.mjs'))){let q=x.dirname(p);if(q===p)process.exit(1);p=q}let r=require('child_process').spawnSync(process.execPath,[x.join(p,'.codex/hooks/adapter.mjs')],{stdio:'inherit'});process.exit(r.status===null?1:r.status)\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"let p=process.cwd(),f=require('fs'),x=require('path');while(!f.existsSync(x.join(p,'.codex/hooks/adapter.mjs'))){let q=x.dirname(p);if(q===p)process.exit(1);p=q}let r=require('child_process').spawnSync(process.execPath,[x.join(p,'.codex/hooks/adapter.mjs')],{stdio:'inherit'});process.exit(r.status===null?1:r.status)\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

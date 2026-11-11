@@ -1,0 +1,8 @@
+{
+  "name": "waypoint-ops",
+  "version": "0.1.0",
+  "description": "waypoint-ops tooling: 12 wp-ops-* agents (Compose, Traefik, Ansible, Terraform, GitOps agent, secrets, backup, observability and runbook builders plus read-only deployment and security reviewers, plus a .github maintainer), 13 /wp-* commands, 9 path-scoped rules, 17 skills, and the guard, git-guard and format hooks. The plugin root is this .claude/ folder; the hooks only act inside a waypoint-ops checkout.",
+  "author": {
+    "name": "Valentin FORTIN"
+  }
+}
