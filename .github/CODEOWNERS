@@ -1,4 +1,4 @@
-# Code owners of waypoint-ops. The last matching pattern wins.
+# Code owners of cadenway-ops. The last matching pattern wins.
 #
 # The rules stay commented until the GitHub organization and its teams exist: replace <org> and the
 # team names, then uncomment them. An owner that does not exist makes GitHub report the file as

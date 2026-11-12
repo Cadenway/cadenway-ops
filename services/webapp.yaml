@@ -1,0 +1,40 @@
+# Definition of webapp for Docker Compose. CI copies this file into
+# cadenway-ops/services/webapp.yaml on each release: keep it self-contained.
+#
+# Static files served on app.<domain> through Traefik. The gateway addresses are not in the image:
+# the environment mounts them as config.json, so the same image runs in staging and in production.
+services:
+  webapp:
+    image: ghcr.io/${GHCR_OWNER}/cadenway-webapp:${WEBAPP_VERSION}
+    restart: unless-stopped
+    networks:
+      - edge
+    labels:
+      traefik.enable: 'true'
+      traefik.http.routers.webapp.rule: Host(`app.${DOMAIN}`)
+      traefik.http.services.webapp.loadbalancer.server.port: '8080'
+    configs:
+      - source: webapp-config
+        target: /usr/share/nginx/html/config.json
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8080/health/ready']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
+configs:
+  webapp-config:
+    content: |
+      {
+        "apiUrl": "${PUBLIC_SCHEME:-https}://api.${DOMAIN}",
+        "realtimeUrl": "${PUBLIC_SCHEME:-https}://realtime.${DOMAIN}"
+      }
+
+# Declared identically by cadenway-ops and by every definition it includes.
+networks:
+  edge: {}

@@ -1,6 +1,6 @@
-# waypoint-ops
+# cadenway-ops
 
-waypoint-ops is the whole operation of Waypoint: what exists at OVH (Terraform), how the VPS is prepared (Ansible), and what runs in each environment (Docker Compose files, service definitions, versions and encrypted secrets read by the GitOps agent). It is also where local development starts the stack.
+cadenway-ops is the whole operation of Cadenway: what exists at OVH (Terraform), how the VPS is prepared (Ansible), and what runs in each environment (Docker Compose files, service definitions, versions and encrypted secrets read by the GitOps agent). It is also where local development starts the stack.
 
 ```text
 terraform/        ← VPS, DNS zone, Object Storage; state in Object Storage, locked
@@ -14,7 +14,7 @@ seed/             ← mockup data for staging and local
 
 ## Getting started
 
-Clone this repository next to the other Waypoint repositories, flat, in one folder: the local
+Clone this repository next to the other Cadenway repositories, flat, in one folder: the local
 stack builds each service from its sibling folder.
 
 ```bash
@@ -22,7 +22,7 @@ cd compose
 docker compose -f compose.yaml -f compose.local.yaml --profile core up -d
 ```
 
-Then open `http://app.waypoint.localhost`. The `core` profile starts the infrastructure, the identity,
+Then open `http://app.cadenway.localhost`. The `core` profile starts the infrastructure, the identity,
 task and notification services and the API gateway; `full` starts everything. Terraform runs only
 from its GitHub Action; the Terraform and Ansible credentials never live in this repository.
 

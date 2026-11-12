@@ -1,4 +1,4 @@
-# waypoint-ops: agent instructions
+# cadenway-ops: agent instructions
 
 These instructions are mandatory for every AI assistant working in this repository, whatever the
 vendor. [CLAUDE.md](CLAUDE.md) imports them for Claude Code. Explicit user instructions take
@@ -17,7 +17,7 @@ and [Codex](.codex/README.md) for agents, skills, commands and hooks.
 
 The structure and workflows below describe the bootstrap target. Check the checkout for available files and commands.
 
-waypoint-ops is the whole operation of Waypoint: what exists at OVH (Terraform), how the VPS is prepared (Ansible), and what runs in each environment (Docker Compose files, service definitions, versions and encrypted secrets read by the GitOps agent). It is also where local development starts the stack.
+cadenway-ops is the whole operation of Cadenway: what exists at OVH (Terraform), how the VPS is prepared (Ansible), and what runs in each environment (Docker Compose files, service definitions, versions and encrypted secrets read by the GitOps agent). It is also where local development starts the stack.
 
 ```text
 terraform/        ← VPS, DNS zone, Object Storage; state in Object Storage, locked
@@ -55,7 +55,7 @@ seed/             ← mockup data for staging and local
 
 ## GitHub files (`.github/`)
 
-This repository carries everything GitHub reads from it; Waypoint has no organization `.github`
+This repository carries everything GitHub reads from it; Cadenway has no organization `.github`
 repository and nothing is inherited.
 
 - [`.github/README.md`](.github/README.md) is the repository home page; `CONTRIBUTING.md`,
@@ -67,21 +67,20 @@ repository and nothing is inherited.
 - The parts shared with the other repositories are duplicated on purpose; a change to them is repeated
   in each repository through its own pull request.
 
-
 ## Commands and quality gates
 
 The scripts below are this repository's contract. While the repository is being bootstrapped,
 create them with these exact names; afterwards, use them and never an ad-hoc equivalent. Run the
 narrowest check that covers the change first, then widen:
 
-| Changed | Minimum check |
-| --- | --- |
-| Compose or Traefik | `docker compose … config -q`, `yamllint .` |
-| Ansible | `ansible-lint ansible/`, `ansible-playbook --syntax-check`, then `--check` on a staging host when the user asks |
-| Terraform | `terraform fmt -check`, `terraform validate`; `plan` only when the user asks |
-| Agent script | `shellcheck agent/*.sh` |
-| Environments | `docker compose … config -q` with the environment's `versions.env` |
-| Docs or agent instructions only | Scoped formatting and link review |
+| Changed                         | Minimum check                                                                                                   |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Compose or Traefik              | `docker compose … config -q`, `yamllint .`                                                                      |
+| Ansible                         | `ansible-lint ansible/`, `ansible-playbook --syntax-check`, then `--check` on a staging host when the user asks |
+| Terraform                       | `terraform fmt -check`, `terraform validate`; `plan` only when the user asks                                    |
+| Agent script                    | `shellcheck agent/*.sh`                                                                                         |
+| Environments                    | `docker compose … config -q` with the environment's `versions.env`                                              |
+| Docs or agent instructions only | Scoped formatting and link review                                                                               |
 
 Report the commands you actually ran and their results; a check you did not run is reported as not
 run.
@@ -90,7 +89,7 @@ run.
 
 - Trunk-based: work branches come from `main`, named `<type>/<lowercase-kebab-description>` with a
   type among `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`,
-  `revert`; put the Waypoint task id first when there is one (`feat/way-482-sso-screen`). Never an
+  `revert`; put the Cadenway task id first when there is one (`feat/cad-482-sso-screen`). Never an
   agent name as a prefix. Validate with `git check-ref-format --branch <name>`.
 - Commits and PR titles follow Conventional Commits: `type(scope): subject`, English, imperative,
   lowercase subject, no trailing period, at most 100 characters; `!` only for a breaking change.
@@ -103,11 +102,11 @@ run.
 - Never run a registry publish (`npm publish`, `pnpm publish`): this repository ships as a Docker image built by CI.
 - Never force-push, and never amend or rebase commits that are already pushed.
 - Never bypass the Git hooks (`--no-verify`, `core.hooksPath` overrides, `ALLOW_MAIN_PUSH=1`,
-  `WP_SKIP_PUSH_CHECKS=1`).
+  `CW_SKIP_PUSH_CHECKS=1`).
 - Never write a token, password or private key anywhere; `.npmrc` keeps `${NODE_AUTH_TOKEN}`. Do
   not read or write secret environment files; new variables are documented in `.env.example`.
 - Never edit generated trees (`dist/`, `node_modules/`, `coverage/`, `.terraform/`, `*.tfstate`) or lockfiles by hand.
-- Never modify a sibling checkout (`../waypoint-*`) from a task in this repository.
+- Never modify a sibling checkout (`../cadenway-*`) from a task in this repository.
 - Never run `terraform apply`, `terraform destroy`, `ansible-playbook` against a real host (without `--check`) or `docker compose up` on a server.
 - Never decrypt a secret file to disk, never print a decrypted value, never read an age key.
 
@@ -117,11 +116,11 @@ not to find another way around it.
 ## Agent tooling
 
 - **Claude Code**: [CLAUDE.md](CLAUDE.md) and [.claude/README.md](.claude/README.md): the
-  `wp-ops-*` agents, the `/wp-*` commands (`/wp-quality` runs the whole local gate),
+  `cw-ops-*` agents, the `/cw-*` commands (`/cw-quality` runs the whole local gate),
   path-scoped rules and hooks.
-- **Codex**: [.codex/README.md](.codex/README.md) covers the specialists, `$wp-*` skills, rules and hooks.
-- **Builders** (assigned writes): `wp-ops-compose-builder`, `wp-ops-traefik-maintainer`, `wp-ops-ansible-role-builder`, `wp-ops-terraform-builder`, `wp-ops-agent-maintainer`, `wp-ops-secrets-steward`, `wp-ops-backup-restore-builder`, `wp-ops-observability-builder`, `wp-ops-runbook-writer`, `wp-ops-github-maintainer`.
-- **Reviewers** (read-only): `wp-ops-deploy-reviewer`, `wp-ops-security-auditor`.
+- **Codex**: [.codex/README.md](.codex/README.md) covers the specialists, `$cw-*` skills, rules and hooks.
+- **Builders** (assigned writes): `cw-ops-compose-builder`, `cw-ops-traefik-maintainer`, `cw-ops-ansible-role-builder`, `cw-ops-terraform-builder`, `cw-ops-agent-maintainer`, `cw-ops-secrets-steward`, `cw-ops-backup-restore-builder`, `cw-ops-observability-builder`, `cw-ops-runbook-writer`, `cw-ops-github-maintainer`.
+- **Reviewers** (read-only): `cw-ops-deploy-reviewer`, `cw-ops-security-auditor`.
 - Specialists are available, not mandatory. Delegate a bounded responsibility with explicit files and
   checks, assign disjoint files to parallel agents and integrate their results yourself.
 

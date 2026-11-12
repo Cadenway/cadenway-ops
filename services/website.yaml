@@ -1,0 +1,28 @@
+# Definition of website for Docker Compose. CI copies this file into
+# cadenway-ops/services/website.yaml on each release: keep it self-contained.
+#
+# Prerendered static files served on www.<domain> through Traefik.
+services:
+  website:
+    image: ghcr.io/${GHCR_OWNER}/cadenway-website:${WEBSITE_VERSION}
+    restart: unless-stopped
+    networks:
+      - edge
+    labels:
+      traefik.enable: 'true'
+      traefik.http.routers.website.rule: Host(`www.${DOMAIN}`)
+      traefik.http.services.website.loadbalancer.server.port: '8080'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8080/health/ready']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
+# Declared identically by cadenway-ops and by every definition it includes.
+networks:
+  edge: {}

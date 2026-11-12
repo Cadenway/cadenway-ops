@@ -5,9 +5,9 @@ commit on main. See .github/CONTRIBUTING.md.
 
 ## Task
 
-Fixes: WAY-
+Fixes: CAD-
 
-<!-- Use `Refs: WAY-…` instead when this pull request does not complete the task. -->
+<!-- Use `Refs: CAD-…` instead when this pull request does not complete the task. -->
 
 ## Summary
 

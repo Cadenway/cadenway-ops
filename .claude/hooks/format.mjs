@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * PostToolUse hook (waypoint-ops): format the file that was just written with the repository's own
+ * PostToolUse hook (cadenway-ops): format the file that was just written with the repository's own
  * tools, so no edit fails `pnpm format:check` for whitespace alone.
  *
  *  - Prettier (`node_modules/prettier`) for TypeScript, JavaScript, JSON, YAML, Markdown, HTML, CSS.
@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-const REPO_NAME = 'waypoint-ops';
+const REPO_NAME = 'cadenway-ops';
 const PRETTIER_EXT = new Set(['.ts', '.mts', '.cts', '.js', '.mjs', '.cjs', '.json', '.yml', '.yaml', '.md', '.html', '.css', '.scss']);
 const TERRAFORM_EXT = new Set(['.tf', '.tfvars']);
 const SKIP = ['/node_modules/', '/dist/', '/coverage/', '/.angular/', '/storybook-static/', '/.terraform/', '/.git/'];

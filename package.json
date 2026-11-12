@@ -1,0 +1,20 @@
+{
+  "name": "cadenway-ops",
+  "description": "Cadenway operations: Terraform (OVH), Ansible (VPS), Docker Compose and Traefik, environments, GitOps agent, local stack.",
+  "private": true,
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@12.18.0",
+  "engines": {
+    "node": "^24.15.0"
+  },
+  "scripts": {
+    "prepare": "git config core.hooksPath .githooks",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^21.2.4",
+    "@commitlint/config-conventional": "^21.2.4",
+    "prettier": "^3.9.10"
+  }
+}

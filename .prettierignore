@@ -1,0 +1,10 @@
+# Files owned by a tool.
+pnpm-lock.yaml
+.terraform/
+
+# Encrypted with SOPS: any reformatting breaks the checksum.
+*.sops.*
+
+# Agent tooling: .codex mirrors .claude byte for byte, so neither is reformatted.
+.claude/
+.codex/

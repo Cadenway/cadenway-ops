@@ -1,0 +1,22 @@
+# Entry point of the Cadenway stack: the shared infrastructure and one definition per deployable.
+#
+# The service definitions are copied from each repository's deploy/compose.yaml on release: change
+# them there. Compose does not expand a glob here, so a new deployable adds its line.
+name: cadenway
+
+include:
+  - infra.yaml
+  - ../services/api-gateway.yaml
+  - ../services/realtime-gateway.yaml
+  - ../services/identity-service.yaml
+  - ../services/organization-service.yaml
+  - ../services/billing-service.yaml
+  - ../services/task-service.yaml
+  - ../services/document-service.yaml
+  - ../services/storage-service.yaml
+  - ../services/notification-service.yaml
+  - ../services/automation-service.yaml
+  - ../services/integration-service.yaml
+  - ../services/search-service.yaml
+  - ../services/webapp.yaml
+  - ../services/website.yaml
