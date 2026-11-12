@@ -19,4 +19,5 @@ description: "How the Compose files of cadenway-ops fit together for production 
 - On a host the agent sets `CADENWAY_SERVICES=../environments/<env>/services` and passes three env
   files: `/etc/cadenway/env/<env>.env` (Ansible), `versions.env`, the decrypted secrets (single-quoted).
 
-Local start: `docker compose -f compose.yaml -f compose.local.yaml --profile core up -d` from `compose/`.
+Local start, from `compose/`: `cp .env.example .env` once, then `docker compose up -d`; `compose/.env` sets
+`COMPOSE_FILE` and `COMPOSE_PROFILES` (`core`, or `full` for every service).

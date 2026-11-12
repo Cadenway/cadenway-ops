@@ -36,7 +36,8 @@ Source: `cw-compose-layout` ([Claude](../.claude/skills/cw-compose-layout/SKILL.
 | `compose/compose.local.yaml`                 | local Traefik, `build: ../../cadenway-<x>` with `develop.watch`, Mailpit, `DOMAIN=cadenway.localhost`             |
 | `environments/<env>/services/<service>.yaml` | copied from each service's `deploy/compose.yaml` by its deploy workflow                                           |
 
-Local start: `docker compose -f compose.yaml -f compose.local.yaml --profile core up -d` from `compose/`.
+Local start, from `compose/`: `cp .env.example .env` once, then `docker compose up -d`; `compose/.env` sets
+`COMPOSE_FILE` and `COMPOSE_PROFILES` (`core`, or `full` for every service).
 
 ## Gitops Agent
 

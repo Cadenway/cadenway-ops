@@ -14,19 +14,24 @@ The commands below are the documented **target workflow**, copied from the repos
 - `ansible/roles/<role>/` before changing the machine.
 - The [repositories document](https://claude.ai/artifact/BPinmYxoF3mbK8w9BMB43N), sections "Exploitation" and "Déploiement".
 
-## Planned setup
+## Local setup
 
 Clone this repository next to the other Cadenway repositories, flat, in one folder: the local
 stack builds each service from its sibling folder.
 
 ```bash
 cd compose
-docker compose -f compose.yaml -f compose.local.yaml --profile core up -d
+cp .env.example .env              # once
+docker compose up -d              # start (stop: docker compose down)
+docker compose watch task-service # rebuild a service when its sources change
 ```
 
-The planned `core` profile starts the infrastructure, identity, task and notification services, and
-the API gateway. Select `full` to run the complete stack, then open `http://app.cadenway.localhost` once
-the webapp is available. Terraform runs only
+`compose/.env` sets Compose's own `COMPOSE_FILE` and `COMPOSE_PROFILES`, so the plain commands use
+the local overrides and the `core` profile; set `COMPOSE_PROFILES=full` there for every service.
+
+The `core` profile starts the infrastructure, the identity, task and notification services, the API
+gateway and the web application: open `http://app.cadenway.localhost`, and
+`http://mail.cadenway.localhost` for the e-mails the stack sends (Mailpit). Terraform runs only
 from its GitHub Action; the Terraform and Ansible credentials never live in this repository.
 
 ## Minimum checks by change
