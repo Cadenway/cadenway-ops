@@ -47,6 +47,9 @@ jobs:
 
   operations:
     name: Ansible, YAML and agent lint
+    # Pull requests only, like the two jobs below: a push to main is a merged pull request or a
+    # deploy bot commit that changes versions and definitions, which the quality gate checks.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -77,6 +80,7 @@ jobs:
 
   agent:
     name: GitOps agent and backups end to end
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -99,6 +103,7 @@ jobs:
 
   host:
     name: Ansible on a throwaway host
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
