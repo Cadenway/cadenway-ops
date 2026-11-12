@@ -8,7 +8,7 @@
     "node": "^24.15.0"
   },
   "scripts": {
-    "prepare": "node scripts/install-git-hooks.mjs",
+    "prepare": "git config core.hooksPath .githooks",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
