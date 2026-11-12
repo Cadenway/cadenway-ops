@@ -2,6 +2,9 @@
 # Aligned on Prettier (100 columns), which formats the same files.
 extends: default
 
+# environments/*/services/ holds copies the deploy bot writes from each service's
+# deploy/compose.yaml: they belong to the service repositories and are checked by their deploy
+# workflow, so a style rule here would block pull requests on files this repository may not edit.
 ignore: |
   node_modules/
   .ansible/
@@ -9,6 +12,7 @@ ignore: |
   .codex/
   pnpm-lock.yaml
   *.sops.*
+  environments/*/services/
 
 rules:
   document-start: disable

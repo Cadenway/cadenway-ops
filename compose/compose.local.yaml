@@ -1,8 +1,9 @@
 # Development overrides only: the same stack on a workstation.
 #
-#   cp .env.example .env        (once; Compose reads compose/.env)
-#   docker compose -f compose.yaml -f compose.local.yaml --profile core up -d
-#   docker compose -f compose.yaml -f compose.local.yaml watch task-service
+#   cp .env.example .env        (once; Compose reads compose/.env, which names this file and the
+#                                profile in COMPOSE_FILE and COMPOSE_PROFILES)
+#   docker compose up -d
+#   docker compose watch task-service
 #
 # Every deployable is built from its sibling folder (clone the repositories flat, side by side) and
 # rebuilt by `watch` when its sources change. `core` starts the first version (identity, task,

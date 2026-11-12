@@ -18,7 +18,9 @@ stack builds each service from its sibling folder.
 
 ```bash
 cd compose
-docker compose -f compose.yaml -f compose.local.yaml --profile core up -d
+cp .env.example .env              # once
+docker compose up -d              # start (stop: docker compose down)
+docker compose watch task-service # rebuild a service when its sources change
 ```
 
 Then open `http://app.cadenway.localhost`. The `core` profile starts the infrastructure, the identity,
