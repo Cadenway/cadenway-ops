@@ -1,19 +1,18 @@
 # Code owners of cadenway-ops. The last matching pattern wins.
 #
-# The rules stay commented until the GitHub organization and its teams exist: replace <org> and the
-# team names, then uncomment them. An owner that does not exist makes GitHub report the file as
-# invalid.
+# Owners are the Cadenway maintainers team, which needs write access to this repository; GitHub
+# requests their review on every pull request that touches these paths.
 
-# * @<org>/maintainers
+* @Cadenway/maintainers
 
 # OVH resources.
-# /terraform/ @<org>/maintainers
+/terraform/ @Cadenway/maintainers
 
 # Production versions and secrets.
-# /environments/prod/ @<org>/maintainers
+/environments/prod/ @Cadenway/maintainers
 
 # VPS setup and backups.
-# /ansible/ @<org>/maintainers
+/ansible/ @Cadenway/maintainers
 
 # CI and Terraform workflows, templates and these rules.
-# /.github/ @<org>/maintainers
+/.github/ @Cadenway/maintainers
