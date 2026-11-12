@@ -36,6 +36,27 @@ Values are taken literally; a value cannot contain a single quote (`'`).
 The stack variables match [`compose/.env.example`](../compose/.env.example), which holds the local
 values.
 
+## Registry access
+
+The images on GHCR are private: the agent logs in with `GHCR_PULL_USER` and `GHCR_PULL_TOKEN` before
+pulling, with a Docker configuration kept in `/run` for the run only. Without them it pulls
+anonymously, which works only for public images.
+
+1. Create a personal access token **(classic)** with the `read:packages` scope only: GitHub Packages
+   does not accept fine-grained tokens for the container registry. Prefer an account used only for
+   this, member of the organization with read access to the packages, over a personal account; set
+   an expiry and note the date to rotate it.
+2. Put it in the secrets of each environment the host runs:
+
+   ```bash
+   sops edit environments/staging/secrets.sops.env    # GHCR_PULL_USER=<login>, GHCR_PULL_TOKEN=<token>
+   sops edit environments/prod/secrets.sops.env
+   ```
+
+3. Merge: the agent uses it on its next run. A login failure is reported as transient and retried.
+
+Making the packages public instead (package settings, Danger Zone) removes the need for a token.
+
 ## SOPS recipients
 
 Only the hosts that run an environment, and the operators, can decrypt it. Create `.sops.yaml` at
