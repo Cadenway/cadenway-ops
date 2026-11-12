@@ -1,5 +1,5 @@
 {
-  "description": "Waypoint repository guardrails and formatting. Review before trusting.",
+  "description": "Cadenway repository guardrails and formatting. Review before trusting.",
   "hooks": {
     "PreToolUse": [
       {

@@ -5,7 +5,7 @@
 **Do not open a public issue, discussion or pull request for a security problem.**
 
 Report it privately through GitHub: on this repository, open the **Security** tab and choose **Report a
-vulnerability**. If the problem lies in another Waypoint repository, report it there; if you cannot
+vulnerability**. If the problem lies in another Cadenway repository, report it there; if you cannot
 tell, report it here and we will move it.
 
 Please include:
@@ -27,9 +27,9 @@ We keep you informed of progress and credit you in the advisory unless you prefe
 
 ## Scope
 
-In scope: waypoint-ops and the infrastructure it describes.
+In scope: cadenway-ops and the infrastructure it describes.
 
-Particularly sensitive in Waypoint:
+Particularly sensitive in Cadenway:
 
 - authentication, sessions, MFA, SSO and API tokens;
 - isolation between organizations: one organization never sees another's data;
@@ -47,6 +47,6 @@ Only the current state of `main` is supported.
 ## Rules for contributors
 
 - Never commit a secret, a token, a password or a private key. Production secrets are encrypted with
-  SOPS in `waypoint-ops`.
+  SOPS in `cadenway-ops`.
 - A credential committed by mistake is considered leaked: rotate it immediately, then remove it.
 - Dependencies are kept up to date by Renovate; security updates are reviewed first.

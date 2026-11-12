@@ -2,7 +2,7 @@
 # Refuses a push to main (it only receives squash-merged pull requests), then runs the format check
 # that pull-request CI runs again.
 #
-# ALLOW_MAIN_PUSH=1 and WP_SKIP_PUSH_CHECKS=1 are escape hatches for a human maintainer; agents never
+# ALLOW_MAIN_PUSH=1 and CW_SKIP_PUSH_CHECKS=1 are escape hatches for a human maintainer; agents never
 # set them.
 
 while read -r _local_ref _local_sha remote_ref _remote_sha; do
@@ -12,7 +12,7 @@ while read -r _local_ref _local_sha remote_ref _remote_sha; do
   fi
 done
 
-if [ "${WP_SKIP_PUSH_CHECKS:-}" = "1" ]; then
+if [ "${CW_SKIP_PUSH_CHECKS:-}" = "1" ]; then
   exit 0
 fi
 

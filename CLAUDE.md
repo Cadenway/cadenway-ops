@@ -1,4 +1,4 @@
-# waypoint-ops: Claude Code instructions
+# cadenway-ops: Claude Code instructions
 
 > **Source of truth.** This file is the entry point for Claude Code. The normative rules live in
 > [AGENTS.md](AGENTS.md), imported below: read it, do not paraphrase it from memory.
@@ -28,7 +28,7 @@
 ## Target quality gate
 
 Use the [minimum checks by change](docs/development.md#minimum-checks-by-change) first.
-Run `/wp-quality` without arguments for the full local gate when applicable. Report unavailable
+Run `/cw-quality` without arguments for the full local gate when applicable. Report unavailable
 checks during bootstrap.
 
 ```bash
@@ -47,7 +47,7 @@ Commands that change a server or OVH (`ansible-playbook` without `--check`, `ter
 
 ## Tooling: this repository ships its own `.claude/`
 
-Open `waypoint-ops/` as the workspace root to activate it. The `wp-ops-*` agents, the `/wp-*`
+Open `cadenway-ops/` as the workspace root to activate it. The `cw-ops-*` agents, the `/cw-*`
 commands, the skills and the hooks are described in [.claude/README.md](.claude/README.md). Two things
 the session listing does not tell you:
 
@@ -60,5 +60,5 @@ the session listing does not tell you:
   registry publishing, and `format.mjs` formats supported files when its formatter is available.
   Apply the repository rules across tools. Resolve a refusal without bypassing the hook.
 
-The sibling repositories (`../waypoint-api-gateway`, `../waypoint-task-service`, `../waypoint-webapp`, `../waypoint-billing-service`) are read-only references
+The sibling repositories (`../cadenway-api-gateway`, `../cadenway-task-service`, `../cadenway-webapp`, `../cadenway-billing-service`) are read-only references
 from here; add them to the session (`--add-dir`) when a task needs to read them.

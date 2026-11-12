@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * PreToolUse hook (waypoint-ops): refuse git, release and publishing commands that an agent must
+ * PreToolUse hook (cadenway-ops): refuse git, release and publishing commands that an agent must
  * never run on its own. Deny = exit 2 with the reason on stderr; everything else = exit 0.
  *
  * The same file runs for Claude Code (Bash, PowerShell) and, through the Codex adapter, for Codex
@@ -12,7 +12,7 @@
  *  3. Rewrites of pushed history: `commit --amend` of a commit a remote branch contains, a `rebase`
  *     whose range contains a commit reachable from a remote, `filter-branch`, `filter-repo`.
  *  4. Hook bypasses: `--no-verify` / `commit -n`, `-c core.hooksPath=…`, changing or unsetting
- *     `core.hooksPath`, `ALLOW_MAIN_PUSH=1`, `WP_SKIP_PUSH_CHECKS=1`.
+ *     `core.hooksPath`, `ALLOW_MAIN_PUSH=1`, `CW_SKIP_PUSH_CHECKS=1`.
  *  5. Release actions: creating or deleting a tag, `merge` while on `main`, `npm publish`,
  *     `npm unpublish`, `npm deprecate`, `npm dist-tag add|rm`, `npm version <bump>`.
  *  6. Work-tree destruction: `reset --hard`, `clean -f`, `checkout -- .`, `restore .`, deleting
@@ -30,9 +30,9 @@
  * When a git query needed for a decision fails, the guard denies only the history-rewriting case
  * (it cannot prove the commits are local); every other unclear case passes.
  *
- * The rules mirror the other Waypoint repositories (same branch model) and the repository's own
+ * The rules mirror the other Cadenway repositories (same branch model) and the repository's own
  * `.githooks/` (pre-push refuses main, commit-msg runs commitlint). The hook only acts inside a
- * waypoint-ops checkout (marker: a package.json named waypoint-ops), so it is inert when the
+ * cadenway-ops checkout (marker: a package.json named cadenway-ops), so it is inert when the
  * plugin is installed elsewhere.
  */
 import { spawnSync } from 'node:child_process';
@@ -86,7 +86,7 @@ const PROTECTED_BRANCHES = new Set(['main']);
  *
  * @type {string}
  */
-const REPO_NAME = 'waypoint-ops';
+const REPO_NAME = 'cadenway-ops';
 
 /**
  * Function parseSegments
@@ -634,7 +634,7 @@ function checkPackageManager(program, argv) {
   if (['publish', 'unpublish', 'deprecate'].includes(sub)) {
     return deny(
       `${program} ${sub}`,
-      'waypoint-ops is never published to a registry: it ships as a Docker image built by CI.',
+      'cadenway-ops is never published to a registry: it ships as a Docker image built by CI.',
     );
   }
   if (sub === 'dist-tag' && ['add', 'rm'].includes(argv[2])) {
@@ -700,9 +700,9 @@ export function evaluateCommand(command, { git }) {
         'This override of the pre-push hook is for a human repairing main.',
       );
     }
-    if (env.WP_SKIP_PUSH_CHECKS !== undefined) {
+    if (env.CW_SKIP_PUSH_CHECKS !== undefined) {
       return deny(
-        'WP_SKIP_PUSH_CHECKS',
+        'CW_SKIP_PUSH_CHECKS',
         'The pre-push format and lint checks complement pull-request CI: fix what they report.',
       );
     }
@@ -721,7 +721,7 @@ export function evaluateCommand(command, { git }) {
  *
  * @description
  * Checks whether a directory contains a readable package manifest whose package name identifies
- * the waypoint-ops checkout.
+ * the cadenway-ops checkout.
  *
  * @param {string} dir - Directory that may be the repository root.
  *

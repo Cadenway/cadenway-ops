@@ -1,13 +1,13 @@
 name: Feature request
-description: Propose a new feature or an improvement to waypoint-ops.
+description: Propose a new feature or an improvement to cadenway-ops.
 labels: [enhancement]
 body:
   - type: input
     id: task
     attributes:
-      label: Waypoint task
+      label: Cadenway task
       description: The task id, if one already tracks this idea.
-      placeholder: WAY-482
+      placeholder: CAD-482
 
   - type: textarea
     id: problem

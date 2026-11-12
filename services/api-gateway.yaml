@@ -1,11 +1,11 @@
 # Definition of api-gateway for Docker Compose. CI copies this file into
-# waypoint-ops/services/api-gateway.yaml on each release: keep it self-contained.
+# cadenway-ops/services/api-gateway.yaml on each release: keep it self-contained.
 #
 # Exposed through Traefik on api.<domain>: it joins `edge` (what Traefik serves) and `internal` (the
 # services it calls). No port is published; Traefik reaches the container on the `edge` network.
 services:
   api-gateway:
-    image: ghcr.io/${GHCR_OWNER}/waypoint-api-gateway:${API_GATEWAY_VERSION}
+    image: ghcr.io/${GHCR_OWNER}/cadenway-api-gateway:${API_GATEWAY_VERSION}
     restart: unless-stopped
     environment:
       PORT: '3000'
@@ -28,7 +28,7 @@ services:
         limits:
           memory: 256M
 
-# Declared identically by waypoint-ops and by every definition it includes.
+# Declared identically by cadenway-ops and by every definition it includes.
 networks:
   edge: {}
   internal: {}

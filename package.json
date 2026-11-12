@@ -1,6 +1,6 @@
 {
-  "name": "waypoint-ops",
-  "description": "Waypoint operations: Terraform (OVH), Ansible (VPS), Docker Compose and Traefik, environments, GitOps agent, local stack.",
+  "name": "cadenway-ops",
+  "description": "Cadenway operations: Terraform (OVH), Ansible (VPS), Docker Compose and Traefik, environments, GitOps agent, local stack.",
   "private": true,
   "license": "UNLICENSED",
   "packageManager": "pnpm@12.18.0",

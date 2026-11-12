@@ -10,7 +10,7 @@ The following architecture is the target recorded in [AGENTS.md](../AGENTS.md). 
 
 ## Purpose and target structure
 
-waypoint-ops is the whole operation of Waypoint: what exists at OVH (Terraform), how the VPS is prepared (Ansible), and what runs in each environment (Docker Compose files, service definitions, versions and encrypted secrets read by the GitOps agent). It is also where local development starts the stack.
+cadenway-ops is the whole operation of Cadenway: what exists at OVH (Terraform), how the VPS is prepared (Ansible), and what runs in each environment (Docker Compose files, service definitions, versions and encrypted secrets read by the GitOps agent). It is also where local development starts the stack.
 
 ```text
 terraform/        ← VPS, DNS zone, Object Storage; state in Object Storage, locked
@@ -39,4 +39,4 @@ seed/             ← mockup data for staging and local
 
 ## Cross-repository changes
 
-Each checkout owns its implementation and release. Use published `@waypoint/*` packages instead of sibling source imports or local dependency links. For contract changes, make the contract and generated package available first, then update the producing service, gateways and listeners, and finally the webapp. Each step should remain deployable independently.
+Each checkout owns its implementation and release. Use published `@cadenway/*` packages instead of sibling source imports or local dependency links. For contract changes, make the contract and generated package available first, then update the producing service, gateways and listeners, and finally the webapp. Each step should remain deployable independently.

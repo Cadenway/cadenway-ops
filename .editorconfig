@@ -1,4 +1,4 @@
-# Waypoint editor conventions.
+# Cadenway editor conventions.
 # Each repository is self-contained and stops EditorConfig lookup here.
 root = true
 

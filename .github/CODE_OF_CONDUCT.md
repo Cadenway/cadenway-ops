@@ -1,8 +1,8 @@
 # Code of conduct
 
-Waypoint is built by people who should feel safe and respected while they work together. This code of
+Cadenway is built by people who should feel safe and respected while they work together. This code of
 conduct applies to every issue, pull request, review and discussion of this repository and of the
-other Waypoint repositories, and to anyone representing the project elsewhere.
+other Cadenway repositories, and to anyone representing the project elsewhere.
 
 ## Expected behavior
 

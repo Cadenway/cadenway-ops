@@ -1,6 +1,6 @@
-# waypoint-ops: Claude Code tooling
+# cadenway-ops: Claude Code tooling
 
-This `.claude/` folder ships the Claude Code tooling of waypoint-ops: **12 agents**,
+This `.claude/` folder ships the Claude Code tooling of cadenway-ops: **12 agents**,
 13 slash commands, 9 rules, 17 skills, 3 hooks, the project
 settings.
 
@@ -27,11 +27,11 @@ Start from [AGENTS.md](../AGENTS.md) (the rules every assistant follows) and [CL
 Start from this checkout and attach the peers you need, for example:
 
 ```powershell
-claude --add-dir ../waypoint-api-gateway ../waypoint-task-service ../waypoint-webapp
+claude --add-dir ../cadenway-api-gateway ../cadenway-task-service ../cadenway-webapp
 ```
 
-Their `.claude/agents/` are discovered too, so their `wp-*` roles become available. Peer checkouts
-are **read-only** from a waypoint-ops session (the guard refuses edits there): change them in their
+Their `.claude/agents/` are discovered too, so their `cw-*` roles become available. Peer checkouts
+are **read-only** from a cadenway-ops session (the guard refuses edits there): change them in their
 own session and pull request.
 
 ## Agents
@@ -42,36 +42,36 @@ check that writes files. No agent delegates further.
 
 | Agent | Responsibility | Model | Effort | Mode |
 | --- | --- | --- | --- | --- |
-| `wp-ops-compose-builder` | Compose files, networks, profiles, local overrides. | sonnet | high | Assigned writes |
-| `wp-ops-traefik-maintainer` | Entry points, certificates, middlewares. | sonnet | high | Assigned writes |
-| `wp-ops-ansible-role-builder` | Idempotent roles and playbooks. | opus | high | Assigned writes |
-| `wp-ops-terraform-builder` | OVH resources. | opus | high | Assigned writes |
-| `wp-ops-agent-maintainer` | The GitOps sync script. | opus | xhigh | Assigned writes |
-| `wp-ops-secrets-steward` | SOPS process, never values. | sonnet | medium | Assigned writes |
-| `wp-ops-backup-restore-builder` | Backups and tested restores. | opus | high | Assigned writes |
-| `wp-ops-observability-builder` | Logs, metrics, traces, uptime. | sonnet | high | Assigned writes |
-| `wp-ops-runbook-writer` | Operating procedures. | sonnet | medium | Assigned writes |
-| `wp-ops-deploy-reviewer` | Desired-state changes. | opus | high | Read-only |
-| `wp-ops-security-auditor` | Hardening, exposure, secrets. | opus | xhigh | Read-only |
-| `wp-ops-github-maintainer` | Workflows, templates and community files in .github/. | sonnet | medium | Assigned writes |
+| `cw-ops-compose-builder` | Compose files, networks, profiles, local overrides. | sonnet | high | Assigned writes |
+| `cw-ops-traefik-maintainer` | Entry points, certificates, middlewares. | sonnet | high | Assigned writes |
+| `cw-ops-ansible-role-builder` | Idempotent roles and playbooks. | opus | high | Assigned writes |
+| `cw-ops-terraform-builder` | OVH resources. | opus | high | Assigned writes |
+| `cw-ops-agent-maintainer` | The GitOps sync script. | opus | xhigh | Assigned writes |
+| `cw-ops-secrets-steward` | SOPS process, never values. | sonnet | medium | Assigned writes |
+| `cw-ops-backup-restore-builder` | Backups and tested restores. | opus | high | Assigned writes |
+| `cw-ops-observability-builder` | Logs, metrics, traces, uptime. | sonnet | high | Assigned writes |
+| `cw-ops-runbook-writer` | Operating procedures. | sonnet | medium | Assigned writes |
+| `cw-ops-deploy-reviewer` | Desired-state changes. | opus | high | Read-only |
+| `cw-ops-security-auditor` | Hardening, exposure, secrets. | opus | xhigh | Read-only |
+| `cw-ops-github-maintainer` | Workflows, templates and community files in .github/. | sonnet | medium | Assigned writes |
 
 ## Commands
 
 | Command | What it does | Runs |
 | --- | --- | --- |
-| `/wp-compose` | Change Compose files, networks or profiles. | `wp-ops-compose-builder` |
-| `/wp-traefik` | Change Traefik routing or security. | `wp-ops-traefik-maintainer` |
-| `/wp-ansible` | Write or change an Ansible role or playbook. | `wp-ops-ansible-role-builder` |
-| `/wp-terraform` | Change OVH resources in Terraform. | `wp-ops-terraform-builder` |
-| `/wp-agent` | Change the GitOps sync script. | `wp-ops-agent-maintainer` |
-| `/wp-secrets` | Change the secret inventory or SOPS rules (never values). | `wp-ops-secrets-steward` |
-| `/wp-backup` | Build backups and restore tests. | `wp-ops-backup-restore-builder` |
-| `/wp-observability` | Add logs, metrics, traces or alerts. | `wp-ops-observability-builder` |
-| `/wp-runbook` | Write a runbook. | `wp-ops-runbook-writer` |
-| `/wp-deploy-review` | Review a desired-state change. | `wp-ops-deploy-reviewer` |
-| `/wp-security-review` | Audit hardening and secrets. | `wp-ops-security-auditor` |
-| `/wp-github` | Change workflows, templates or community files in .github/. | `wp-ops-github-maintainer` |
-| `/wp-quality` | Run the static checks, stopping at the first failure. | runs the commands itself |
+| `/cw-compose` | Change Compose files, networks or profiles. | `cw-ops-compose-builder` |
+| `/cw-traefik` | Change Traefik routing or security. | `cw-ops-traefik-maintainer` |
+| `/cw-ansible` | Write or change an Ansible role or playbook. | `cw-ops-ansible-role-builder` |
+| `/cw-terraform` | Change OVH resources in Terraform. | `cw-ops-terraform-builder` |
+| `/cw-agent` | Change the GitOps sync script. | `cw-ops-agent-maintainer` |
+| `/cw-secrets` | Change the secret inventory or SOPS rules (never values). | `cw-ops-secrets-steward` |
+| `/cw-backup` | Build backups and restore tests. | `cw-ops-backup-restore-builder` |
+| `/cw-observability` | Add logs, metrics, traces or alerts. | `cw-ops-observability-builder` |
+| `/cw-runbook` | Write a runbook. | `cw-ops-runbook-writer` |
+| `/cw-deploy-review` | Review a desired-state change. | `cw-ops-deploy-reviewer` |
+| `/cw-security-review` | Audit hardening and secrets. | `cw-ops-security-auditor` |
+| `/cw-github` | Change workflows, templates or community files in .github/. | `cw-ops-github-maintainer` |
+| `/cw-quality` | Run the static checks, stopping at the first failure. | runs the commands itself |
 
 ## Rules
 
@@ -93,11 +93,11 @@ See [skills/](skills/) for the complete inventory, including the technology guid
 
 | Skill | Use |
 | --- | --- |
-| `wp-context` | What Waypoint is, where the mockup, the integration guide and the repository map live, the product vocabulary (spaces, lists, sprints, tasks, statuses, milestones) and the multi-repository ownership rules. |
-| `wp-compose-layout` | How the Compose files of waypoint-ops fit together for production and local development, with networks, profiles and domains. |
-| `wp-gitops-agent` | What the agent on the VPS does on each run and how it rolls out, verifies and keeps the old version on failure. |
-| `wp-ansible-conventions` | Role layout, idempotency, variables and hardening baseline for waypoint-ops. |
-| `wp-terraform-conventions` | Provider pinning, state backend, module layout and outputs for waypoint-ops. |
+| `cw-context` | What Cadenway is, where the mockup, the integration guide and the repository map live, the product vocabulary (spaces, lists, sprints, tasks, statuses, milestones) and the multi-repository ownership rules. |
+| `cw-compose-layout` | How the Compose files of cadenway-ops fit together for production and local development, with networks, profiles and domains. |
+| `cw-gitops-agent` | What the agent on the VPS does on each run and how it rolls out, verifies and keeps the old version on failure. |
+| `cw-ansible-conventions` | Role layout, idempotency, variables and hardening baseline for cadenway-ops. |
+| `cw-terraform-conventions` | Provider pinning, state backend, module layout and outputs for cadenway-ops. |
 
 ## Hooks
 

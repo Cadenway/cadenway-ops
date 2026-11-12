@@ -1,8 +1,8 @@
-# Entry point of the Waypoint stack: the shared infrastructure and one definition per deployable.
+# Entry point of the Cadenway stack: the shared infrastructure and one definition per deployable.
 #
 # The service definitions are copied from each repository's deploy/compose.yaml on release: change
 # them there. Compose does not expand a glob here, so a new deployable adds its line.
-name: waypoint
+name: cadenway
 
 include:
   - infra.yaml

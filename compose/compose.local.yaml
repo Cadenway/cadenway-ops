@@ -7,7 +7,7 @@
 # Every deployable is built from its sibling folder (clone the repositories flat, side by side) and
 # rebuilt by `watch` when its sources change. `core` starts the first version (identity, task,
 # notification, API gateway, web application); `full` starts everything. Browsers resolve
-# `*.localhost` to the machine: http://app.waypoint.localhost, http://mail.waypoint.localhost.
+# `*.localhost` to the machine: http://app.cadenway.localhost, http://mail.cadenway.localhost.
 #
 # MinIO is not here yet: its image is no longer published on Docker Hub, and the local object store
 # is chosen with the storage service.
@@ -28,7 +28,7 @@ services:
     command: !override
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
-      - --providers.docker.network=waypoint_edge
+      - --providers.docker.network=cadenway_edge
       - --entrypoints.web.address=:80
       - --ping=true
     ports: !override
@@ -56,20 +56,20 @@ services:
 
   api-gateway:
     profiles: [core, full]
-    build: ../../waypoint-api-gateway
+    build: ../../cadenway-api-gateway
     develop:
       watch:
         - action: rebuild
-          path: ../../waypoint-api-gateway/src
+          path: ../../cadenway-api-gateway/src
     depends_on: *redis
 
   realtime-gateway:
     profiles: [full]
-    build: ../../waypoint-realtime-gateway
+    build: ../../cadenway-realtime-gateway
     develop:
       watch:
         - action: rebuild
-          path: ../../waypoint-realtime-gateway/src
+          path: ../../cadenway-realtime-gateway/src
     depends_on:
       <<: *redis
       nats:
@@ -77,106 +77,106 @@ services:
 
   identity-service:
     profiles: [core, full]
-    build: ../../waypoint-identity-service
+    build: ../../cadenway-identity-service
     develop:
       watch:
         - action: rebuild
-          path: ../../waypoint-identity-service/src
+          path: ../../cadenway-identity-service/src
     depends_on: *data
 
   organization-service:
     profiles: [full]
-    build: ../../waypoint-organization-service
+    build: ../../cadenway-organization-service
     develop:
       watch:
         - action: rebuild
-          path: ../../waypoint-organization-service/src
+          path: ../../cadenway-organization-service/src
     depends_on: *data
 
   billing-service:
     profiles: [full]
-    build: ../../waypoint-billing-service
+    build: ../../cadenway-billing-service
     develop:
       watch:
         - action: rebuild
-          path: ../../waypoint-billing-service/src
+          path: ../../cadenway-billing-service/src
     depends_on: *data
 
   task-service:
     profiles: [core, full]
-    build: ../../waypoint-task-service
+    build: ../../cadenway-task-service
     develop:
       watch:
         - action: rebuild
-          path: ../../waypoint-task-service/src
+          path: ../../cadenway-task-service/src
     depends_on: *data
 
   document-service:
     profiles: [full]
-    build: ../../waypoint-document-service
+    build: ../../cadenway-document-service
     develop:
       watch:
         - action: rebuild
-          path: ../../waypoint-document-service/src
+          path: ../../cadenway-document-service/src
     depends_on: *data
 
   storage-service:
     profiles: [full]
-    build: ../../waypoint-storage-service
+    build: ../../cadenway-storage-service
     develop:
       watch:
         - action: rebuild
-          path: ../../waypoint-storage-service/src
+          path: ../../cadenway-storage-service/src
     depends_on: *data
 
   notification-service:
     profiles: [core, full]
-    build: ../../waypoint-notification-service
+    build: ../../cadenway-notification-service
     develop:
       watch:
         - action: rebuild
-          path: ../../waypoint-notification-service/src
+          path: ../../cadenway-notification-service/src
     depends_on: *data
 
   automation-service:
     profiles: [full]
-    build: ../../waypoint-automation-service
+    build: ../../cadenway-automation-service
     develop:
       watch:
         - action: rebuild
-          path: ../../waypoint-automation-service/src
+          path: ../../cadenway-automation-service/src
     depends_on: *data
 
   integration-service:
     profiles: [full]
-    build: ../../waypoint-integration-service
+    build: ../../cadenway-integration-service
     develop:
       watch:
         - action: rebuild
-          path: ../../waypoint-integration-service/src
+          path: ../../cadenway-integration-service/src
     depends_on: *data
 
   search-service:
     profiles: [full]
-    build: ../../waypoint-search-service
+    build: ../../cadenway-search-service
     develop:
       watch:
         - action: rebuild
-          path: ../../waypoint-search-service/src
+          path: ../../cadenway-search-service/src
     depends_on: *data
 
   webapp:
     profiles: [core, full]
-    build: ../../waypoint-webapp
+    build: ../../cadenway-webapp
     develop:
       watch:
         - action: rebuild
-          path: ../../waypoint-webapp/src
+          path: ../../cadenway-webapp/src
 
   website:
     profiles: [full]
-    build: ../../waypoint-website
+    build: ../../cadenway-website
     develop:
       watch:
         - action: rebuild
-          path: ../../waypoint-website/src
+          path: ../../cadenway-website/src

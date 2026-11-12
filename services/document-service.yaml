@@ -1,11 +1,11 @@
 # Definition of document-service for Docker Compose. CI copies this file into
-# waypoint-ops/services/document-service.yaml on each release: keep it self-contained.
+# cadenway-ops/services/document-service.yaml on each release: keep it self-contained.
 #
 # Internal service: no Traefik label, no published port. Secret values (the database URL carries a
-# password) are referenced by name; they live in waypoint-ops.
+# password) are referenced by name; they live in cadenway-ops.
 services:
   document-service:
-    image: ghcr.io/${GHCR_OWNER}/waypoint-document-service:${DOCUMENT_SERVICE_VERSION}
+    image: ghcr.io/${GHCR_OWNER}/cadenway-document-service:${DOCUMENT_SERVICE_VERSION}
     restart: unless-stopped
     environment:
       PORT: '3014'
@@ -24,6 +24,6 @@ services:
         limits:
           memory: 256M
 
-# Declared identically by waypoint-ops and by every service definition it includes.
+# Declared identically by cadenway-ops and by every service definition it includes.
 networks:
   internal: {}

@@ -12,7 +12,7 @@ services:
       # A container is served only when its definition carries `traefik.enable=true`.
       - --providers.docker.exposedbydefault=false
       # The gateways are on two networks: Traefik must reach them on `edge`.
-      - --providers.docker.network=waypoint_edge
+      - --providers.docker.network=cadenway_edge
       - --entrypoints.web.address=:80
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https

@@ -1,10 +1,10 @@
 # Definition of website for Docker Compose. CI copies this file into
-# waypoint-ops/services/website.yaml on each release: keep it self-contained.
+# cadenway-ops/services/website.yaml on each release: keep it self-contained.
 #
 # Prerendered static files served on www.<domain> through Traefik.
 services:
   website:
-    image: ghcr.io/${GHCR_OWNER}/waypoint-website:${WEBSITE_VERSION}
+    image: ghcr.io/${GHCR_OWNER}/cadenway-website:${WEBSITE_VERSION}
     restart: unless-stopped
     networks:
       - edge
@@ -23,6 +23,6 @@ services:
         limits:
           memory: 64M
 
-# Declared identically by waypoint-ops and by every definition it includes.
+# Declared identically by cadenway-ops and by every definition it includes.
 networks:
   edge: {}

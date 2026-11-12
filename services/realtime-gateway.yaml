@@ -1,11 +1,11 @@
 # Definition of realtime-gateway for Docker Compose. CI copies this file into
-# waypoint-ops/services/realtime-gateway.yaml on each release: keep it self-contained.
+# cadenway-ops/services/realtime-gateway.yaml on each release: keep it self-contained.
 #
 # Exposed through Traefik on realtime.<domain> only: it joins `edge` (what Traefik serves) and
 # `internal` (Redis and the broker). No port is published; Traefik reaches the container on `edge`.
 services:
   realtime-gateway:
-    image: ghcr.io/${GHCR_OWNER}/waypoint-realtime-gateway:${REALTIME_GATEWAY_VERSION}
+    image: ghcr.io/${GHCR_OWNER}/cadenway-realtime-gateway:${REALTIME_GATEWAY_VERSION}
     restart: unless-stopped
     environment:
       PORT: '3001'
@@ -29,7 +29,7 @@ services:
         limits:
           memory: 256M
 
-# Declared identically by waypoint-ops and by every definition it includes.
+# Declared identically by cadenway-ops and by every definition it includes.
 networks:
   edge: {}
   internal: {}

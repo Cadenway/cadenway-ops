@@ -1,11 +1,11 @@
 # Definition of webapp for Docker Compose. CI copies this file into
-# waypoint-ops/services/webapp.yaml on each release: keep it self-contained.
+# cadenway-ops/services/webapp.yaml on each release: keep it self-contained.
 #
 # Static files served on app.<domain> through Traefik. The gateway addresses are not in the image:
 # the environment mounts them as config.json, so the same image runs in staging and in production.
 services:
   webapp:
-    image: ghcr.io/${GHCR_OWNER}/waypoint-webapp:${WEBAPP_VERSION}
+    image: ghcr.io/${GHCR_OWNER}/cadenway-webapp:${WEBAPP_VERSION}
     restart: unless-stopped
     networks:
       - edge
@@ -35,6 +35,6 @@ configs:
         "realtimeUrl": "${PUBLIC_SCHEME:-https}://realtime.${DOMAIN}"
       }
 
-# Declared identically by waypoint-ops and by every definition it includes.
+# Declared identically by cadenway-ops and by every definition it includes.
 networks:
   edge: {}
