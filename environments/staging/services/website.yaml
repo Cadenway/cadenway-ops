@@ -2,7 +2,8 @@
 # On each release the deploy workflow checks it and copies it into cadenway-ops, as
 # environments/<env>/services/website.yaml for the environment it deploys to.
 #
-# Prerendered static files served on www.<domain> through Traefik.
+# Prerendered static files served on the domain itself (cadenway.com in production) through
+# Traefik; www.<domain> redirects there permanently.
 services:
   website:
     image: ghcr.io/${GHCR_OWNER}/cadenway-website:${WEBSITE_VERSION}
@@ -14,7 +15,11 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=cadenway-edge-${ENVIRONMENT:-local}
-      - traefik.http.routers.website-${ENVIRONMENT:-local}.rule=Host(`www.${DOMAIN}`)
+      - traefik.http.routers.website-${ENVIRONMENT:-local}.rule=Host(`${DOMAIN}`) || Host(`www.${DOMAIN}`)
+      - traefik.http.routers.website-${ENVIRONMENT:-local}.middlewares=website-www-${ENVIRONMENT:-local}
+      - traefik.http.middlewares.website-www-${ENVIRONMENT:-local}.redirectregex.regex=^https?://www\.(.+)
+      - traefik.http.middlewares.website-www-${ENVIRONMENT:-local}.redirectregex.replacement=${PUBLIC_SCHEME:-https}://$${1}
+      - traefik.http.middlewares.website-www-${ENVIRONMENT:-local}.redirectregex.permanent=true
       - traefik.http.services.website-${ENVIRONMENT:-local}.loadbalancer.server.port=8080
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8080/health/ready']
