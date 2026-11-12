@@ -22,10 +22,9 @@ cadenway-ops is the whole operation of Cadenway: what exists at OVH (Terraform),
 ```text
 terraform/        ← VPS, DNS zone, Object Storage; state in Object Storage, locked
 ansible/          ← inventory, roles (base, docker, agent, backup), playbooks (setup, backup, restore)
-compose/          ← compose.yaml, infra.yaml, compose.local.yaml, traefik/, postgres/init/
-services/         ← one definition per service, copied by its CI on release
-environments/     ← staging/ and prod/: versions.env, secrets.sops.env
-agent/            ← sync script and systemd timer
+compose/          ← compose.yaml, infra.yaml, edge.yaml (one Traefik per host), compose.local.yaml, postgres/init/
+environments/     ← staging/ and prod/: services/ (definitions), versions.env, secrets.sops.env
+agent/            ← sync script, systemd timer and its end-to-end test
 seed/             ← mockup data for staging and local
 ```
 
@@ -43,12 +42,12 @@ seed/             ← mockup data for staging and local
 - `terraform/`: OVH resources only.
 - `ansible/`: machine configuration only.
 - `compose/`: shared infrastructure services and local overrides.
-- `services/` and `environments/`: the desired state the agent applies.
+- `environments/`: the desired state the agent applies.
 - `agent/`: the sync script (pull, decrypt, migrate, roll out, health check, alert).
 
 ## Boundaries (hard rules)
 
-- No application code here; service definitions in `services/` are copied from each service's `deploy/compose.yaml` by CI.
+- No application code here; service definitions in `environments/<env>/services/` are copied from each service's `deploy/compose.yaml` by its deploy workflow.
 - No plaintext secret, private key, state file or decrypted `.env` in the repository.
 - Terraform runs only from the GitHub Action; Ansible playbooks are idempotent.
 - Nothing opens an inbound path to the VPS for deployments: the agent pulls.
@@ -103,8 +102,8 @@ run.
 - Never force-push, and never amend or rebase commits that are already pushed.
 - Never bypass the Git hooks (`--no-verify`, `core.hooksPath` overrides, `ALLOW_MAIN_PUSH=1`,
   `CW_SKIP_PUSH_CHECKS=1`).
-- Never write a token, password or private key anywhere; `.npmrc` keeps `${NODE_AUTH_TOKEN}`. Do
-  not read or write secret environment files; new variables are documented in `.env.example`.
+- Never write a token, password or private key anywhere. Do not read or write secret environment
+  files; new variables are documented in `.env.example`.
 - Never edit generated trees (`dist/`, `node_modules/`, `coverage/`, `.terraform/`, `*.tfstate`) or lockfiles by hand.
 - Never modify a sibling checkout (`../cadenway-*`) from a task in this repository.
 - Never run `terraform apply`, `terraform destroy`, `ansible-playbook` against a real host (without `--check`) or `docker compose up` on a server.

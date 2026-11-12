@@ -1,0 +1,6 @@
+// Managed by Ansible (cadenway-ops roles/base): security updates every day, reboot when required.
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-Time "{{ cadenway_auto_reboot_time }}";

@@ -1,0 +1,19 @@
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+# The agent skips a commit it already applied: forgetting it makes the next run apply the current
+# commit with the new settings (domain, image owner, environments).
+- name: Forget what the agent applied
+  ansible.builtin.file:
+    path: '/var/lib/cadenway-agent/{{ item }}/applied'
+    state: absent
+  loop: "{{ ['edge'] + cadenway_environments }}"
+  listen: Reconcile the deployments
+
+- name: Run the agent now
+  ansible.builtin.systemd_service:
+    name: cadenway-agent.service
+    state: started
+    no_block: true
+  listen: Reconcile the deployments

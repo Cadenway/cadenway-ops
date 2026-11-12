@@ -4,7 +4,7 @@
 
 ## Bootstrap status
 
-At the time this documentation was written, this checkout has no Terraform, Ansible, Compose, GitOps agent, application manifest, or GitHub workflow files. The operational topology and commands in this guide are planned, not an active stack.
+The Compose stack (local and server), the shared edge Traefik, the Ansible roles and playbooks, the GitOps agent with its end-to-end test, and the CI exist in this checkout. Terraform and `seed/` do not exist yet. Nothing has been applied to a real host: see [deployment](deployment.md) for the operator steps.
 
 The commands below are the documented **target workflow**, copied from the repository overview and instructions. They are not proof that scripts, infrastructure, CI, or dependencies currently exist. Inspect the repository's actual manifests and files before running them, and report unavailable checks rather than inventing replacements. Run Git, pnpm, build, and test commands with this repository as the working directory, never from the parent workspace.
 
@@ -60,8 +60,6 @@ ansible-playbook --syntax-check ansible/playbooks/setup.yml
 terraform -chdir=terraform fmt -check
 terraform -chdir=terraform validate
 shellcheck agent/*.sh
-terraform apply
-docker compose up
 ```
 
 ## Collaboration and release

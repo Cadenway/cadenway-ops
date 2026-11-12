@@ -1,0 +1,46 @@
+# Prepares a Cadenway host from a fresh VPS image; idempotent, safe to run again.
+#
+# From the repository root:
+#   ansible-galaxy collection install -r ansible/requirements.yml
+#   ansible-playbook ansible/playbooks/setup.yml --check --diff    (preview)
+#   ansible-playbook ansible/playbooks/setup.yml                   (apply: an operator only)
+#
+# First run on a new VPS: add `-e ansible_user=<image user>` (ubuntu, debian), since the admin
+# user does not exist yet, and `-e ansible_port=22` when cadenway_ssh_port is another port. Before
+# it locks SSH down, the play checks from this controller that the admin user logs in with its key.
+# It ends by printing the host's age recipient and deploy key to register.
+- name: Prepare the Cadenway hosts
+  hosts: cadenway
+  become: true
+  pre_tasks:
+    - name: Find out whether the host was ever set up
+      ansible.builtin.stat:
+        path: /etc/cadenway/agent.env
+      register: cadenway_agent_config
+
+    # The apt module previews only with python3-apt; a real run installs it by itself.
+    - name: Look for python3-apt
+      ansible.builtin.command: dpkg-query --show python3-apt
+      register: cadenway_python_apt
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Refuse a preview the apt module cannot make
+      ansible.builtin.assert:
+        that:
+          - not ansible_check_mode or cadenway_python_apt.rc == 0
+        fail_msg: >-
+          python3-apt is missing on this host; run without --check once, or install it first.
+        quiet: true
+
+    # A `--check` preview of a fresh host skips the steps that need an earlier one to have run.
+    - name: Note a first-run preview
+      ansible.builtin.set_fact:
+        cadenway_preview_first_run: >-
+          {{ ansible_check_mode and not cadenway_agent_config.stat.exists }}
+  roles:
+    - base
+    - docker
+    - agent
+    - backup

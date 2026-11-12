@@ -1,0 +1,15 @@
+# One run of the Cadenway GitOps agent; started by cadenway-agent.timer. Installed by Ansible.
+[Unit]
+Description=Cadenway GitOps agent: apply cadenway-ops main on this host
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cadenway-agent
+# Decrypted secrets live in /run/cadenway (tmpfs) for the duration of a run only.
+RuntimeDirectory=cadenway
+RuntimeDirectoryMode=0700
+TimeoutStartSec=30min
+Nice=5

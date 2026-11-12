@@ -1,0 +1,24 @@
+# Inventory of the Cadenway hosts. Copy to hosts.yml and fill `ansible_host` with the addresses
+# Terraform prints; hosts.yml holds no secret and is committed once the VPS exist.
+#
+# Each host lists the environments it runs in `cadenway_environments`. Two topologies work with the
+# same roles, the same agent and the same Compose files:
+#
+#   - one VPS per environment (below): staging and production are isolated;
+#   - one VPS for both: a single host with `cadenway_environments: [staging, prod]`, for example
+#
+#       cadenway:
+#         hosts:
+#           cadenway-1:
+#             ansible_host: 203.0.113.10
+#             cadenway_environments: [staging, prod]
+#
+# Either way one Traefik per host serves every environment of that host on its own domain.
+cadenway:
+  hosts:
+    cadenway-staging:
+      ansible_host: 203.0.113.10
+      cadenway_environments: [staging]
+    cadenway-prod:
+      ansible_host: 203.0.113.20
+      cadenway_environments: [prod]

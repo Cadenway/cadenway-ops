@@ -1,0 +1,30 @@
+# Definition of search-service for Docker Compose; keep it self-contained.
+# On each release the deploy workflow checks it and copies it into cadenway-ops, as
+# environments/<env>/services/search-service.yaml for the environment it deploys to.
+#
+# Internal service: no Traefik label, no published port. Secret values (the database URL carries a
+# password) are referenced by name; they live in cadenway-ops.
+services:
+  search-service:
+    image: ghcr.io/${GHCR_OWNER}/cadenway-search-service:${SEARCH_SERVICE_VERSION}
+    restart: unless-stopped
+    environment:
+      PORT: '3019'
+      DATABASE_URL: ${SEARCH_SERVICE_DATABASE_URL}
+      NATS_URL: ${NATS_URL}
+    networks:
+      - internal
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3019/health/ready']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+# Declared identically by cadenway-ops and by every service definition it includes.
+networks:
+  internal: {}

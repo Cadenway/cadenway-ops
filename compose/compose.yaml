@@ -1,4 +1,10 @@
-# Entry point of the Cadenway stack: the shared infrastructure and one definition per deployable.
+# Entry point of one Cadenway environment: its infrastructure and one definition per deployable.
+#
+# Traefik is not here: edge.yaml runs it once per host, so staging and production can share a VPS
+# or run on their own. The GitOps agent starts this file as the project cadenway-<env> with
+# CADENWAY_SERVICES=../environments/<env>/services: each environment runs the definitions its deploy
+# wrote, so a staging release never changes what production runs. Locally, the stack runs the
+# staging definitions.
 #
 # The service definitions are copied from each repository's deploy/compose.yaml on release: change
 # them there. Compose does not expand a glob here, so a new deployable adds its line.
@@ -6,17 +12,17 @@ name: cadenway
 
 include:
   - infra.yaml
-  - ../services/api-gateway.yaml
-  - ../services/realtime-gateway.yaml
-  - ../services/identity-service.yaml
-  - ../services/organization-service.yaml
-  - ../services/billing-service.yaml
-  - ../services/task-service.yaml
-  - ../services/document-service.yaml
-  - ../services/storage-service.yaml
-  - ../services/notification-service.yaml
-  - ../services/automation-service.yaml
-  - ../services/integration-service.yaml
-  - ../services/search-service.yaml
-  - ../services/webapp.yaml
-  - ../services/website.yaml
+  - ${CADENWAY_SERVICES:-../environments/staging/services}/api-gateway.yaml
+  - ${CADENWAY_SERVICES:-../environments/staging/services}/realtime-gateway.yaml
+  - ${CADENWAY_SERVICES:-../environments/staging/services}/identity-service.yaml
+  - ${CADENWAY_SERVICES:-../environments/staging/services}/organization-service.yaml
+  - ${CADENWAY_SERVICES:-../environments/staging/services}/billing-service.yaml
+  - ${CADENWAY_SERVICES:-../environments/staging/services}/task-service.yaml
+  - ${CADENWAY_SERVICES:-../environments/staging/services}/document-service.yaml
+  - ${CADENWAY_SERVICES:-../environments/staging/services}/storage-service.yaml
+  - ${CADENWAY_SERVICES:-../environments/staging/services}/notification-service.yaml
+  - ${CADENWAY_SERVICES:-../environments/staging/services}/automation-service.yaml
+  - ${CADENWAY_SERVICES:-../environments/staging/services}/integration-service.yaml
+  - ${CADENWAY_SERVICES:-../environments/staging/services}/search-service.yaml
+  - ${CADENWAY_SERVICES:-../environments/staging/services}/webapp.yaml
+  - ${CADENWAY_SERVICES:-../environments/staging/services}/website.yaml

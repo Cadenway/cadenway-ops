@@ -1,0 +1,12 @@
+# Runs the nightly backup now, for example before a risky migration:
+#
+#   ansible-playbook ansible/playbooks/backup.yml --limit cadenway-prod
+- name: Back up the Cadenway databases now
+  hosts: cadenway
+  become: true
+  tasks:
+    - name: Run the backup service and wait for it
+      ansible.builtin.systemd_service:
+        name: cadenway-backup.service
+        state: started
+      changed_when: true

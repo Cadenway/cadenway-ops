@@ -77,7 +77,7 @@ check that writes files. No agent delegates further.
 
 | File | Subject | Loads for |
 | --- | --- | --- |
-| `compose.md` | Docker Compose | `compose/**`, `services/**` |
+| `compose.md` | Docker Compose | `compose/**`, `environments/*/services/**` |
 | `environments.md` | Environments | `environments/**` |
 | `ansible.md` | Ansible | `ansible/**` |
 | `terraform.md` | Terraform | `terraform/**` |

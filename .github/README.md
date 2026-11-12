@@ -5,10 +5,9 @@ cadenway-ops is the whole operation of Cadenway: what exists at OVH (Terraform),
 ```text
 terraform/        ← VPS, DNS zone, Object Storage; state in Object Storage, locked
 ansible/          ← inventory, roles (base, docker, agent, backup), playbooks (setup, backup, restore)
-compose/          ← compose.yaml, infra.yaml, compose.local.yaml, traefik/, postgres/init/
-services/         ← one definition per service, copied by its CI on release
-environments/     ← staging/ and prod/: versions.env, secrets.sops.env
-agent/            ← sync script and systemd timer
+compose/          ← compose.yaml, infra.yaml, edge.yaml (one Traefik per host), compose.local.yaml, postgres/init/
+environments/     ← staging/ and prod/: services/ (definitions), versions.env, secrets.sops.env
+agent/            ← sync script, systemd timer and its end-to-end test
 seed/             ← mockup data for staging and local
 ```
 

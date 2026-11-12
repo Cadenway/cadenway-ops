@@ -1,0 +1,53 @@
+- name: Check the backup recipient
+  ansible.builtin.assert:
+    that:
+      - cadenway_backup_age_recipient is match('^age1[0-9a-z]+$')
+    fail_msg: Set cadenway_backup_age_recipient to the public age key the dumps are encrypted to.
+    quiet: true
+
+- name: Install rclone
+  ansible.builtin.apt:
+    name: rclone
+    state: present
+
+- name: Write the backup configuration
+  ansible.builtin.template:
+    src: backup.env.j2
+    dest: /etc/cadenway/backup.env
+    owner: root
+    group: root
+    mode: '0640'
+  when: not cadenway_preview_first_run
+
+- name: Install the backup and restore scripts
+  ansible.builtin.copy:
+    src: '{{ item.src }}'
+    dest: '/usr/local/bin/{{ item.dest }}'
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - { src: cadenway-backup.sh, dest: cadenway-backup }
+    - { src: cadenway-restore.sh, dest: cadenway-restore }
+
+- name: Install the backup units
+  ansible.builtin.template:
+    src: '{{ item }}.j2'
+    dest: '/etc/systemd/system/{{ item }}'
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - cadenway-backup.service
+    - cadenway-backup.timer
+  notify: Reload systemd for the backup units
+
+- name: Load the new units before the timer starts
+  ansible.builtin.meta: flush_handlers
+
+- name: Start the backup timer
+  ansible.builtin.systemd_service:
+    name: cadenway-backup.timer
+    enabled: true
+    state: started
+  when: not cadenway_preview_first_run

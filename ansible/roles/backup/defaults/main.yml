@@ -1,0 +1,23 @@
+# Nightly encrypted dumps of every service database to OVH Object Storage, and their restore.
+
+# Public age key the dumps are encrypted to (`age1…`); its private key stays with the operators.
+cadenway_backup_age_recipient: ''
+# Service databases created by compose/postgres/init; each belongs to the service <name>-service.
+cadenway_backup_databases:
+  - identity
+  - organization
+  - billing
+  - task
+  - document
+  - storage
+  - notification
+  - automation
+  - integration
+  - search
+cadenway_backup_retention_days: 30
+# systemd calendar expression of the nightly run, with a random delay of up to 30 minutes.
+cadenway_backup_schedule: '*-*-* 03:00:00'
+
+# True while previewing a host never set up (`--check` on the first run): the steps that need an
+# earlier one to have really run are skipped. Set by playbooks/setup.yml.
+cadenway_preview_first_run: false

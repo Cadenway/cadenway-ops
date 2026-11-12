@@ -49,10 +49,10 @@ Load them with the `Skill` tool when their subject comes up (if the tool is unav
 
 ## Procedure
 
-1. Keep `compose.yaml` an include list; infrastructure in `infra.yaml`; services come from `services/`.
-2. Two networks: `edge` (Traefik and what it serves) and `internal`.
+1. Keep `compose.yaml` an include list; infrastructure in `infra.yaml`; Traefik in `edge.yaml`; services come from `environments/<env>/services/`.
+2. Two networks: `edge` (`cadenway-edge-<env>`, Traefik and what it serves) and `internal`.
 3. Profiles: `core` (identity, task, notification, gateway, infra) and `full`.
-4. `compose.local.yaml` builds from sibling folders (`../../cadenway-<x>`), adds MinIO and Mailpit, uses `*.localhost`.
+4. `compose.local.yaml` builds from sibling folders (`../../cadenway-<x>`), adds Traefik and Mailpit, uses `*.localhost`.
 
 ## Checks
 

@@ -1,0 +1,56 @@
+# Restores databases of one environment from a backup. It overwrites live data: the operator names
+# the environment twice.
+#
+#   ansible-playbook ansible/playbooks/restore.yml --limit cadenway-prod \
+#     -e cadenway_restore_environment=prod -e cadenway_restore_confirm=prod \
+#     -e cadenway_restore_timestamp=20261112T030512Z \
+#     -e cadenway_restore_identity_file=~/.config/cadenway/backup.key \
+#     -e '{"cadenway_restore_databases": ["task"]}'          (optional: all databases otherwise)
+#
+# The identity (backup private key) is copied to /run for the restore and removed afterwards.
+- name: Restore Cadenway databases
+  hosts: cadenway
+  become: true
+  vars:
+    cadenway_restore_databases: []
+    cadenway_restore_identity_path: /run/cadenway-restore-identity
+  tasks:
+    - name: Check the restore request
+      ansible.builtin.assert:
+        that:
+          - cadenway_restore_environment is defined
+          - cadenway_restore_environment in cadenway_environments
+          - cadenway_restore_confirm | default('') == cadenway_restore_environment
+          - cadenway_restore_timestamp is match('^[0-9]{8}T[0-9]{6}Z$')
+          - cadenway_restore_identity_file is defined
+        fail_msg: >-
+          Give cadenway_restore_environment (run by this host), the same value in
+          cadenway_restore_confirm, cadenway_restore_timestamp and cadenway_restore_identity_file.
+        quiet: true
+
+    - name: Restore with the identity in /run
+      block:
+        - name: Copy the backup identity to the host
+          ansible.builtin.copy:
+            src: '{{ cadenway_restore_identity_file }}'
+            dest: '{{ cadenway_restore_identity_path }}'
+            owner: root
+            group: root
+            mode: '0600'
+          no_log: true
+
+        - name: Restore the databases
+          ansible.builtin.command:
+            argv: '{{ cadenway_restore_command + cadenway_restore_databases }}'
+          vars:
+            cadenway_restore_command:
+              - /usr/local/bin/cadenway-restore
+              - '{{ cadenway_restore_environment }}'
+              - '{{ cadenway_restore_timestamp }}'
+              - '{{ cadenway_restore_identity_path }}'
+          changed_when: true
+      always:
+        - name: Remove the backup identity from the host
+          ansible.builtin.file:
+            path: '{{ cadenway_restore_identity_path }}'
+            state: absent

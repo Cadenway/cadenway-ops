@@ -1,0 +1,160 @@
+- name: Refuse to lock SSH down without an admin key
+  ansible.builtin.assert:
+    that:
+      - cadenway_admin_ssh_keys | length > 0
+    fail_msg: Set cadenway_admin_ssh_keys first; password and root logins are about to be disabled.
+    quiet: true
+
+- name: Upgrade the installed packages
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    upgrade: safe
+
+- name: Install the base packages
+  ansible.builtin.apt:
+    name: '{{ cadenway_base_packages }}'
+    state: present
+
+- name: Set the timezone
+  community.general.timezone:
+    name: '{{ cadenway_timezone }}'
+
+- name: Create the admin user
+  ansible.builtin.user:
+    name: '{{ cadenway_admin_user }}'
+    groups: [sudo]
+    append: true
+    shell: /bin/bash
+    password: '!'
+    update_password: on_create
+
+# A check-mode preview of a fresh host has no admin user yet: the steps that need it are skipped.
+- name: Authorize the admin keys
+  ansible.posix.authorized_key:
+    user: '{{ cadenway_admin_user }}'
+    key: "{{ cadenway_admin_ssh_keys | join('\n') }}"
+    exclusive: true
+  when: not cadenway_preview_first_run
+
+- name: Let the admin user use sudo without a password
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/90-cadenway-admin
+    content: "{{ cadenway_admin_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+
+# The restrictions below lock out every other account: prove first, from this controller, that the
+# admin user logs in with one of the configured keys.
+- name: Check that the admin user can log in with its key
+  ansible.builtin.command:
+    argv:
+      - ssh
+      - -o
+      - BatchMode=yes
+      - -o
+      - ConnectTimeout=10
+      - -o
+      - StrictHostKeyChecking=accept-new
+      - -p
+      - '{{ ansible_port | default(22) | string }}'
+      - '{{ cadenway_admin_user }}@{{ ansible_host | default(inventory_hostname) }}'
+      - sudo -n true
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when: not ansible_check_mode
+
+# `sshd -t` needs it, and a socket-activated SSH server does not create it until a connection.
+- name: Create the SSH privilege separation directory
+  ansible.builtin.file:
+    path: /run/sshd
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Harden the SSH server
+  ansible.builtin.template:
+    src: sshd.conf.j2
+    dest: /etc/ssh/sshd_config.d/10-cadenway.conf
+    owner: root
+    group: root
+    mode: '0644'
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Restart SSH
+
+- name: Find out whether systemd socket-activates SSH
+  ansible.builtin.stat:
+    path: /usr/lib/systemd/system/ssh.socket
+  register: cadenway_ssh_socket
+
+# Ubuntu 24.04 listens through ssh.socket: the port of sshd_config alone would not move it.
+- name: Create the SSH socket drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/ssh.socket.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: cadenway_ssh_socket.stat.exists
+
+- name: Listen on the SSH port through the socket
+  ansible.builtin.template:
+    src: ssh.socket.conf.j2
+    dest: /etc/systemd/system/ssh.socket.d/10-cadenway.conf
+    owner: root
+    group: root
+    mode: '0644'
+  when: cadenway_ssh_socket.stat.exists
+  notify: Restart SSH
+
+# SSH listens on its final port before the firewall closes anything else.
+- name: Apply the SSH changes now
+  ansible.builtin.meta: flush_handlers
+
+# ufw and fail2ban come with the base packages, which a first-run preview does not install.
+- name: Allow SSH, HTTP and HTTPS through the firewall
+  community.general.ufw:
+    rule: allow
+    port: '{{ item }}'
+    proto: tcp
+  loop:
+    - '{{ cadenway_ssh_port | string }}'
+    - '80'
+    - '443'
+  when: not cadenway_preview_first_run
+
+- name: Deny every other inbound connection
+  community.general.ufw:
+    state: enabled
+    policy: deny
+    direction: incoming
+  when: not cadenway_preview_first_run
+
+- name: Configure fail2ban for SSH
+  ansible.builtin.template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart fail2ban
+  when: not cadenway_preview_first_run
+
+- name: Start fail2ban
+  ansible.builtin.systemd_service:
+    name: fail2ban
+    enabled: true
+    state: started
+  when: not cadenway_preview_first_run
+
+- name: Turn on unattended upgrades
+  ansible.builtin.template:
+    src: 52-cadenway-upgrades.j2
+    dest: /etc/apt/apt.conf.d/52-cadenway-upgrades
+    owner: root
+    group: root
+    mode: '0644'

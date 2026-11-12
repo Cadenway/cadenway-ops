@@ -28,12 +28,13 @@ Source: `cw-ansible-conventions` ([Claude](../.claude/skills/cw-ansible-conventi
 
 Source: `cw-compose-layout` ([Claude](../.claude/skills/cw-compose-layout/SKILL.md), [Codex](../.codex/skills/cw-compose-layout/SKILL.md)).
 
-| File                         | Holds                                                                                                    |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `compose/compose.yaml`       | `include:` of `infra.yaml` and `../services/*.yaml`                                                      |
-| `compose/infra.yaml`         | Traefik, PostgreSQL (one database per service from `postgres/init/`), Redis, NATS JetStream, Meilisearch |
-| `compose/compose.local.yaml` | `build: ../../cadenway-<x>` with `develop.watch`, MinIO, Mailpit, `DOMAIN=cadenway.localhost`            |
-| `services/<service>.yaml`    | copied from each service's `deploy/compose.yaml`                                                         |
+| File                                         | Holds                                                                                                             |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `compose/edge.yaml`                          | the one Traefik of a host (80, 443, Let's Encrypt) and the networks `cadenway-edge-staging`, `cadenway-edge-prod` |
+| `compose/compose.yaml`                       | one environment: `include:` of `infra.yaml` and `${CADENWAY_SERVICES:-../environments/staging/services}/*.yaml`   |
+| `compose/infra.yaml`                         | PostgreSQL (one database per service from `postgres/init/`), Redis, NATS JetStream, Meilisearch                   |
+| `compose/compose.local.yaml`                 | local Traefik, `build: ../../cadenway-<x>` with `develop.watch`, Mailpit, `DOMAIN=cadenway.localhost`             |
+| `environments/<env>/services/<service>.yaml` | copied from each service's `deploy/compose.yaml` by its deploy workflow                                           |
 
 Local start: `docker compose -f compose.yaml -f compose.local.yaml --profile core up -d` from `compose/`.
 
@@ -41,13 +42,15 @@ Local start: `docker compose -f compose.yaml -f compose.local.yaml --profile cor
 
 Source: `cw-gitops-agent` ([Claude](../.claude/skills/cw-gitops-agent/SKILL.md), [Codex](../.codex/skills/cw-gitops-agent/SKILL.md)).
 
-1. `git fetch`; exit if the commit is unchanged.
-2. Diff `versions.env` and `services/` with the last applied commit: list changed services.
-3. Decrypt `secrets.sops.env` into `/run/cadenway/`.
-4. For each changed service: `pull`, run migrations in a one-off container, start the new instance
-   beside the old one, wait up to 60 s for `healthy`, stop the old one.
-5. Failure: keep the old instance, record the commit as failed, alert; do not retry that commit.
-6. Notify: service, version, commit, duration, result.
+1. Fetch `main`; apply `compose/edge.yaml` when the commit changed; skip a commit already applied or
+   already failed.
+2. Decrypt `secrets.sops.env` into `/run/cadenway/<env>/`; refuse a commit that leaves a variable unset.
+3. For each deployable whose fingerprint changed or whose container is not healthy: `pull`, run
+   migrations in a one-off container, start the new instance beside the old one, wait up to 60 s for
+   `healthy`, remove the old one.
+4. Failure of the desired state: keep the old instance, record the commit as failed, alert; do not
+   retry that commit. Transient failure: retry every minute, alert once.
+5. Notify: environment, commit, duration, result.
 
 ## References
 
