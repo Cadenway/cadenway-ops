@@ -67,9 +67,13 @@ jobs:
           ansible-playbook -i ansible/inventory/hosts.example.yml
           --syntax-check ansible/playbooks/*.yml
       - run: ansible-lint ansible/
+      # Pinned: the runner's own shellcheck is older and names some checks differently.
       - run: >-
-          shellcheck agent/*.sh agent/tests/*.sh ansible/tests/*.sh
-          ansible/roles/backup/files/*.sh ansible/roles/backup/tests/*.sh
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt
+          koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
+          agent/cadenway-agent.sh agent/tests/e2e.sh ansible/tests/run.sh
+          ansible/roles/backup/files/cadenway-backup.sh
+          ansible/roles/backup/files/cadenway-restore.sh ansible/roles/backup/tests/e2e.sh
 
   agent:
     name: GitOps agent and backups end to end
