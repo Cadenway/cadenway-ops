@@ -1,6 +1,6 @@
 ---
 name: cw-ops-deploy-reviewer
-description: "Use to review a change of environments/, services/ or compose/ in cadenway-ops before merge: versions, image tags, variables and secrets referenced, network exposure, health checks, migration compatibility. Read-only."
+description: "Use to review a change of environments/ or compose/ in cadenway-ops before merge: versions, image tags, variables and secrets referenced, network exposure, health checks, migration compatibility. Read-only."
 tools: Skill, Read, Grep, Glob, Bash
 model: opus
 effort: high

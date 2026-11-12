@@ -16,11 +16,11 @@
 3. One PostgreSQL with one database and one user per service; Redis, NATS JetStream, Meilisearch beside it; files and backups in OVH Object Storage.
 4. Secrets are encrypted with SOPS and age, in Git; only the VPS key decrypts them. Never write a decrypted secret, never read the key.
 5. Versions in `environments/<env>/versions.env` are written by the deploy bot; `environments/prod/` and `terraform/` need an approval.
-6. Local development uses the same Compose files with `compose.local.yaml` (sibling folders built, MinIO, Mailpit, `*.localhost` domains).
+6. Local development uses the same Compose files with `compose.local.yaml` (sibling folders built, Mailpit, `*.localhost` domains; the local object store comes with the storage service).
 
 ## Boundaries (hard rules)
 
-- No application code here; service definitions in `services/` are copied from each service's `deploy/compose.yaml` by CI.
+- No application code here; service definitions in `environments/<env>/services/` are copied from each service's `deploy/compose.yaml` by its deploy workflow.
 - No plaintext secret, private key, state file or decrypted `.env` in the repository.
 - Terraform runs only from the GitHub Action; Ansible playbooks are idempotent.
 - Nothing opens an inbound path to the VPS for deployments: the agent pulls.
@@ -39,8 +39,6 @@ ansible-playbook --syntax-check ansible/playbooks/setup.yml
 terraform -chdir=terraform fmt -check
 terraform -chdir=terraform validate
 shellcheck agent/*.sh
-terraform apply
-docker compose up
 ```
 
 Commands that change a server or OVH (`ansible-playbook` without `--check`, `terraform apply`) are never run by an agent.

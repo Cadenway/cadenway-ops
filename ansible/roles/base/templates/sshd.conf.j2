@@ -1,0 +1,9 @@
+# Managed by Ansible (cadenway-ops roles/base): keys only, no root, the admin user only.
+Port {{ cadenway_ssh_port }}
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AllowUsers {{ cadenway_admin_user }}
+X11Forwarding no
+MaxAuthTries 3

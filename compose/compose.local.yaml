@@ -24,15 +24,30 @@ x-redis: &redis
 
 services:
   traefik:
-    # Plain HTTP on one entry point: no certificate and no redirection on a workstation.
-    command: !override
+    # The production Traefik lives in edge.yaml, a project of its own on each host. A workstation
+    # runs one stack, so the local Traefik sits in it: plain HTTP on one entry point, no TLS.
+    image: traefik:v3.7.18@sha256:9c437ac4f09ce6f4980a8544902d3475fdf70a1a7c578729581d2535dfa7d635
+    restart: unless-stopped
+    command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
-      - --providers.docker.network=cadenway_edge
       - --entrypoints.web.address=:80
       - --ping=true
-    ports: !override
+    ports:
       - '127.0.0.1:${TRAEFIK_HTTP_PORT:-80}:80'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - edge
+    healthcheck:
+      test: ['CMD', 'traefik', 'healthcheck', '--ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
   mailpit:
     image: axllent/mailpit:v1.29.0@sha256:0f93f36075f5f6fe428655d94299dda59b9a533d3fe9ce62909a72ac6fe455a9
@@ -180,3 +195,9 @@ services:
       watch:
         - action: rebuild
           path: ../../cadenway-website/src
+
+# On a server the edge network of an environment is external, created by edge.yaml. Locally this
+# stack creates it.
+networks:
+  edge: !override
+    name: cadenway-edge-local

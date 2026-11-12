@@ -1,0 +1,10 @@
+# Managed by Ansible (cadenway-ops roles/base).
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 5
+backend = systemd
+
+[sshd]
+enabled = true
+port = {{ cadenway_ssh_port }}

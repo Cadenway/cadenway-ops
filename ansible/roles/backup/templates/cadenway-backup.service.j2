@@ -1,0 +1,11 @@
+# Managed by Ansible (cadenway-ops roles/backup).
+[Unit]
+Description=Back up the Cadenway databases of this host to Object Storage
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cadenway-backup
+Nice=10
+IOSchedulingClass=idle

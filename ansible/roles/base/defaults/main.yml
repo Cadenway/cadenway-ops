@@ -1,0 +1,24 @@
+# Baseline of every Cadenway host: admin user, SSH hardening, firewall, fail2ban, automatic updates.
+
+# Login of the admin user, member of sudo without a password (it has none: SSH keys only).
+cadenway_admin_user: cadenway
+# Public keys of the admin user, exclusive: a key removed here is removed from the host.
+cadenway_admin_ssh_keys: []
+# Port of the SSH server; the firewall opens it with 80 and 443 and nothing else.
+cadenway_ssh_port: 22
+cadenway_timezone: Europe/Paris
+# Packages every role relies on.
+cadenway_base_packages:
+  - ca-certificates
+  - curl
+  - git
+  - jq
+  - ufw
+  - fail2ban
+  - unattended-upgrades
+# Reboot automatically when an unattended upgrade asks for it, at this time.
+cadenway_auto_reboot_time: '04:30'
+
+# True while previewing a host never set up (`--check` on the first run): the steps that need an
+# earlier one to have really run are skipped. Set by playbooks/setup.yml.
+cadenway_preview_first_run: false

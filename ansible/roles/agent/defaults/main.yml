@@ -1,0 +1,25 @@
+# GitOps agent: a systemd timer that pulls cadenway-ops and applies the host's environments.
+
+# Environments this host runs, in order; one or several (staging and prod can share a VPS).
+cadenway_environments: []
+# Per environment: `domain` (required), `public_scheme` (default https).
+cadenway_environment_settings: {}
+# Repository and branch the agent applies; reached over SSH with the host's read-only deploy key.
+cadenway_repo_url: ''
+cadenway_repo_branch: main
+cadenway_ghcr_owner: ''
+cadenway_acme_email: ''
+# Seconds a new container gets to become healthy before the old one is kept.
+cadenway_health_timeout: 60
+# SOPS binary from its GitHub release, verified by checksum. Renovate does not track it:
+# update the version and the checksums together.
+cadenway_sops_version: 3.13.3
+# linux/amd64 only: the images are built for amd64.
+cadenway_sops_checksum: e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b
+# GitHub's published SSH host key (https://api.github.com/meta), pinned for the deploy key.
+cadenway_github_host_key: >-
+  github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+
+# True while previewing a host never set up (`--check` on the first run): the steps that need an
+# earlier one to have really run are skipped. Set by playbooks/setup.yml.
+cadenway_preview_first_run: false

@@ -34,7 +34,81 @@ jobs:
       - run: >-
           docker compose --env-file compose/.env.example
           -f compose/compose.yaml -f compose/compose.local.yaml --profile full config -q
-      - run: docker compose --env-file compose/.env.example -f compose/compose.yaml config -q
+      # The edge of a host, and each environment with the versions the agent would apply.
+      - run: docker compose -f compose/edge.yaml config -q
+        env:
+          ACME_EMAIL: ci@example.com
+      - run: |
+          for env in staging prod; do
+            ENVIRONMENT=$env CADENWAY_SERVICES=../environments/$env/services \
+              docker compose -p "cadenway-$env" --env-file compose/.env.example \
+              --env-file "environments/$env/versions.env" -f compose/compose.yaml config -q
+          done
+
+  operations:
+    name: Ansible, YAML and agent lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the linters
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet \
+            ansible-core==2.19.4 ansible-lint==25.11.0 yamllint==1.37.1
+          echo "$RUNNER_TEMP/venv/bin" >>"$GITHUB_PATH"
+      - run: ansible-galaxy collection install -r ansible/requirements.yml
+      - run: yamllint --strict .
+      - run: >-
+          ansible-playbook -i ansible/inventory/hosts.example.yml
+          --syntax-check ansible/playbooks/*.yml
+      - run: ansible-lint ansible/
+      # Pinned: the runner's own shellcheck is older and names some checks differently.
+      - run: >-
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt
+          koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
+          agent/cadenway-agent.sh agent/tests/e2e.sh ansible/tests/run.sh
+          ansible/roles/backup/files/cadenway-backup.sh
+          ansible/roles/backup/files/cadenway-restore.sh ansible/roles/backup/tests/e2e.sh
+
+  agent:
+    name: GitOps agent and backups end to end
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: GitOps agent
+        run: >-
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/agent:/agent:ro"
+          docker:28.5.2-cli@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c2c9acbdd4d
+          sh -c "apk add --no-cache bash >/dev/null && bash /agent/tests/e2e.sh"
+      - name: Backup and restore
+        run: >-
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
+          -v "$PWD/ansible/roles/backup:/backup:ro"
+          docker:28.5.2-cli@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c2c9acbdd4d
+          sh -c "apk add --no-cache bash >/dev/null && bash /backup/tests/e2e.sh"
+
+  host:
+    name: Ansible on a throwaway host
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Preview of a fresh host, first apply, idempotent second apply, preview of a set-up host.
+      - run: bash ansible/tests/run.sh
 
   conventions:
     name: Commit conventions

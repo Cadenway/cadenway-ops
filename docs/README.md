@@ -4,12 +4,13 @@ Planned role: cadenway-ops is the whole operation of Cadenway: what exists at OV
 
 ## Current status
 
-At the time this documentation was written, this checkout has no Terraform, Ansible, Compose, GitOps agent, application manifest, or GitHub workflow files. The operational topology and commands in this guide are planned, not an active stack.
+The Compose stack (local and server), the shared edge Traefik, the Ansible roles and playbooks, the GitOps agent with its end-to-end test, and the CI exist in this checkout. Terraform and `seed/` do not exist yet. Nothing has been applied to a real host: see [deployment](deployment.md) for the operator steps.
 
 ## Read the guides
 
 - [Architecture and ownership](architecture.md): boundaries and planned repository structure.
 - [Development and checks](development.md): prerequisites, planned commands and verification.
+- [Deployment and operations](deployment.md): release path, topologies, host setup, backups.
 - [Domain and integration](integration.md): repository-specific contracts, behavior and dependencies.
 
 ## Sources and policy

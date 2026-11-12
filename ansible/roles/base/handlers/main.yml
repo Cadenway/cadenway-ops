@@ -1,0 +1,22 @@
+- name: Reload systemd for SSH
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  listen: Restart SSH
+
+- name: Restart the SSH socket
+  ansible.builtin.systemd_service:
+    name: ssh.socket
+    state: restarted
+  when: cadenway_ssh_socket.stat.exists | default(false)
+  listen: Restart SSH
+
+- name: Restart the SSH server
+  ansible.builtin.systemd_service:
+    name: ssh
+    state: restarted
+  listen: Restart SSH
+
+- name: Restart fail2ban
+  ansible.builtin.systemd_service:
+    name: fail2ban
+    state: restarted

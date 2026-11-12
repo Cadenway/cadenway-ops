@@ -1,0 +1,10 @@
+# ansible-lint configuration of cadenway-ops: `ansible-lint ansible/` from the repository root.
+profile: production
+offline: true
+exclude_paths:
+  - .ansible/
+  - node_modules/
+skip_list:
+  # Every variable is in one `cadenway_` namespace shared by the roles and the inventory
+  # (cadenway_environments is read by agent and backup): a per-role prefix would split it.
+  - var-naming[no-role-prefix]

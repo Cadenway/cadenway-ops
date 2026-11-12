@@ -1,0 +1,24 @@
+# Docker Engine and the Compose plugin from Docker's own APT repository.
+
+# Distribution packages that conflict with Docker's and are removed first.
+cadenway_docker_conflicting_packages:
+  - docker.io
+  - docker-compose
+  - docker-compose-v2
+  - docker-doc
+  - podman-docker
+  - containerd
+  - runc
+cadenway_docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+# Container logs: the `local` driver rotates them; size and count per container.
+cadenway_docker_log_max_size: 20m
+cadenway_docker_log_max_file: 5
+
+# True while previewing a host never set up (`--check` on the first run): the steps that need an
+# earlier one to have really run are skipped. Set by playbooks/setup.yml.
+cadenway_preview_first_run: false

@@ -1,0 +1,171 @@
+- name: Check the environments of this host
+  ansible.builtin.assert:
+    that:
+      - cadenway_environments | length > 0
+      # compose/edge.yaml creates exactly these edge networks.
+      - cadenway_environments | difference(['staging', 'prod']) | length == 0
+      - cadenway_environments | difference(cadenway_environment_settings.keys()) | length == 0
+      - cadenway_repo_url | length > 0
+      - cadenway_acme_email | length > 0
+    fail_msg: >-
+      Set cadenway_environments on the host (staging, prod or both), a cadenway_environment_settings
+      entry for each of them, cadenway_repo_url and cadenway_acme_email.
+    quiet: true
+
+# The images are built for linux/amd64 only (release.yml of each service).
+- name: Check the host architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['architecture'] == 'x86_64'
+    fail_msg: >-
+      The Cadenway images are built for amd64; this host is {{ ansible_facts['architecture'] }}.
+    quiet: true
+
+- name: Install age, which generates the host key
+  ansible.builtin.apt:
+    name: age
+    state: present
+
+- name: Install SOPS
+  ansible.builtin.get_url:
+    url: '{{ cadenway_sops_release }}/sops-v{{ cadenway_sops_version }}.linux.amd64'
+    checksum: 'sha256:{{ cadenway_sops_checksum }}'
+    dest: /usr/local/bin/sops
+    owner: root
+    group: root
+    mode: '0755'
+  vars:
+    cadenway_sops_release: >-
+      https://github.com/getsops/sops/releases/download/v{{ cadenway_sops_version }}
+
+- name: Create the agent directories
+  ansible.builtin.file:
+    path: '{{ item.path }}'
+    state: directory
+    owner: root
+    group: root
+    mode: '{{ item.mode }}'
+  loop:
+    - { path: /etc/cadenway, mode: '0750' }
+    - { path: /etc/cadenway/env, mode: '0750' }
+    - { path: /opt/cadenway, mode: '0750' }
+    - { path: /var/lib/cadenway-agent, mode: '0700' }
+
+# The private keys are created on the host and never leave it.
+- name: Generate the host age key that decrypts the environment secrets
+  ansible.builtin.command: age-keygen -o /etc/cadenway/age.key
+  args:
+    creates: /etc/cadenway/age.key
+
+- name: Look for the age key
+  ansible.builtin.stat:
+    path: /etc/cadenway/age.key
+  register: cadenway_age_key
+
+- name: Restrict the age key to root
+  ansible.builtin.file:
+    path: /etc/cadenway/age.key
+    owner: root
+    group: root
+    mode: '0600'
+  when: cadenway_age_key.stat.exists
+
+# Read-only, so it also runs in check mode; a preview of a fresh host has no key to read yet.
+- name: Read the age recipient of the host
+  ansible.builtin.command: age-keygen -y /etc/cadenway/age.key
+  register: cadenway_age_recipient
+  changed_when: false
+  check_mode: false
+  when: cadenway_age_key.stat.exists
+
+- name: Generate the read-only deploy key of the host
+  community.crypto.openssh_keypair:
+    path: /etc/cadenway/deploy_key
+    type: ed25519
+    comment: 'cadenway-agent@{{ inventory_hostname }}'
+    owner: root
+    group: root
+    mode: '0600'
+  register: cadenway_deploy_key
+  when: not cadenway_preview_first_run
+
+- name: Pin the GitHub host key
+  ansible.builtin.known_hosts:
+    path: /etc/cadenway/known_hosts
+    name: github.com
+    key: '{{ cadenway_github_host_key }}'
+  when: not cadenway_preview_first_run
+
+# A change of these settings makes the agent apply the current commit again (see the handler).
+- name: Write the agent configuration
+  ansible.builtin.template:
+    src: agent.env.j2
+    dest: /etc/cadenway/agent.env
+    owner: root
+    group: root
+    mode: '0640'
+  when: not cadenway_preview_first_run
+  notify: Reconcile the deployments
+
+- name: Write the edge settings
+  ansible.builtin.template:
+    src: edge.env.j2
+    dest: /etc/cadenway/edge.env
+    owner: root
+    group: root
+    mode: '0640'
+  when: not cadenway_preview_first_run
+  notify: Reconcile the deployments
+
+- name: Write the settings of each environment
+  ansible.builtin.template:
+    src: environment.env.j2
+    dest: '/etc/cadenway/env/{{ cadenway_environment }}.env'
+    owner: root
+    group: root
+    mode: '0640'
+  loop: '{{ cadenway_environments }}'
+  loop_control:
+    loop_var: cadenway_environment
+  when: not cadenway_preview_first_run
+  notify: Reconcile the deployments
+
+- name: Install the agent script
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../../agent/cadenway-agent.sh'
+    dest: /usr/local/bin/cadenway-agent
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the agent units
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../../agent/{{ item }}'
+    dest: '/etc/systemd/system/{{ item }}'
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - cadenway-agent.service
+    - cadenway-agent.timer
+  notify: Reload systemd
+
+- name: Load the new units before the timer starts
+  ansible.builtin.meta: flush_handlers
+
+- name: Start the agent timer
+  ansible.builtin.systemd_service:
+    name: cadenway-agent.timer
+    enabled: true
+    state: started
+  when: not cadenway_preview_first_run
+
+- name: Tell the operator what to register
+  ansible.builtin.debug:
+    msg:
+      - >-
+        age recipient, for .sops.yaml then sops updatekeys:
+        {{ cadenway_age_recipient.stdout | default('created on the first real run') }}
+      - >-
+        deploy key, read-only on cadenway-ops:
+        {{ cadenway_deploy_key.public_key | default('created on the first real run') }}

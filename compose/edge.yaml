@@ -1,0 +1,59 @@
+# Edge of a VPS: the one Traefik that owns ports 80 and 443, whatever the number of environments.
+#
+# A Compose project of its own (`cadenway-edge`), started once per host by the GitOps agent. It
+# creates one edge network per environment (`cadenway-edge-staging`, `cadenway-edge-prod`), which
+# the exposed services of that environment join as an external network: one VPS can run staging and
+# production side by side without their containers sharing a network, or each environment can have
+# its own VPS (the other network then stays empty).
+#
+# Routers, services and networks carry the environment in their name (`api-gateway-staging`), so two
+# stacks never collide; each one answers on its own domain. Values come from /etc/cadenway/edge.env,
+# written by Ansible.
+name: cadenway-edge
+
+services:
+  traefik:
+    image: traefik:v3.7.18@sha256:9c437ac4f09ce6f4980a8544902d3475fdf70a1a7c578729581d2535dfa7d635
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      # A container is served only when its definition carries `traefik.enable=true`.
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.http.tls.certresolver=letsencrypt
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?ACME_EMAIL is required}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.tlschallenge=true
+      - --ping=true
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      # Read-only: Traefik only lists containers and their labels.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-certificates:/letsencrypt
+    # Each exposed container names its edge network in `traefik.docker.network`.
+    networks:
+      - edge-staging
+      - edge-prod
+    healthcheck:
+      test: ['CMD', 'traefik', 'healthcheck', '--ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+networks:
+  edge-staging:
+    name: cadenway-edge-staging
+  edge-prod:
+    name: cadenway-edge-prod
+
+volumes:
+  traefik-certificates:

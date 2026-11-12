@@ -1,0 +1,12 @@
+galaxy_info:
+  role_name: base
+  author: cadenway
+  description: Admin user, SSH hardening, firewall, fail2ban and unattended upgrades.
+  license: UNLICENSED
+  min_ansible_version: '2.17'
+  platforms:
+    - name: Ubuntu
+      versions: [noble]
+    - name: Debian
+      versions: [bookworm, trixie]
+dependencies: []

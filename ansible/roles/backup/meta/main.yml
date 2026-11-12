@@ -1,0 +1,12 @@
+galaxy_info:
+  role_name: backup
+  author: cadenway
+  description: Nightly encrypted dumps of the service databases to Object Storage, and restore.
+  license: UNLICENSED
+  min_ansible_version: '2.17'
+  platforms:
+    - name: Ubuntu
+      versions: [noble]
+    - name: Debian
+      versions: [bookworm, trixie]
+dependencies: []

@@ -1,0 +1,7 @@
+# Managed by Ansible (cadenway-ops roles/base): the socket listens on the configured SSH port only.
+# Ubuntu's ssh.socket binds with BindIPv6Only=ipv6-only: IPv4 needs its own address, or SSH stops
+# answering over IPv4.
+[Socket]
+ListenStream=
+ListenStream=0.0.0.0:{{ cadenway_ssh_port }}
+ListenStream=[::]:{{ cadenway_ssh_port }}

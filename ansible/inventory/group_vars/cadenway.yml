@@ -1,0 +1,28 @@
+# Values shared by every Cadenway host. Nothing here is secret: secrets stay in
+# environments/<env>/secrets.sops.env, decrypted on the host only.
+
+# First connection: the image's default user; afterwards the admin user created by the base role.
+ansible_user: '{{ cadenway_admin_user }}'
+ansible_port: '{{ cadenway_ssh_port | default(22) }}'
+
+cadenway_admin_user: cadenway
+# Public keys allowed to log in as the admin user; password and root logins are disabled.
+cadenway_admin_ssh_keys: []
+
+# Repository the agent pulls, over SSH with the host's read-only deploy key.
+cadenway_repo_url: git@github.com:<org>/cadenway-ops.git
+cadenway_repo_branch: main
+
+# Owner of the images on GHCR (lowercase), and the Let's Encrypt account address.
+cadenway_ghcr_owner: '<org>'
+cadenway_acme_email: ops@example.com
+
+# What each environment answers on, whatever host runs it.
+cadenway_environment_settings:
+  staging:
+    domain: staging.example.com
+  prod:
+    domain: example.com
+
+# Public key the backups are encrypted to; its private key never reaches a host.
+cadenway_backup_age_recipient: ''
