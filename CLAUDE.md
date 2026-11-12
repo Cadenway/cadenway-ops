@@ -12,7 +12,7 @@
 ## TL;DR for every task
 
 1. Three levels: Terraform creates OVH resources (VPS, DNS zone, Object Storage buckets), Ansible prepares the VPS, the GitOps agent deploys what `environments/<env>/` describes.
-2. The VPS runs Docker Compose; Traefik is the only exposed container (`app.`, `www.`, `api.`, `realtime.`, Let's Encrypt); services stay on the `internal` network.
+2. The VPS runs Docker Compose; Traefik is the only exposed container (the domain itself with `www.` redirecting to it, `app.`, `api.`, `realtime.`, Let's Encrypt; production on `cadenway.com`); services stay on the `internal` network.
 3. One PostgreSQL with one database and one user per service; Redis, NATS JetStream, Meilisearch beside it; files and backups in OVH Object Storage.
 4. Secrets are encrypted with SOPS and age, in Git; only the VPS key decrypts them. Never write a decrypted secret, never read the key.
 5. Versions in `environments/<env>/versions.env` are written by the deploy bot; `environments/prod/` and `terraform/` need an approval.

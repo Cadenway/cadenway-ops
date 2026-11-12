@@ -40,7 +40,7 @@ Read the request, then re-read it against what you are about to do. Everything b
 
 ## Procedure
 
-1. Only `app.`, `www.`, `api.` and `realtime.` are routed; the dashboard is never public.
+1. Only the domain itself (with `www.` redirecting to it), `app.`, `api.` and `realtime.` are routed; the dashboard is never public.
 2. HTTP redirects to HTTPS; HSTS and security headers on every router.
 3. Routing comes from labels in service definitions, not from a static file per service.
 

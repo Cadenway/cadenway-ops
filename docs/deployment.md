@@ -55,9 +55,11 @@ on its own domain.
 ## Setting up a host
 
 Prerequisites, once: the GitHub organization, a GitHub App (the deploy app) installed on every
-service repository and on `cadenway-ops`, with contents and pull requests write; DNS records for
-`app.`, `www.`, `api.`, `realtime.` of each environment's domain pointing at its host. The images
-are amd64: the host must be too.
+service repository and on `cadenway-ops`, with contents and pull requests write; DNS records
+pointing at its host for each environment's domain itself and its `www.`, `app.`, `api.` and
+`realtime.` (production: `cadenway.com`, `www.cadenway.com`, `app.cadenway.com`, `api.cadenway.com`,
+`realtime.cadenway.com`; staging: the same under `staging.cadenway.com`). The images are amd64:
+the host must be too.
 
 1. Fill `ansible/inventory/hosts.yml` from `hosts.example.yml`, and
    `ansible/inventory/group_vars/cadenway.yml` (admin keys, repository URL, image owner, domains,

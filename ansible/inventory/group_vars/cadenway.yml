@@ -17,12 +17,13 @@ cadenway_repo_branch: main
 cadenway_ghcr_owner: '<org>'
 cadenway_acme_email: ops@example.com
 
-# What each environment answers on, whatever host runs it.
+# What each environment answers on, whatever host runs it: the site on the domain itself (www.
+# redirects there), the web application on app., the gateways on api. and realtime.
 cadenway_environment_settings:
   staging:
-    domain: staging.example.com
+    domain: staging.cadenway.com
   prod:
-    domain: example.com
+    domain: cadenway.com
 
 # Public key the backups are encrypted to; its private key never reaches a host.
 cadenway_backup_age_recipient: ''
