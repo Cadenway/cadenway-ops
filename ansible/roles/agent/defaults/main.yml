@@ -11,8 +11,9 @@ cadenway_ghcr_owner: ''
 cadenway_acme_email: ''
 # Seconds a new container gets to become healthy before the old one is kept.
 cadenway_health_timeout: 60
-# SOPS binary from its GitHub release, verified by checksum. Renovate does not track it:
-# update the version and the checksums together.
+# SOPS binary from its GitHub release, verified by checksum. Renovate proposes the version here and
+# in the two end-to-end tests (renovate.json); the checksum is not its to compute: write the new
+# one in the same pull request, in the three files.
 cadenway_sops_version: 3.13.3
 # linux/amd64 only: the images are built for amd64.
 cadenway_sops_checksum: e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b

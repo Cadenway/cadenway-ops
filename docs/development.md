@@ -31,7 +31,9 @@ the local overrides and the `core` profile; set `COMPOSE_PROFILES=full` there fo
 
 The `core` profile starts the infrastructure, the identity, task and notification services, the API
 gateway and the web application: open `http://app.cadenway.localhost`, and
-`http://mail.cadenway.localhost` for the e-mails the stack sends (Mailpit). Terraform runs only
+`http://mail.cadenway.localhost` for the e-mails the stack sends (Mailpit). The `full` profile adds
+Garage, the local object store: its S3 API answers on `http://s3.cadenway.localhost`, with the
+placeholder key and bucket of `compose/.env.example`. Terraform runs only
 from its GitHub Action; the Terraform and Ansible credentials never live in this repository.
 
 ## Minimum checks by change

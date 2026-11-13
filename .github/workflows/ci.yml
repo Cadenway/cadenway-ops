@@ -115,6 +115,29 @@ jobs:
       # Preview of a fresh host, first apply, idempotent second apply, preview of a set-up host.
       - run: bash ansible/tests/run.sh
 
+  tooling:
+    name: Agent tooling copies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # A rule or a skill exists twice, for Claude Code and for Codex: the two copies must match.
+      - name: Compare the .claude and .codex copies of rules and skills
+        run: |
+          status=0
+          for file in .claude/rules/*.md .claude/skills/*/SKILL.md; do
+            twin=".codex/${file#.claude/}"
+            if ! cmp --silent "$file" "$twin"; then
+              echo "::error file=$file::differs from $twin"
+              status=1
+            fi
+          done
+          exit "$status"
+
   conventions:
     name: Commit conventions
     if: github.event_name == 'pull_request'

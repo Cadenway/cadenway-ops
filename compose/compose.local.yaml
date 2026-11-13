@@ -10,8 +10,9 @@
 # notification, API gateway, web application); `full` starts everything. Browsers resolve
 # `*.localhost` to the machine: http://app.cadenway.localhost, http://mail.cadenway.localhost.
 #
-# MinIO is not here yet: its image is no longer published on Docker Hub, and the local object store
-# is chosen with the storage service.
+# Garage is the local object store, the stand-in for OVH Object Storage: S3 API on
+# http://s3.cadenway.localhost for the browser and on http://garage:3900 inside the stack, region
+# `garage`, path-style addressing. It starts with the `full` profile, like the storage service.
 
 x-data: &data
   postgres:
@@ -69,6 +70,42 @@ services:
       resources:
         limits:
           memory: 64M
+
+  garage:
+    # One node, no replication: `--single-node` assigns the layout, `--default-bucket` creates the
+    # access key and the bucket named in compose/.env. Both are idempotent across restarts.
+    profiles: [full]
+    image: dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5
+    restart: unless-stopped
+    command: ['/garage', 'server', '--single-node', '--default-bucket']
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
+      GARAGE_DEFAULT_ACCESS_KEY: ${GARAGE_DEFAULT_ACCESS_KEY}
+      GARAGE_DEFAULT_SECRET_KEY: ${GARAGE_DEFAULT_SECRET_KEY}
+      GARAGE_DEFAULT_BUCKET: ${GARAGE_DEFAULT_BUCKET}
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+    networks:
+      - edge
+      - internal
+    labels:
+      # Signed URLs are made for the host the browser sees, so the S3 API goes through Traefik.
+      traefik.enable: 'true'
+      traefik.http.routers.garage.rule: Host(`s3.${DOMAIN}`)
+      traefik.http.services.garage.loadbalancer.server.port: '3900'
+    healthcheck:
+      # The image has no shell and no HTTP client: the binary asks its own node over RPC.
+      test: ['CMD', '/garage', 'status']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   api-gateway:
     profiles: [core, full]
@@ -202,3 +239,7 @@ services:
 networks:
   edge: !override
     name: cadenway-edge-local
+
+volumes:
+  garage-meta:
+  garage-data:
