@@ -29,6 +29,17 @@ docker compose watch task-service # rebuild a service when its sources change
 `compose/.env` sets Compose's own `COMPOSE_FILE` and `COMPOSE_PROFILES`, so the plain commands use
 the local overrides and the `core` profile; set `COMPOSE_PROFILES=full` there for every service.
 
+The images install the private `@cadenway/*` packages, so their build needs to read GitHub
+Packages. Compose passes the `NPMRC` environment variable to each build as a secret: one line of
+user-level npmrc, mounted for the install steps only. Set it in the shell that runs Compose, never
+in a file of this repository:
+
+```bash
+export NPMRC="//npm.pkg.github.com/:_authToken=$(gh auth token)"
+```
+
+Without it the build stops on `401 Unauthorized` when pnpm fetches the first Cadenway package.
+
 The `core` profile starts the infrastructure, the identity, task and notification services, the API
 gateway and the web application: open `http://app.cadenway.localhost`, and
 `http://mail.cadenway.localhost` for the e-mails the stack sends (Mailpit). The `full` profile adds

@@ -109,7 +109,9 @@ services:
 
   api-gateway:
     profiles: [core, full]
-    build: ../../cadenway-api-gateway
+    build:
+      context: ../../cadenway-api-gateway
+      secrets: [npmrc]
     develop:
       watch:
         - action: rebuild
@@ -118,7 +120,9 @@ services:
 
   realtime-gateway:
     profiles: [full]
-    build: ../../cadenway-realtime-gateway
+    build:
+      context: ../../cadenway-realtime-gateway
+      secrets: [npmrc]
     develop:
       watch:
         - action: rebuild
@@ -130,7 +134,9 @@ services:
 
   identity-service:
     profiles: [core, full]
-    build: ../../cadenway-identity-service
+    build:
+      context: ../../cadenway-identity-service
+      secrets: [npmrc]
     develop:
       watch:
         - action: rebuild
@@ -139,7 +145,9 @@ services:
 
   organization-service:
     profiles: [full]
-    build: ../../cadenway-organization-service
+    build:
+      context: ../../cadenway-organization-service
+      secrets: [npmrc]
     develop:
       watch:
         - action: rebuild
@@ -148,7 +156,9 @@ services:
 
   billing-service:
     profiles: [full]
-    build: ../../cadenway-billing-service
+    build:
+      context: ../../cadenway-billing-service
+      secrets: [npmrc]
     develop:
       watch:
         - action: rebuild
@@ -157,7 +167,9 @@ services:
 
   task-service:
     profiles: [core, full]
-    build: ../../cadenway-task-service
+    build:
+      context: ../../cadenway-task-service
+      secrets: [npmrc]
     develop:
       watch:
         - action: rebuild
@@ -166,7 +178,9 @@ services:
 
   document-service:
     profiles: [full]
-    build: ../../cadenway-document-service
+    build:
+      context: ../../cadenway-document-service
+      secrets: [npmrc]
     develop:
       watch:
         - action: rebuild
@@ -175,7 +189,9 @@ services:
 
   storage-service:
     profiles: [full]
-    build: ../../cadenway-storage-service
+    build:
+      context: ../../cadenway-storage-service
+      secrets: [npmrc]
     develop:
       watch:
         - action: rebuild
@@ -184,7 +200,9 @@ services:
 
   notification-service:
     profiles: [core, full]
-    build: ../../cadenway-notification-service
+    build:
+      context: ../../cadenway-notification-service
+      secrets: [npmrc]
     develop:
       watch:
         - action: rebuild
@@ -193,7 +211,9 @@ services:
 
   automation-service:
     profiles: [full]
-    build: ../../cadenway-automation-service
+    build:
+      context: ../../cadenway-automation-service
+      secrets: [npmrc]
     develop:
       watch:
         - action: rebuild
@@ -202,7 +222,9 @@ services:
 
   integration-service:
     profiles: [full]
-    build: ../../cadenway-integration-service
+    build:
+      context: ../../cadenway-integration-service
+      secrets: [npmrc]
     develop:
       watch:
         - action: rebuild
@@ -211,7 +233,9 @@ services:
 
   search-service:
     profiles: [full]
-    build: ../../cadenway-search-service
+    build:
+      context: ../../cadenway-search-service
+      secrets: [npmrc]
     develop:
       watch:
         - action: rebuild
@@ -220,7 +244,9 @@ services:
 
   webapp:
     profiles: [core, full]
-    build: ../../cadenway-webapp
+    build:
+      context: ../../cadenway-webapp
+      secrets: [npmrc]
     develop:
       watch:
         - action: rebuild
@@ -228,7 +254,9 @@ services:
 
   website:
     profiles: [full]
-    build: ../../cadenway-website
+    build:
+      context: ../../cadenway-website
+      secrets: [npmrc]
     develop:
       watch:
         - action: rebuild
@@ -236,6 +264,13 @@ services:
 
 # On a server the edge network of an environment is external, created by edge.yaml. Locally this
 # stack creates it.
+# The images install the private @cadenway/* packages: their build mounts a user-level npmrc as a
+# secret. It comes from the NPMRC environment variable of the shell that runs Compose, never from a
+# file of this repository. See docs/development.md.
+secrets:
+  npmrc:
+    environment: NPMRC
+
 networks:
   edge: !override
     name: cadenway-edge-local
