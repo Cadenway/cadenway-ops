@@ -8,6 +8,30 @@
       "description": "Patch, pin and digest updates merge on their own once CI is green.",
       "matchUpdateTypes": ["patch", "pin", "digest"],
       "automerge": true
+    },
+    {
+      "description": "A SOPS update needs the checksum of the new linux/amd64 binary in the same three files, written by hand: never merged on its own.",
+      "matchPackageNames": ["getsops/sops"],
+      "automerge": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "SOPS release installed by the agent role and by the two end-to-end tests: one version, in three files.",
+      "managerFilePatterns": [
+        "ansible/roles/agent/defaults/main.yml",
+        "agent/tests/e2e.sh",
+        "ansible/roles/backup/tests/e2e.sh"
+      ],
+      "matchStrings": [
+        "cadenway_sops_version: (?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "getsops/sops/releases/download/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/",
+        "/sops-v(?<currentValue>\\d+\\.\\d+\\.\\d+)\\.linux\\.amd64"
+      ],
+      "depNameTemplate": "getsops/sops",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
     }
   ],
   "docker-compose": {

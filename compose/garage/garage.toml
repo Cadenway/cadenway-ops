@@ -1,0 +1,26 @@
+# Garage on a workstation: one node, no replication, the stand-in for OVH Object Storage.
+# Local development only; staging and production use OVH Object Storage, created by Terraform.
+#
+# The RPC secret and the admin token are not written here: Garage reads GARAGE_RPC_SECRET and
+# GARAGE_ADMIN_TOKEN from its environment, set in compose.local.yaml from compose/.env.
+# The layout, the access key and the bucket are created at start by the `--single-node` and
+# `--default-bucket` flags of the server.
+
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "sqlite"
+
+replication_factor = 1
+
+# IPv4 wildcard rather than the `[::]` of the Garage quick start: a container network always has
+# IPv4, while IPv6 can be disabled on the host.
+rpc_bind_addr = "0.0.0.0:3901"
+rpc_public_addr = "127.0.0.1:3901"
+
+[s3_api]
+# The region a client must sign its requests for.
+s3_region = "garage"
+api_bind_addr = "0.0.0.0:3900"
+
+[admin]
+api_bind_addr = "0.0.0.0:3903"
