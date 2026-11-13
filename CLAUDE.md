@@ -16,7 +16,7 @@
 3. One PostgreSQL with one database and one user per service; Redis, NATS JetStream, Meilisearch beside it; files and backups in OVH Object Storage.
 4. Secrets are encrypted with SOPS and age, in Git; only the VPS key decrypts them. Never write a decrypted secret, never read the key.
 5. Versions in `environments/<env>/versions.env` are written by the deploy bot; `environments/prod/` and `terraform/` need an approval.
-6. Local development uses the same Compose files with `compose.local.yaml` (sibling folders built, Mailpit, `*.localhost` domains; the local object store comes with the storage service).
+6. Local development uses the same Compose files with `compose.local.yaml` (sibling folders built, Mailpit, `*.localhost` domains; Garage as the local object store, with the `full` profile).
 
 ## Boundaries (hard rules)
 

@@ -33,7 +33,7 @@ Source: `cw-compose-layout` ([Claude](../.claude/skills/cw-compose-layout/SKILL.
 | `compose/edge.yaml`                          | the one Traefik of a host (80, 443, Let's Encrypt) and the networks `cadenway-edge-staging`, `cadenway-edge-prod` |
 | `compose/compose.yaml`                       | one environment: `include:` of `infra.yaml` and `${CADENWAY_SERVICES:-../environments/staging/services}/*.yaml`   |
 | `compose/infra.yaml`                         | PostgreSQL (one database per service from `postgres/init/`), Redis, NATS JetStream, Meilisearch                   |
-| `compose/compose.local.yaml`                 | local Traefik, `build: ../../cadenway-<x>` with `develop.watch`, Mailpit, `DOMAIN=cadenway.localhost`             |
+| `compose/compose.local.yaml`                 | local Traefik, `build: ../../cadenway-<x>` with `develop.watch`, Mailpit, Garage, `DOMAIN=cadenway.localhost`     |
 | `environments/<env>/services/<service>.yaml` | copied from each service's `deploy/compose.yaml` by its deploy workflow                                           |
 
 Local start, from `compose/`: `cp .env.example .env` once, then `docker compose up -d`; `compose/.env` sets

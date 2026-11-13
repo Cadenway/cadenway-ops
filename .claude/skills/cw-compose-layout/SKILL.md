@@ -10,7 +10,7 @@ description: "How the Compose files of cadenway-ops fit together for production 
 | `compose/edge.yaml` | project `cadenway-edge`: the one Traefik of a host (80, 443, Let's Encrypt) and the networks `cadenway-edge-staging`, `cadenway-edge-prod` |
 | `compose/compose.yaml` | one environment, project `cadenway-<env>`: `include:` of `infra.yaml` and `${CADENWAY_SERVICES:-../environments/staging/services}/<service>.yaml` |
 | `compose/infra.yaml` | PostgreSQL (one database per service from `postgres/init/`), Redis, NATS JetStream, Meilisearch |
-| `compose/compose.local.yaml` | local Traefik on plain HTTP, `build: ../../cadenway-<x>` with `develop.watch`, Mailpit, `DOMAIN=cadenway.localhost`; creates `cadenway-edge-local` |
+| `compose/compose.local.yaml` | local Traefik on plain HTTP, `build: ../../cadenway-<x>` with `develop.watch`, Mailpit, Garage (local object store, `full` profile), `DOMAIN=cadenway.localhost`; creates `cadenway-edge-local` |
 | `environments/<env>/services/<service>.yaml` | what the environment runs, written by the service's deploy workflow with its version; local development runs the staging ones |
 
 - Exposed services join `edge` as `{ name: cadenway-edge-${ENVIRONMENT:-local}, external: true }`, set
