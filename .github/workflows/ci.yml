@@ -136,6 +136,13 @@ jobs:
               status=1
             fi
           done
+          for file in .codex/rules/*.md; do
+            twin=".claude/${file#.codex/}"
+            if ! cmp --silent "$file" "$twin"; then
+              echo "::error file=$file::differs from $twin"
+              status=1
+            fi
+          done
           exit "$status"
 
   conventions:
