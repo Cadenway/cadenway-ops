@@ -6,9 +6,10 @@
 #   docker compose watch task-service
 #
 # Every deployable is built from its sibling folder (clone the repositories flat, side by side) and
-# rebuilt by `watch` when its sources change. `core` starts the first version (identity, task,
-# notification, API gateway, web application); `full` starts everything. Browsers resolve
-# `*.localhost` to the machine: http://app.cadenway.localhost, http://mail.cadenway.localhost.
+# rebuilt by `watch` when its sources change. `core` starts the first version (identity,
+# organization, task, notification, API gateway, web application); `full` starts everything.
+# Browsers resolve `*.localhost` to the machine: http://app.cadenway.localhost,
+# http://mail.cadenway.localhost.
 #
 # Garage is the local object store, the stand-in for OVH Object Storage: S3 API on
 # http://s3.cadenway.localhost for the browser and on http://garage:3900 inside the stack, region
@@ -144,7 +145,7 @@ services:
     depends_on: *data
 
   organization-service:
-    profiles: [full]
+    profiles: [core, full]
     build:
       context: ../../cadenway-organization-service
       secrets: [npmrc]

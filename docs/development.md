@@ -40,8 +40,8 @@ export NPMRC="//npm.pkg.github.com/:_authToken=$(gh auth token)"
 
 Without it the build stops on `401 Unauthorized` when pnpm fetches the first Cadenway package.
 
-The `core` profile starts the infrastructure, the identity, task and notification services, the API
-gateway and the web application: open `http://app.cadenway.localhost`, and
+The `core` profile starts the infrastructure, the identity, organization, task and notification
+services, the API gateway and the web application: open `http://app.cadenway.localhost`, and
 `http://mail.cadenway.localhost` for the e-mails the stack sends (Mailpit). The `full` profile adds
 Garage, the local object store: its S3 API answers on `http://s3.cadenway.localhost`, with the
 placeholder key and bucket of `compose/.env.example`. Terraform runs only
