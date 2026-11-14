@@ -1,7 +1,7 @@
 # pnpm settings for this repository: it has no workspace packages, only the root tooling
 # (Prettier and commitlint).
 
-# Supply chain: a version is installable two days after its publication (2880 minutes), and never
-# when its publisher trust is weaker than that of an earlier version of the same package.
-minimumReleaseAge: 2880
+# Disable pnpm's default release-age delay.
+minimumReleaseAge: 0
+# Refuse a package version with weaker trust evidence than an earlier release.
 trustPolicy: no-downgrade
