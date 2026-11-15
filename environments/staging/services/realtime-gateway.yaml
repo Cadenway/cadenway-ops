@@ -8,10 +8,24 @@ services:
   realtime-gateway:
     image: ghcr.io/${GHCR_OWNER}/cadenway-realtime-gateway:${REALTIME_GATEWAY_VERSION}
     restart: unless-stopped
+    # The entries of the realtime gateway in cadenway-ops docs/service-environment.md. DOMAIN,
+    # PUBLIC_SCHEME, REDIS_URL, NATS_URL and the <NAME>_SERVICE_URL come from the environment file
+    # Ansible writes on the host, the private key and the broker password from the secrets of the
+    # environment. The gateway trusts no issuer: it signs the calls it makes and authenticates the
+    # sockets itself.
     environment:
       PORT: '3001'
       REDIS_URL: ${REDIS_URL}
+      # The web application, the only origin the handshake check and CORS accept.
+      ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}
+      INTERNAL_TOKEN_ISSUER: realtime-gateway
+      INTERNAL_TOKEN_PRIVATE_JWK: ${REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}
+      IDENTITY_SERVICE_URL: ${IDENTITY_SERVICE_URL}
+      TASK_SERVICE_URL: ${TASK_SERVICE_URL}
+      # Read by @cadenway/nest-messaging once the gateway consumes events; nothing reads them yet.
       NATS_URL: ${NATS_URL}
+      NATS_USER: realtime-gateway
+      NATS_PASSWORD: ${REALTIME_GATEWAY_NATS_PASSWORD}
     networks:
       - edge
       - internal
