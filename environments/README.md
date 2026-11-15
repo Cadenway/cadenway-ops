@@ -20,16 +20,17 @@ them on the host from `ansible/inventory/group_vars/cadenway.yml`.
 
 `secrets.sops.env` is a dotenv file encrypted value by value. It holds:
 
-| Variable                                                        | Used by                        |
-| --------------------------------------------------------------- | ------------------------------ |
-| `POSTGRES_PASSWORD`                                             | PostgreSQL superuser           |
-| `<NAME>_DB_PASSWORD`, one per service database                  | `compose/postgres/init`        |
-| `<NAME>_SERVICE_DATABASE_URL`, with the same password           | each service                   |
-| `MEILI_MASTER_KEY`                                              | Meilisearch and search-service |
-| `ALERT_WEBHOOK_URL` (optional, Slack-compatible)                | the agent's notifications      |
-| `GHCR_PULL_USER`, `GHCR_PULL_TOKEN` (optional, `read:packages`) | the agent, for private images  |
-| `BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION`, `BACKUP_S3_BUCKET`    | the nightly backup             |
-| `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY`        | the nightly backup             |
+| Variable                                                                           | Used by                                                                                 |
+| ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `POSTGRES_PASSWORD`                                                                | PostgreSQL superuser                                                                    |
+| `<NAME>_DB_MIGRATOR_PASSWORD`, `<NAME>_DB_APP_PASSWORD`, per service database      | `compose/postgres/init`: the two roles of the service ([database](../docs/database.md)) |
+| `<NAME>_SERVICE_DATABASE_URL`, with the password of `<service>_app`                | each service, as `DATABASE_URL`                                                         |
+| `<NAME>_SERVICE_MIGRATION_DATABASE_URL`, with the password of `<service>_migrator` | the migrations of each service, as `MIGRATION_DATABASE_URL`                             |
+| `MEILI_MASTER_KEY`                                                                 | Meilisearch and search-service                                                          |
+| `ALERT_WEBHOOK_URL` (optional, Slack-compatible)                                   | the agent's notifications                                                               |
+| `GHCR_PULL_USER`, `GHCR_PULL_TOKEN` (optional, `read:packages`)                    | the agent, for private images                                                           |
+| `BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION`, `BACKUP_S3_BUCKET`                       | the nightly backup                                                                      |
+| `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY`                           | the nightly backup                                                                      |
 
 Values are taken literally; a value cannot contain a single quote (`'`).
 

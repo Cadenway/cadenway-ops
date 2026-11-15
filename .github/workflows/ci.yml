@@ -134,6 +134,25 @@ jobs:
       # Preview of a fresh host, first apply, idempotent second apply, preview of a set-up host.
       - run: bash ansible/tests/run.sh
 
+  database:
+    name: PostgreSQL roles end to end
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: >-
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt
+          koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
+          compose/postgres/init/10-service-databases.sh compose/tests/postgres-roles.sh
+      # The init script against the PostgreSQL of compose/infra.yaml: roles, privileges, timeouts,
+      # a second run, and a volume created before the two roles.
+      - run: bash compose/tests/postgres-roles.sh
+
   tooling:
     name: Agent tooling copies
     runs-on: ubuntu-24.04
