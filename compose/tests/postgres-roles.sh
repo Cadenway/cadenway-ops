@@ -58,6 +58,9 @@ CREATE POLICY organization_isolation ON tasks USING (
 );
 CREATE SCHEMA jobs;
 CREATE TABLE jobs.queue (id bigserial PRIMARY KEY);
+CREATE SCHEMA drizzle;
+CREATE TABLE drizzle.__drizzle_migrations (id serial PRIMARY KEY, hash text NOT NULL);
+INSERT INTO drizzle.__drizzle_migrations (hash) VALUES ('0000');
 SQL
 ) || true
 check 'migration applied' '[[ -z $OUT ]]'
@@ -71,10 +74,13 @@ SET LOCAL app.organization_id = '018f0000-0000-7000-8000-000000000001';
 INSERT INTO tasks (organization_id, title)
 VALUES ('018f0000-0000-7000-8000-000000000001', 'CAD-482');
 COMMIT;
-INSERT INTO jobs.queue DEFAULT VALUES;
 SQL
 ) || true
-check 'rows written, in a schema created later too' '[[ -z $OUT ]]'
+check 'rows written in public' '[[ -z $OUT ]]'
+OUT=$(as task_app task_app task -c 'INSERT INTO jobs.queue DEFAULT VALUES') || true
+check 'a schema the migrator creates stays closed' '[[ $OUT == *"permission denied for schema jobs"* ]]'
+OUT=$(as task_app task_app task -c 'DELETE FROM drizzle.__drizzle_migrations') || true
+check 'the migration journal is out of reach' '[[ $OUT == *"permission denied for schema drizzle"* ]]'
 OUT=$(as task_app task_app task -c 'CREATE TABLE forbidden (id int)') || true
 check 'CREATE TABLE refused' '[[ $OUT == *"permission denied for schema public"* ]]'
 OUT=$(as task_app task_app task -c 'ALTER TABLE tasks ADD COLUMN forbidden int') || true
@@ -143,6 +149,19 @@ OUT=$(as task_app task_app task -c 'SELECT 1') || true
 check 'old password refused' '[[ $OUT == *"password authentication failed"* ]]'
 OUT=$(run_init -e TASK_DB_APP_PASSWORD=) || true
 check 'a missing password stops the run' '[[ $OUT == *"password of the \"task\" database roles is missing"* ]]'
+
+superuser -d task >/dev/null <<'SQL'
+ALTER DEFAULT PRIVILEGES FOR ROLE task_migrator GRANT USAGE ON SCHEMAS TO task_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE task_migrator GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO task_app;
+GRANT USAGE ON SCHEMA drizzle TO task_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA drizzle TO task_app;
+SQL
+OUT=$(run_init) || OUT="failed: $OUT"
+check 'a run removes the former database-wide default privileges' '[[ $OUT != failed:* ]]'
+OUT=$(superuser -d task -c "SELECT count(*) FROM pg_default_acl WHERE defaclnamespace = 0")
+check 'no default privilege outside a schema is left' '[[ $OUT == 0 ]]'
+OUT=$(as task_app task_app task -c 'DELETE FROM drizzle.__drizzle_migrations') || true
+check 'and the journal is out of reach again' '[[ $OUT == *"permission denied for schema drizzle"* ]]'
 
 echo '=== 7. a volume created with the former single role is brought up to date'
 superuser >/dev/null <<'SQL'

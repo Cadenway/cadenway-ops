@@ -11,17 +11,23 @@ shared: a service only connects to its own database.
 `organization`, `billing`, `task`, `document`, `storage`, `notification`, `automation`,
 `integration`, `search`):
 
-| Role                 | Used by                                                  | May                                                                                                                |
-| -------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `<service>_migrator` | The one-off migration container (`node dist/migrate.js`) | Everything in its database, which it owns: it runs the DDL                                                         |
-| `<service>_app`      | The running service                                      | Connect, then `SELECT`, `INSERT`, `UPDATE` and `DELETE` on the tables, and use the sequences, the migrator creates |
+| Role                 | Used by                                                  | May                                                                                                                            |
+| -------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `<service>_migrator` | The one-off migration container (`node dist/migrate.js`) | Everything in its database, which it owns: it runs the DDL                                                                     |
+| `<service>_app`      | The running service                                      | Connect, then `SELECT`, `INSERT`, `UPDATE` and `DELETE` on the tables, and use the sequences, the migrator creates in `public` |
 
 The application role owns nothing, holds no `CREATE` right on the database or on a schema, cannot
 create a temporary table, and has neither `SUPERUSER` nor `BYPASSRLS`: the row-level security
 policies of the tables apply to it, and it cannot switch them off. It gets its rights on a table when
-the migrator creates it, through default privileges, in every schema the migrator creates (the
-`pgboss` schema of the jobs included). That covers the migration journal of Drizzle too: the
-application role could change its rows, never the structure it describes.
+the migrator creates it in `public`, through default privileges scoped to that schema. Any other
+schema the migrator creates stays closed to it unless the code that creates the schema grants what
+the runtime needs: `@cadenway/nest-jobs` does so for its `pgboss` schema. The migration journal of
+Drizzle (`drizzle.__drizzle_migrations`) is therefore out of its reach: a deleted journal row would
+make the next migration run apply that migration again.
+
+A volume set up before this rule held default privileges on every schema; the init script revokes
+them and closes the `drizzle` schema on its next run (see
+[Bringing an existing volume up to date](#bringing-an-existing-volume-up-to-date)).
 
 Neither role can connect to the database of another service: `CONNECT` is revoked from `PUBLIC` on
 each of them.
