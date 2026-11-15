@@ -22,10 +22,11 @@
 # http://s3.cadenway.localhost for the browser and on http://garage:3900 inside the stack, region
 # `garage`, path-style addressing. It starts with the `full` profile, like the storage service.
 
+# `nats-streams` is healthy once the broker is up and the streams exist.
 x-data: &data
   postgres:
     condition: service_healthy
-  nats:
+  nats-streams:
     condition: service_healthy
 
 x-redis: &redis
@@ -179,7 +180,7 @@ services:
           path: ../../cadenway-realtime-gateway/src
     depends_on:
       <<: *redis
-      nats:
+      nats-streams:
         condition: service_healthy
 
   identity-service:
