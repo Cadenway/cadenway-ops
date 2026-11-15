@@ -26,11 +26,12 @@ trap cleanup EXIT
 cleanup
 
 # Runs the `nats` command line as a backend, with its own inbox prefix as a backend connects.
-# Arguments: user (its local password is its name), then the command. Prints output and errors.
+# Arguments: user (its local password is its name without hyphens, as compose/.env.example sets
+# it: a password is letters and digits), then the command. Prints output and errors.
 as() {
   local user=$1
   shift
-  compose exec -T nats-streams nats --user "$user" --password "$user" \
+  compose exec -T nats-streams nats --user "$user" --password "${user//-/}" \
     --inbox-prefix "_INBOX.$user" --timeout 1s "$@" 2>&1 || true
 }
 # A durable pull consumer as @cadenway/nest-messaging declares them.
