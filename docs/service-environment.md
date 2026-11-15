@@ -1,0 +1,149 @@
+# Environment of the backends
+
+[Documentation index](README.md) · [Environments](../environments/README.md) · [Development](development.md)
+
+What each backend reads from its environment, where the value comes from, and what its
+`deploy/compose.yaml` has to declare. The variables are those of `@cadenway/nest-common`
+(configuration, internal token, internal HTTP client, database) and of the infrastructure of this
+repository.
+
+A service definition may only use `environment` (its deploy workflow refuses `command`,
+`entrypoint`, `volumes` and `secrets`), so everything below reaches a container as an environment
+variable.
+
+## Where a value comes from
+
+A definition writes either a literal or `${VARIABLE}`. Compose resolves the variable from:
+
+| Source                                            | Holds                                                                                                                        | Locally                                      |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `/etc/cadenway/env/<env>.env`, written by Ansible | Public settings: `DOMAIN`, `PUBLIC_SCHEME`, `GHCR_OWNER`, `NATS_URL`, `REDIS_URL`, `MEILI_URL`, the ten `<NAME>_SERVICE_URL` | `compose/.env`, copied from `.env.example`   |
+| `environments/<env>/versions.env`                 | `<NAME>_VERSION`                                                                                                             | `compose/.env`                               |
+| `environments/<env>/secrets.sops.env`             | Everything secret or specific to the environment                                                                             | `compose/.env`; the token keys are generated |
+
+The GitOps agent refuses a commit that leaves a variable unset. A definition that reads a new
+variable is therefore released after the variable exists on the host: the secret merged, or
+`ansible/playbooks/setup.yml` applied for a public setting.
+
+## Internal token
+
+Every call between backends carries a token signed by the caller with its own Ed25519 key and
+checked by the called service against the keys of the issuers it trusts.
+
+| Issuer                | Calls                              | Its key pair in the stack                                                          |
+| --------------------- | ---------------------------------- | ---------------------------------------------------------------------------------- |
+| `api-gateway`         | every service                      | `API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS` |
+| `realtime-gateway`    | identity-service, task-service     | `REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                     |
+| `automation-service`  | task-service, notification-service | `AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                   |
+| `integration-service` | task-service                       | `INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                  |
+
+- `<NAME>_INTERNAL_TOKEN_PRIVATE_JWK` is one line of JSON, a secret, read by that issuer only, as
+  `INTERNAL_TOKEN_PRIVATE_JWK`.
+- `<NAME>_INTERNAL_TOKEN_PUBLIC_JWKS` is the public key as one line of JSON; several keys separated
+  by commas during a rotation. A called service builds `INTERNAL_TOKEN_TRUSTED_ISSUERS` from the
+  public keys of the issuers it trusts, in its own definition: who a service trusts is reviewed in
+  the repository of that service.
+
+```yaml
+INTERNAL_TOKEN_AUDIENCE: task-service
+INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
+  {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
+  "realtime-gateway": [${REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
+  "automation-service": [${AUTOMATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS}],
+  "integration-service": [${INTEGRATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+```
+
+The folded scalar (`>-`) gives the service one line of JSON.
+
+### Keys of a workstation
+
+No private key is committed, not even a development one. Once, after `cp .env.example .env`:
+
+```bash
+docker compose run --rm internal-token-keys
+```
+
+The container runs `compose/internal-token/generate-keys.mjs`, which appends the four key pairs to
+`compose/.env` (never committed). Compose then reads them like any other variable, exactly as it
+reads the secrets on a host. A second run changes nothing; to replace a pair, delete its two lines
+and run it again. Without the keys, Compose warns that the variables are not set and the backends
+refuse to start, naming `INTERNAL_TOKEN_PRIVATE_JWK` or `INTERNAL_TOKEN_TRUSTED_ISSUERS`.
+
+### Keys of staging and production
+
+An operator generates them and puts them in the secrets, each environment with its own:
+
+```bash
+docker compose run --rm internal-token-keys --print   # eight lines, on the terminal only
+sops edit environments/staging/secrets.sops.env       # paste them
+```
+
+To rotate the key of an issuer: add the new public key to its `…_PUBLIC_JWKS` after a comma and
+merge; replace its `…_PRIVATE_JWK` and merge; then remove the old public key.
+
+## What each definition declares
+
+Every backend keeps what it has today (`PORT`, and `DATABASE_URL`, `NATS_URL` or `REDIS_URL`).
+`NODE_ENV`, `LOG_LEVEL` and `LOG_PRETTY` have defaults fit for a server and stay unset.
+`OTEL_EXPORTER_OTLP_ENDPOINT` stays unset until an environment has a collector.
+
+### Every service
+
+`<name>` is the service without `-service` (`task`), `<NAME>` the same in capitals.
+
+| Variable                         | Value in `deploy/compose.yaml`                                       |
+| -------------------------------- | -------------------------------------------------------------------- |
+| `MIGRATION_DATABASE_URL`         | `${<NAME>_SERVICE_MIGRATION_DATABASE_URL}` ([database](database.md)) |
+| `NATS_USER`                      | `<name>` ([messaging](messaging.md))                                 |
+| `NATS_PASSWORD`                  | `${<NAME>_NATS_PASSWORD}`                                            |
+| `INTERNAL_TOKEN_AUDIENCE`        | `<name>-service`                                                     |
+| `INTERNAL_TOKEN_TRUSTED_ISSUERS` | The JSON above, with the issuers of the service (see the next table) |
+
+### Per backend
+
+| Backend              | Trusts                                                                         | Also declares                                                                                                                                                                                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| identity-service     | `api-gateway`, `realtime-gateway`                                              |                                                                                                                                                                                                                                                                    |
+| organization-service | `api-gateway`                                                                  |                                                                                                                                                                                                                                                                    |
+| billing-service      | `api-gateway`                                                                  |                                                                                                                                                                                                                                                                    |
+| task-service         | `api-gateway`, `realtime-gateway`, `automation-service`, `integration-service` |                                                                                                                                                                                                                                                                    |
+| document-service     | `api-gateway`                                                                  |                                                                                                                                                                                                                                                                    |
+| storage-service      | `api-gateway`                                                                  | `S3_ENDPOINT`, `S3_PUBLIC_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_FORCE_PATH_STYLE`, each from `${STORAGE_S3_…}`                                                                                                      |
+| notification-service | `api-gateway`, `automation-service`                                            | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM`, each from the variable of the same name                                                                                                                                                       |
+| automation-service   | `api-gateway`                                                                  | `INTERNAL_TOKEN_ISSUER: automation-service`, `INTERNAL_TOKEN_PRIVATE_JWK: ${AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}`, `TASK_SERVICE_URL`, `NOTIFICATION_SERVICE_URL`                                                                                        |
+| integration-service  | `api-gateway`                                                                  | `INTERNAL_TOKEN_ISSUER: integration-service`, `INTERNAL_TOKEN_PRIVATE_JWK: ${INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}`, `TASK_SERVICE_URL`                                                                                                                  |
+| search-service       | `api-gateway`                                                                  | `MEILI_URL: ${MEILI_URL}`, `MEILI_API_KEY: ${MEILI_MASTER_KEY}`                                                                                                                                                                                                    |
+| api-gateway          | nobody: it authenticates the applications itself                               | `INTERNAL_TOKEN_ISSUER: api-gateway`, `INTERNAL_TOKEN_PRIVATE_JWK: ${API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}`, the ten `<NAME>_SERVICE_URL`; `NATS_URL`, `NATS_USER: api-gateway`, `NATS_PASSWORD: ${API_GATEWAY_NATS_PASSWORD}` once it publishes its usage event |
+| realtime-gateway     | nobody: it authenticates the sockets itself                                    | `INTERNAL_TOKEN_ISSUER: realtime-gateway`, `INTERNAL_TOKEN_PRIVATE_JWK: ${REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}`, `IDENTITY_SERVICE_URL`, `TASK_SERVICE_URL`, `NATS_USER: realtime-gateway`, `NATS_PASSWORD: ${REALTIME_GATEWAY_NATS_PASSWORD}`             |
+
+A `<NAME>_SERVICE_URL` is declared as `${<NAME>_SERVICE_URL}`: `http://<name>-service:<port>` on the
+internal network, the same in every environment.
+
+`S3_ENDPOINT` is where the service reaches the object storage; `S3_PUBLIC_ENDPOINT` is the host the
+browser follows in a signed URL. They differ on a workstation only (`http://garage:3900` and
+`http://s3.cadenway.localhost`).
+
+`compose/compose.local.yaml` repeats these entries for the local stack, which runs the definitions
+of the last release with images built from the sources: keep the two in step.
+
+## Secrets
+
+Besides those of the [database](database.md#variables) and of the
+[broker](messaging.md#secrets), `secrets.sops.env` of each environment holds:
+
+| Variable                                                                                                                                                                                   | Used by                          |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------- |
+| `API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK` | the issuer named by the variable |
+| `API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS`, `REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS`, `AUTOMATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`, `INTEGRATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS` | the services that trust it       |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM`                                                                                                                        | notification-service             |
+| `STORAGE_S3_ENDPOINT`, `STORAGE_S3_PUBLIC_ENDPOINT`, `STORAGE_S3_REGION`, `STORAGE_S3_BUCKET`, `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`, `STORAGE_S3_FORCE_PATH_STYLE`   | storage-service                  |
+
+The public keys are not secret; they sit with the private ones so that an environment's keys are
+edited in one place. JSON values need no quoting in the file: the agent writes each value between
+single quotes, and a JSON Web Key contains none.
+
+## Checks
+
+`compose/tests/service-wiring.sh` generates keys in a temporary folder, checks that they sign and
+verify, and checks the environment Compose builds for each backend; CI runs it on every pull
+request.

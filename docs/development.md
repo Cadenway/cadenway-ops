@@ -21,13 +21,19 @@ stack builds each service from its sibling folder.
 
 ```bash
 cd compose
-cp .env.example .env              # once
-docker compose up -d              # start (stop: docker compose down)
-docker compose watch task-service # rebuild a service when its sources change
+cp .env.example .env                        # once
+docker compose run --rm internal-token-keys # once: the key pairs of the internal token
+docker compose up -d                        # start (stop: docker compose down)
+docker compose watch task-service           # rebuild a service when its sources change
 ```
 
 `compose/.env` sets Compose's own `COMPOSE_FILE` and `COMPOSE_PROFILES`, so the plain commands use
 the local overrides and the `core` profile; set `COMPOSE_PROFILES=full` there for every service.
+
+The backends sign their calls to each other with Ed25519 keys, and no private key is committed:
+`internal-token-keys` generates the pairs of this workstation into `compose/.env`. See
+[environment of the backends](service-environment.md) for these keys and for every variable a
+backend receives.
 
 The images install the private `@cadenway/*` packages, so their build needs to read GitHub
 Packages. Compose passes the `NPMRC` environment variable to each build as a secret: one line of
