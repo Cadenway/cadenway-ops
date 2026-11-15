@@ -10,9 +10,9 @@
 #   1. check out the commit in the environment's worktree and decrypt its secrets into /run (tmpfs);
 #   2. validate (no missing variable), pull, bring the infrastructure services up (idempotent);
 #   3. for every deployable whose version is set and whose fingerprint changed or whose container is
-#      not healthy: run its migrations in a one-off container, the only one given the migrator URL
-#      of its database, start the new container beside the old one, wait for `healthy`, then remove
-#      the old one. A failure keeps the old container;
+#      not healthy: run its migrations in a one-off container, to which the agent gives the migrator
+#      URL of its database, start the new container beside the old one, wait for `healthy`, then
+#      remove the old one. A failure keeps the old container;
 #   4. record the commit as applied; or as failed when the desired state itself is wrong (never
 #      retried); or retry on the next tick when the failure is transient (registry, network), and
 #      notify once per commit.
@@ -172,12 +172,12 @@ fingerprint() {
 }
 
 # Applies the service's migrations in a one-off container; images without dist/migrate.js have none.
-# That container alone receives the migrator URL of the service (migration_variable, from the
-# secrets) as MIGRATION_DATABASE_URL: the long-running container connects as the application role
-# and never holds the owner of its schema (docs/database.md). `-e` without a value makes Compose
-# read it from the environment of this one command, so it never appears in an argument list; it
-# overrides the entry a definition may still carry. A deployable without a database has no such
-# secret and gets nothing.
+# The agent gives that container the migrator URL of the service (migration_variable, from the
+# secrets) as MIGRATION_DATABASE_URL, so no definition has to declare it: once a definition drops
+# the entry, its long-running container connects as the application role only and never holds the
+# owner of its schema (docs/database.md). `-e` without a value makes Compose read it from the
+# environment of this one command, so it never appears in an argument list; it overrides the entry
+# a definition may still carry. A deployable without a database has no such secret and gets nothing.
 migrate() {
   local env=$1 service=$2 url
   local -a forward=()

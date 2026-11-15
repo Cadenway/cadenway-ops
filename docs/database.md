@@ -49,9 +49,10 @@ The GitOps agent applies the migrations in a one-off container of the service, b
 new version (see [deployment](deployment.md)). That container has the environment of the service
 definition plus `MIGRATION_DATABASE_URL`, which the agent reads from
 `<NAME>_SERVICE_MIGRATION_DATABASE_URL` in the secrets and hands to that one command through its
-environment (`docker compose run -e MIGRATION_DATABASE_URL`), never on a command line. The
-long-running container gets only `DATABASE_URL`: a service that is compromised at run time holds
-the application role, not the owner of its schema. The service reads `DATABASE_URL`;
+environment (`docker compose run -e MIGRATION_DATABASE_URL`), never on a command line. Once the
+definition no longer declares it, the long-running container gets only `DATABASE_URL`: a service
+that is compromised at run time holds the application role, not the owner of its schema. The
+service reads `DATABASE_URL`;
 `src/migrate.ts` reads `MIGRATION_DATABASE_URL`. A service whose `src/migrate.ts` still reads
 `DATABASE_URL` cannot apply a migration: the application role is refused, the agent keeps the
 previous version and reports the commit as failed.
@@ -63,12 +64,15 @@ that leaves a variable unset, before anything changes.
 The definitions still declare `MIGRATION_DATABASE_URL: ${<NAME>_SERVICE_MIGRATION_DATABASE_URL}`
 until each service removes the line from its `deploy/compose.yaml`. Until then the running container
 holds the migrator URL too; the migration container gets the same value from the agent, so removing
-the line only rolls the service out once more, without it.
+the line only rolls the service out once more, without it. The agent reaches a host through
+`ansible/playbooks/setup.yml`, which installs `agent/cadenway-agent.sh`: run it on every host
+before a service removes the line, since an agent installed earlier would run the migrations
+without the URL and fail every deployment of that service. Undoing this follows the same order: a
+service declares the line again before the playbook installs an agent that does not pass it.
 
 Locally nothing applies the migrations at start-up. `compose/compose.local.yaml` keeps
-`MIGRATION_DATABASE_URL` on each service, from the placeholders of `compose/.env.example`: the one
-place where a running container holds it, on a workstation only, so that the command the agent runs
-works without the agent:
+`MIGRATION_DATABASE_URL` on each service, from the placeholders of `compose/.env.example`, on a
+workstation only, so that the command the agent runs works without the agent:
 
 ```bash
 docker compose run --rm --no-deps task-service node dist/migrate.js

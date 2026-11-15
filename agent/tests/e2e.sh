@@ -293,6 +293,8 @@ EOF
 chmod +x /usr/local/sbin/docker
 BEFORE=$(data_id)
 write_data dropped
+# web-service rolls out in the same run: it has no database, so its migration gets nothing.
+write_web true third
 commit 'drop MIGRATION_DATABASE_URL from the definition'
 run_agent
 rm -f /usr/local/sbin/docker
@@ -304,6 +306,8 @@ check 'and keeps its own database URL' \
   '[[ $(docker exec "$(data_id)" printenv DATABASE_URL) == postgres://data_app:* ]]'
 check 'passed by name to docker compose run' \
   'grep -qF -- "run --rm --no-deps -T -e MIGRATION_DATABASE_URL data-service" /tmp/docker-arguments'
+check 'a deployable without a database is migrated without it' \
+  'grep -qF -- "run --rm --no-deps -T web-service sh" /tmp/docker-arguments'
 check 'never in a docker argument list' '! grep -qF grat0r /tmp/docker-arguments'
 check 'nor in the logs' '[[ $OUT != *grat0r* ]]'
 
