@@ -2,8 +2,13 @@
 # On each release the deploy workflow checks it and copies it into cadenway-ops, as
 # environments/<env>/services/organization-service.yaml for the environment it deploys to.
 #
-# Internal service: no Traefik label, no published port. Secret values (the database URL carries a
-# password) are referenced by name; they live in cadenway-ops.
+# Internal service: no Traefik label, no published port. Secret values (the database URLs and the
+# NATS password) are referenced by name; they live in cadenway-ops, which documents every variable
+# below in docs/service-environment.md. A variable added here must exist on the host before the
+# release that reads it: the GitOps agent refuses a commit that leaves one unset.
+#
+# INTERNAL_TOKEN_TRUSTED_ISSUERS lists who may call this service: the API gateway only. The folded
+# scalar gives the service one line of JSON.
 services:
   organization-service:
     image: ghcr.io/${GHCR_OWNER}/cadenway-organization-service:${ORGANIZATION_SERVICE_VERSION}
@@ -11,7 +16,13 @@ services:
     environment:
       PORT: '3011'
       DATABASE_URL: ${ORGANIZATION_SERVICE_DATABASE_URL}
+      MIGRATION_DATABASE_URL: ${ORGANIZATION_SERVICE_MIGRATION_DATABASE_URL}
       NATS_URL: ${NATS_URL}
+      NATS_USER: organization
+      NATS_PASSWORD: ${ORGANIZATION_NATS_PASSWORD}
+      INTERNAL_TOKEN_AUDIENCE: organization-service
+      INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
+        {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
     networks:
       - internal
     healthcheck:
