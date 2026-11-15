@@ -93,11 +93,16 @@ Every backend keeps what it has today (`PORT`, and `DATABASE_URL`, `NATS_URL` or
 
 | Variable                         | Value in `deploy/compose.yaml`                                       |
 | -------------------------------- | -------------------------------------------------------------------- |
-| `MIGRATION_DATABASE_URL`         | `${<NAME>_SERVICE_MIGRATION_DATABASE_URL}` ([database](database.md)) |
 | `NATS_USER`                      | `<name>` ([messaging](messaging.md))                                 |
 | `NATS_PASSWORD`                  | `${<NAME>_NATS_PASSWORD}`                                            |
 | `INTERNAL_TOKEN_AUDIENCE`        | `<name>-service`                                                     |
 | `INTERNAL_TOKEN_TRUSTED_ISSUERS` | The JSON above, with the issuers of the service (see the next table) |
+
+`MIGRATION_DATABASE_URL` is not declared: the GitOps agent gives it, from
+`<NAME>_SERVICE_MIGRATION_DATABASE_URL` of the secrets, to the one-off container that runs the
+migrations, and to no other ([database](database.md)). A definition that still declares it keeps
+working, but its running container then holds the credentials that own its schema: each service
+removes the line from its `deploy/compose.yaml`.
 
 ### Per backend
 
@@ -129,7 +134,10 @@ browser follows in a signed URL. They differ on a workstation only (`http://gara
 `http://s3.cadenway.localhost`).
 
 `compose/compose.local.yaml` repeats these entries for the local stack, which runs the definitions
-of the last release with images built from the sources: keep the two in step.
+of the last release with images built from the sources: keep the two in step. It also gives each
+service `MIGRATION_DATABASE_URL`, from the placeholders of `compose/.env.example`, so that
+`docker compose run --rm --no-deps <service> node dist/migrate.js` applies the migrations on a
+workstation: the one exception to the rule above ([database](database.md)).
 
 ## Secrets
 

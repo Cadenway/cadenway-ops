@@ -45,10 +45,11 @@ Source: `cw-gitops-agent` ([Claude](../.claude/skills/cw-gitops-agent/SKILL.md),
 
 1. Fetch `main`; apply `compose/edge.yaml` when the commit changed; skip a commit already applied or
    already failed.
-2. Decrypt `secrets.sops.env` into `/run/cadenway/<env>/`; refuse a commit that leaves a variable unset.
+2. Decrypt `secrets.sops.env` into `/run/cadenway/<env>/`; refuse a commit that leaves a variable unset
+   or misses the migrator URL of a service with a database.
 3. For each deployable whose fingerprint changed or whose container is not healthy: `pull`, run
-   migrations in a one-off container, start the new instance beside the old one, wait up to 60 s for
-   `healthy`, remove the old one.
+   migrations in a one-off container to which the agent gives the migrator URL, start the new
+   instance beside the old one, wait up to 60 s for `healthy`, remove the old one.
 4. Failure of the desired state: keep the old instance, record the commit as failed, alert; do not
    retry that commit. Transient failure: retry every minute, alert once.
 5. Notify: environment, commit, duration, result.

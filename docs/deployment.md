@@ -20,8 +20,9 @@
    leaves a variable unset, brings the infrastructure up, then for each deployable whose fingerprint
    changed (image, environment, definition, mounted config contents) or whose container is not
    healthy, runs its migrations in a one-off container (`node dist/migrate.js` when the image has
-   it), starts the new container beside the old one, waits up to 60 s for `healthy` and removes the
-   old one.
+   it), to which it gives the migrator URL of its database ([database](database.md#variables)),
+   starts the new container beside the old one, waits up to 60 s for `healthy` and removes the old
+   one.
 5. The outcome of a commit, posted to `ALERT_WEBHOOK_URL`:
    - **applied**: with the duration;
    - **failed** when the desired state itself is wrong (unhealthy container, failed migration,

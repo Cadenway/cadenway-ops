@@ -3,7 +3,9 @@
 # Covers: first run, no-op run, rolling update, failed health check that keeps the old container,
 # failed commit not retried, fix with a secret rotation, `$` kept in a secret, a config content
 # change, a missing secret, an unpullable image (retried, the others still deployed), an unhealthy
-# first container (removed), and a concurrent run that leaves the running one alone.
+# first container (removed), a concurrent run that leaves the running one alone, and the migrator
+# URL of a database given to the migration container only, never on a command line, with a commit
+# that misses it refused.
 #
 #   docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/agent:/agent:ro" \
 #     docker:28.5.2-cli sh -c "apk add --no-cache bash >/dev/null && bash /agent/tests/e2e.sh"
@@ -224,6 +226,103 @@ wait
 check 'second run steps aside' '[[ $RESULT == 0 && $OUT == *"another run is in progress"* ]]'
 check 'the running one keeps its secrets' '[[ -e /run/cadenway/sentinel/secrets.env ]]'
 rm -rf /run/cadenway/sentinel
+
+# data-service connects to a database. Its image stands in for a service image: dist/migrate.js,
+# and a `node` that prints the hash of the migrator URL it receives. Written with the
+# MIGRATION_DATABASE_URL entry the definitions carry until each service drops it (`carried`), or
+# without it.
+write_data() {
+  cat >$S/data-service.yaml <<'EOF'
+services:
+  data-service:
+    image: busybox:${DATA_SERVICE_VERSION}
+    command: ['sleep', 'infinity']
+    environment:
+      DATABASE_URL: ${DATA_SERVICE_DATABASE_URL}
+      MIGRATION_DATABASE_URL: ${DATA_SERVICE_MIGRATION_DATABASE_URL}
+    configs:
+      - source: migrate
+        target: /dist/migrate.js
+      - source: node
+        target: /usr/local/bin/node
+        mode: 0555
+    healthcheck: { test: ['CMD', 'true'], interval: 2s, retries: 2, start_period: 1s }
+    networks: [internal]
+configs:
+  migrate:
+    content: 'run by the stand-in node'
+  node:
+    content: |
+      #!/bin/sh
+      printf 'migrated with %s\n' "$$(printf %s "$$MIGRATION_DATABASE_URL" | sha256sum | cut -c1-64)"
+networks:
+  internal: {}
+EOF
+  [[ $1 == carried ]] || sed -i '/^      MIGRATION_DATABASE_URL:/d' $S/data-service.yaml
+}
+readonly MIGRATOR_URL='postgres://data_migrator:mi$grat0r@db:5432/data'
+MIGRATED="migrated with $(printf %s "$MIGRATOR_URL" | sha256sum | cut -c1-64)"
+data_secrets() {
+  secrets 'SECRET_VALUE=pa$word$HOME' 'DATA_SERVICE_DATABASE_URL=postgres://data_app:app@db:5432/data' "$@"
+}
+data() { containers data-service; }
+data_id() { data | cut -d" " -f1; }
+
+echo '=== 12. migrations while the definition still carries the migrator URL'
+echo '  - ${CADENWAY_SERVICES:-../environments/test/services}/data-service.yaml' >>$R/compose/compose.yaml
+write_data carried
+echo 'DATA_SERVICE_VERSION=1.37.0' >>$R/environments/test/versions.env
+data_secrets "DATA_SERVICE_MIGRATION_DATABASE_URL=$MIGRATOR_URL"
+commit 'release data-service'
+run_agent
+check 'applied' 'head_is applied && [[ $(data | wc -l) == 1 ]]'
+check 'the migration container gets the migrator URL' '[[ $OUT == *"$MIGRATED"* ]]'
+check 'the service gets it from its definition, as before' \
+  '[[ $(docker exec "$(data_id)" printenv MIGRATION_DATABASE_URL) == "$MIGRATOR_URL" ]]'
+
+echo '=== 13. migrations once the definition no longer carries it'
+# Records every docker command line of the agent, to show that no secret reaches an argument list:
+# /usr/local/sbin comes first in the PATH of the image.
+REAL_DOCKER=$(command -v docker)
+mkdir -p /usr/local/sbin
+cat >/usr/local/sbin/docker <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>/tmp/docker-arguments
+exec $REAL_DOCKER "\$@"
+EOF
+chmod +x /usr/local/sbin/docker
+BEFORE=$(data_id)
+write_data dropped
+# web-service rolls out in the same run: it has no database, so its migration gets nothing.
+write_web true third
+commit 'drop MIGRATION_DATABASE_URL from the definition'
+run_agent
+rm -f /usr/local/sbin/docker
+check 'applied, with a new container' 'head_is applied && [[ $(data | wc -l) == 1 && $(data_id) != "$BEFORE" ]]'
+check 'the migration container still gets the migrator URL' '[[ $OUT == *"$MIGRATED"* ]]'
+check 'the service container does not' \
+  '! docker exec "$(data_id)" printenv MIGRATION_DATABASE_URL >/dev/null'
+check 'and keeps its own database URL' \
+  '[[ $(docker exec "$(data_id)" printenv DATABASE_URL) == postgres://data_app:* ]]'
+check 'passed by name to docker compose run' \
+  'grep -qF -- "run --rm --no-deps -T -e MIGRATION_DATABASE_URL data-service" /tmp/docker-arguments'
+check 'a deployable without a database is migrated without it' \
+  'grep -qF -- "run --rm --no-deps -T web-service sh" /tmp/docker-arguments'
+check 'never in a docker argument list' '! grep -qF grat0r /tmp/docker-arguments'
+check 'nor in the logs' '[[ $OUT != *grat0r* ]]'
+
+echo '=== 14. a missing migrator URL: refused before anything changes'
+BEFORE=$(data_id)
+data_secrets
+commit 'drop DATA_SERVICE_MIGRATION_DATABASE_URL'
+run_agent
+check 'commit failed' 'head_is failed'
+check 'names the variable' '[[ $OUT == *"misses DATA_SERVICE_MIGRATION_DATABASE_URL"* ]]'
+check 'data-service untouched' '[[ $(data_id) == "$BEFORE" ]]'
+data_secrets "DATA_SERVICE_MIGRATION_DATABASE_URL=$MIGRATOR_URL"
+commit 'restore DATA_SERVICE_MIGRATION_DATABASE_URL'
+run_agent
+check 'restored' 'head_is applied && [[ $(data_id) == "$BEFORE" ]]'
 
 echo '=== cleanup'
 docker compose -p cadenway-test down -v --remove-orphans >/dev/null 2>&1 || true

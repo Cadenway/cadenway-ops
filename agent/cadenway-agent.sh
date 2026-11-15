@@ -10,8 +10,9 @@
 #   1. check out the commit in the environment's worktree and decrypt its secrets into /run (tmpfs);
 #   2. validate (no missing variable), pull, bring the infrastructure services up (idempotent);
 #   3. for every deployable whose version is set and whose fingerprint changed or whose container is
-#      not healthy: run its migrations in a one-off container, start the new container beside the old
-#      one, wait for `healthy`, then remove the old one. A failure keeps the old container;
+#      not healthy: run its migrations in a one-off container, to which the agent gives the migrator
+#      URL of its database, start the new container beside the old one, wait for `healthy`, then
+#      remove the old one. A failure keeps the old container;
 #   4. record the commit as applied; or as failed when the desired state itself is wrong (never
 #      retried); or retry on the next tick when the failure is transient (registry, network), and
 #      notify once per commit.
@@ -115,6 +116,20 @@ env_compose() {
 
 # Deployables are the files of environments/<env>/services/; their version is <NAME>_VERSION.
 version_variable() { printf '%s_VERSION' "$(tr '[:lower:]-' '[:upper:]_' <<<"$1")"; }
+# The secret that holds the URL of a deployable's database migrator, as the definitions named it
+# when they referenced it: TASK_SERVICE_MIGRATION_DATABASE_URL for task-service.
+migration_variable() {
+  printf '%s_MIGRATION_DATABASE_URL' "$(tr '[:lower:]-' '[:upper:]_' <<<"$1")"
+}
+
+# Deployables of the environment whose definition connects to a database (declares DATABASE_URL):
+# their migrations run as the migrator of that database, so each one needs its migrator URL.
+database_deployables() {
+  local env=$1
+  env_compose "$env" config --format json 2>/dev/null |
+    jq -r '.services | to_entries[] | select(.value.environment.DATABASE_URL != null) | .key' |
+    grep -xF -f <(basename -s .yaml "$ROOT/envs/$env/environments/$env/services"/*.yaml) || true
+}
 
 # Container ids of one service of the environment, oldest first.
 service_containers() {
@@ -157,8 +172,20 @@ fingerprint() {
 }
 
 # Applies the service's migrations in a one-off container; images without dist/migrate.js have none.
+# The agent gives that container the migrator URL of the service (migration_variable, from the
+# secrets) as MIGRATION_DATABASE_URL, so no definition has to declare it: once a definition drops
+# the entry, its long-running container connects as the application role only and never holds the
+# owner of its schema (docs/database.md). `-e` without a value makes Compose read it from the
+# environment of this one command, so it never appears in an argument list; it overrides the entry
+# a definition may still carry. A deployable without a database has no such secret and gets nothing.
 migrate() {
-  env_compose "$1" run --rm --no-deps -T "$2" \
+  local env=$1 service=$2 url
+  local -a forward=()
+  url=$(dotenv_value "$SECRETS_DIR/$env/secrets.env" "$(migration_variable "$service")")
+  if [[ -n $url ]]; then
+    forward=(-e MIGRATION_DATABASE_URL)
+  fi
+  MIGRATION_DATABASE_URL=$url env_compose "$env" run --rm --no-deps -T "${forward[@]}" "$service" \
     sh -c 'if [ -f dist/migrate.js ]; then exec node dist/migrate.js; fi'
 }
 
@@ -258,11 +285,21 @@ login_registry() {
   docker login ghcr.io --username "${user:-cadenway}" --password-stdin <<<"$token" >/dev/null
 }
 
-# Names of the variables the stack uses but nobody set (versions excepted: unreleased is allowed).
+# Names of the variables the stack uses but nobody set (versions excepted: unreleased is allowed),
+# and of the migrator URLs missing from the secrets. No definition has to reference a migrator URL:
+# the agent gives it to the migration container itself, so it checks each one as Compose checks a
+# referenced variable, and a commit without it is refused before anything changes.
 missing_variables() {
-  env_compose "$1" config -q 2>&1 >/dev/null |
-    grep -o 'The [^ ]* variable is not set' | tr -d '\\"' | awk '{print $2}' |
-    grep -v '_VERSION$' | sort -u || true
+  local env=$1 secrets=$SECRETS_DIR/$1/secrets.env service variable
+  {
+    env_compose "$env" config -q 2>&1 >/dev/null |
+      grep -o 'The [^ ]* variable is not set' | tr -d '\\"' | awk '{print $2}' |
+      grep -v '_VERSION$' || true
+    for service in $(database_deployables "$env"); do
+      variable=$(migration_variable "$service")
+      [[ -n $(dotenv_value "$secrets" "$variable") ]] || printf '%s\n' "$variable"
+    done
+  } | sort -u
 }
 
 # Applies one environment at a commit. Returns 0 when applied, 1 when the commit failed (recorded,
