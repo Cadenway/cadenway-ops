@@ -1,4 +1,5 @@
-# Shared infrastructure of one environment: PostgreSQL, Redis, NATS JetStream and Meilisearch.
+# Shared infrastructure of one environment: PostgreSQL, Redis, NATS JetStream with its streams, and
+# Meilisearch.
 #
 # Nothing here publishes a port: everything stays on `internal`. Traefik lives in edge.yaml,
 # once per host, so several environments can share a VPS.
@@ -67,9 +68,30 @@ services:
   nats:
     image: nats:2.15.2-alpine@sha256:afae2fdbe2e326c65e1246cb83b9d05d319188734f3bd577ac8072daae78a10f
     restart: unless-stopped
-    command: ['--jetstream', '--store_dir', '/data', '--http_port', '8222']
+    command: ['--config', '/etc/nats/nats-server.conf']
+    environment:
+      # SHA-256 of nats/nats-server.conf. Compose recreates a container when its definition
+      # changes, not when a file it mounts does: changing this value with the file is what makes
+      # every environment restart the broker with the new permissions (tests/nats-permissions.sh
+      # checks that the two match).
+      NATS_SERVER_CONF_SHA256: 48dfd028622b398ba42221198bcdb1282ed616ebeb8e08152042d2b36cc72e0a
+      # Read by nats/nats-server.conf: one user per backend, and the user that owns the streams.
+      NATS_ADMIN_PASSWORD: ${NATS_ADMIN_PASSWORD}
+      IDENTITY_NATS_PASSWORD: ${IDENTITY_NATS_PASSWORD}
+      ORGANIZATION_NATS_PASSWORD: ${ORGANIZATION_NATS_PASSWORD}
+      BILLING_NATS_PASSWORD: ${BILLING_NATS_PASSWORD}
+      TASK_NATS_PASSWORD: ${TASK_NATS_PASSWORD}
+      DOCUMENT_NATS_PASSWORD: ${DOCUMENT_NATS_PASSWORD}
+      STORAGE_NATS_PASSWORD: ${STORAGE_NATS_PASSWORD}
+      NOTIFICATION_NATS_PASSWORD: ${NOTIFICATION_NATS_PASSWORD}
+      AUTOMATION_NATS_PASSWORD: ${AUTOMATION_NATS_PASSWORD}
+      INTEGRATION_NATS_PASSWORD: ${INTEGRATION_NATS_PASSWORD}
+      SEARCH_NATS_PASSWORD: ${SEARCH_NATS_PASSWORD}
+      API_GATEWAY_NATS_PASSWORD: ${API_GATEWAY_NATS_PASSWORD}
+      REALTIME_GATEWAY_NATS_PASSWORD: ${REALTIME_GATEWAY_NATS_PASSWORD}
     volumes:
       - nats-data:/data
+      - ./nats/nats-server.conf:/etc/nats/nats-server.conf:ro
     networks:
       - internal
     healthcheck:
@@ -81,6 +103,39 @@ services:
       resources:
         limits:
           memory: 128M
+
+  nats-streams:
+    # Owner of the JetStream streams: the backends may not create one. It applies
+    # nats/ensure-streams.sh at start, then stays to recreate a stream the broker lost; it is
+    # healthy while EVENTS, EVENTS_RESTRICTED and EVENTS_DLQ exist, which is what the services of
+    # the local stack and the GitOps agent wait for. Operators read the dead letters from it:
+    # `docker compose exec nats-streams nats stream view EVENTS_DLQ`.
+    image: natsio/nats-box:0.20.2-nonroot@sha256:d00bffed51ea1a29e58852698bde37020d306af55585882f88dbcf09dd86f5fe
+    restart: unless-stopped
+    entrypoint: ['/bin/sh', '/etc/nats/ensure-streams.sh']
+    environment:
+      # SHA-256 of nats/ensure-streams.sh, for the same reason as NATS_SERVER_CONF_SHA256.
+      ENSURE_STREAMS_SHA256: 2c94b5c73505b2f0eb5218231aacf7a76bf4e9f7b8f3bd2ad92eb9e7dbd2e85a
+      NATS_URL: ${NATS_URL}
+      NATS_USER: admin
+      NATS_PASSWORD: ${NATS_ADMIN_PASSWORD}
+    volumes:
+      - ./nats/ensure-streams.sh:/etc/nats/ensure-streams.sh:ro
+    networks:
+      - internal
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'test', '-e', '/tmp/streams-ready']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 32M
 
   meilisearch:
     image: getmeili/meilisearch:v1.56.2@sha256:9600db22be3fcbf3d506176d3a73dd70a65c5719d9aa1d2837355b75afb8f4fb

@@ -34,6 +34,9 @@ them on the host from `ansible/inventory/group_vars/cadenway.yml`.
 
 Values are taken literally; a value cannot contain a single quote (`'`).
 
+The message broker adds `NATS_ADMIN_PASSWORD` and one `<NAME>_NATS_PASSWORD` per backend, with their
+own constraint on the values: see [messaging](../docs/messaging.md#secrets).
+
 The stack variables match [`compose/.env.example`](../compose/.env.example), which holds the local
 values.
 

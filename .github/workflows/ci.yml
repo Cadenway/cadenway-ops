@@ -101,6 +101,25 @@ jobs:
           docker:28.5.2-cli@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c2c9acbdd4d
           sh -c "apk add --no-cache bash >/dev/null && bash /backup/tests/e2e.sh"
 
+  broker:
+    name: NATS users and streams end to end
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: >-
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt
+          koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
+          compose/nats/ensure-streams.sh compose/tests/nats-permissions.sh
+      # The broker of compose/infra.yaml: who may publish what, who may read the restricted
+      # events, the dead-letter path, and the streams kept in place.
+      - run: bash compose/tests/nats-permissions.sh
+
   host:
     name: Ansible on a throwaway host
     if: github.event_name == 'pull_request'
