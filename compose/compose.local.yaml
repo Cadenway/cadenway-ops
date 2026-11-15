@@ -189,6 +189,7 @@ services:
     profiles: [core, full]
     environment:
       MIGRATION_DATABASE_URL: ${IDENTITY_SERVICE_MIGRATION_DATABASE_URL}
+      PASSWORD_PEPPER: ${IDENTITY_PASSWORD_PEPPER}
       NATS_USER: identity
       NATS_PASSWORD: ${IDENTITY_NATS_PASSWORD}
       INTERNAL_TOKEN_AUDIENCE: identity-service
