@@ -150,13 +150,12 @@ check 'old password refused' '[[ $OUT == *"password authentication failed"* ]]'
 OUT=$(run_init -e TASK_DB_APP_PASSWORD=) || true
 check 'a missing password stops the run' '[[ $OUT == *"password of the \"task\" database roles is missing"* ]]'
 
-OUT=$(superuser -d task >/dev/null <<'SQL'
+superuser -d task >/dev/null <<'SQL'
 ALTER DEFAULT PRIVILEGES FOR ROLE task_migrator GRANT USAGE ON SCHEMAS TO task_app;
 ALTER DEFAULT PRIVILEGES FOR ROLE task_migrator GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO task_app;
 GRANT USAGE ON SCHEMA drizzle TO task_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA drizzle TO task_app;
 SQL
-) || true
 OUT=$(run_init) || OUT="failed: $OUT"
 check 'a run removes the former database-wide default privileges' '[[ $OUT != failed:* ]]'
 OUT=$(superuser -d task -c "SELECT count(*) FROM pg_default_acl WHERE defaclnamespace = 0")
