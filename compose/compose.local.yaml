@@ -323,6 +323,7 @@ services:
       SMTP_USER: ${SMTP_USER}
       SMTP_PASSWORD: ${SMTP_PASSWORD}
       MAIL_FROM: ${MAIL_FROM}
+      WEB_APP_URL: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}
     build:
       context: ../../cadenway-notification-service
       secrets: [npmrc]
