@@ -69,23 +69,34 @@ The events do not exist yet: their names are chosen in cadenway-api-contracts, a
 | Stream              | Subjects       | Kept    | Size cap | Holds                                         |
 | ------------------- | -------------- | ------- | -------- | --------------------------------------------- |
 | `EVENTS`            | `evt.>`        | 7 days  | 1 GiB    | Every event                                   |
-| `EVENTS_RESTRICTED` | `restricted.>` | 7 days  | 64 MiB   | The restricted events                         |
+| `EVENTS_RESTRICTED` | `restricted.>` | 1 hour  | 64 MiB   | The restricted events                         |
 | `EVENTS_DLQ`        | `dlq.>`        | 30 days | 256 MiB  | Messages a consumer gave up on (dead letters) |
 
 File storage, oldest messages dropped first, duplicates of a `Nats-Msg-Id` refused for two minutes.
 The sizes are starting values.
 
+A restricted event carries a single-use code valid ten minutes, or a link that expires as soon. One
+hour delivers it through a short outage of notification-service, and none stays readable in the
+stream past its use.
+
 No backend can create, change, purge or delete a stream. The `nats-streams` container of
 `compose/infra.yaml` owns them: it runs `compose/nats/ensure-streams.sh` with the `admin` user,
 creates or updates the three streams at start, then checks every minute that they exist and
-creates again one the broker lost. It is healthy while the three exist.
+creates again one the broker lost. It is healthy while the three exist. A changed limit reaches a
+stream that exists when the container starts again, which a new `ENSURE_STREAMS_SHA256` causes on
+every host (see [changing the permissions](#changing-the-permissions)); a lower age drops the
+older messages at once, and the retention and storage of a stream never change.
 
 - Locally, the services that use the broker wait for it (`depends_on` in `compose.local.yaml`).
 - On a host, it is one of the infrastructure services the GitOps agent starts and waits for before
   any deployable; nothing else is needed.
 
 The streams are not backed up: a service keeps its sent outbox rows seven days and can publish them
-again.
+again, except the restricted ones. From `@cadenway/nest-messaging` 0.1.2, the statement that marks a
+restricted row sent replaces its payload with a redacted envelope (`"$redacted": true`), and a
+redacted row is never requeued or published again: a restricted event lost with the broker is not
+restored, its owner issues a new code or link. The payload before redaction stays in the
+write-ahead log, the dead row versions and the backups of PostgreSQL for as long as they keep it.
 
 ## Dead letters
 

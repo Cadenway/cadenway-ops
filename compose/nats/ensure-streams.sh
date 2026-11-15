@@ -13,8 +13,10 @@
 # Never exits on its own; a failed pass is tried again after a few seconds.
 #
 # Sizes are starting values: adjust them once the disk of the VPS is known. A value changed here
-# is applied when the container starts: change ENSURE_STREAMS_SHA256 in infra.yaml with this file,
-# so that every environment restarts it. The storage type of an existing stream cannot be changed.
+# is applied when the container starts, to a stream that exists as to a new one: change
+# ENSURE_STREAMS_SHA256 in infra.yaml with this file, so that every environment restarts it. The
+# storage type and the retention of an existing stream cannot be changed; a lower maximum age drops
+# the messages older than it at once.
 set -eu
 
 readonly READY=/tmp/streams-ready
@@ -46,11 +48,13 @@ ensure_stream() {
 
 # One pass over the declarations. The two-minute duplicate window is the one the publishers rely
 # on (`Nats-Msg-Id` is the event id). Seven days matches the time a service keeps its sent outbox
-# rows; dead letters wait longer for an operator.
+# rows. A restricted event carries a single-use code valid ten minutes, or a link that expires as
+# soon: one hour delivers it through a short outage of notification-service, and none stays
+# readable in the stream past its use. Dead letters wait longer for an operator.
 ensure_streams() {
   ensure_stream EVENTS 'evt.>' 7d 1GiB \
     'Every Cadenway event.' &&
-    ensure_stream EVENTS_RESTRICTED 'restricted.>' 7d 64MiB \
+    ensure_stream EVENTS_RESTRICTED 'restricted.>' 1h 64MiB \
       'Identity events carrying a single-use code or link; read by notification-service only.' &&
     ensure_stream EVENTS_DLQ 'dlq.>' 30d 256MiB \
       'Messages a consumer gave up on, copied by the dead-letter worker.'

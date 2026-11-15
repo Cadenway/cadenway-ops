@@ -3,7 +3,8 @@
 # compose/.env.example. Covers: the three streams and their limits, a backend that publishes its
 # own subjects only, events read through consumers and never through a subscription, the restricted
 # stream read by notification only, inboxes kept apart, the dead-letter path, streams no backend
-# can change, a lost stream created again, and the hashes that make a host restart the broker.
+# can change, a lost stream created again, an existing stream brought to its declaration, and the
+# hashes that make a host restart the broker.
 #
 #   bash compose/tests/nats-permissions.sh
 #
@@ -46,6 +47,27 @@ stream_field() {
   compose exec -T -e STREAM="$1" -e FILTER="$2" nats-streams \
     sh -c 'nats stream info "$STREAM" --json | jq -r "$FILTER"' 2>&1 || true
 }
+# Waits up to a minute for a field of a stream to take a value; prints the last value read.
+# Arguments: stream, jq filter, expected value.
+wait_for() {
+  local value=''
+  for _ in $(seq 1 30); do
+    value=$(stream_field "$1" "$2")
+    [[ $value == "$3" ]] && break
+    sleep 2
+  done
+  printf '%s\n' "$value"
+}
+# Waits up to a minute for nats-streams to be healthy, which a restart resets; prints its state.
+wait_healthy() {
+  local state=''
+  for _ in $(seq 1 30); do
+    state=$(compose ps --format '{{.Service}} {{.Health}}' nats-streams)
+    [[ $state == 'nats-streams healthy' ]] && break
+    sleep 2
+  done
+  printf '%s\n' "$state"
+}
 
 check() { if eval "$2"; then echo "PASS $1"; else echo "FAIL $1"; echo "${OUT:-}" | tail -5; FAILED=1; fi; }
 FAILED=0
@@ -65,8 +87,10 @@ echo '=== 2. the streams exist, as declared'
 OUT=$(stream_field EVENTS '[.config.subjects[0], .config.storage, .config.max_age, .config.max_bytes, .config.duplicate_window] | join(" ")')
 check 'EVENTS on evt.>, file storage, seven days, 1 GiB, two-minute window' \
   '[[ $OUT == "evt.> file 604800000000000 1073741824 120000000000" ]]'
-OUT=$(stream_field EVENTS_RESTRICTED '[.config.subjects[0], .config.storage, .config.max_age] | join(" ")')
-check 'EVENTS_RESTRICTED on restricted.>' '[[ $OUT == "restricted.> file 604800000000000" ]]'
+OUT=$(stream_field EVENTS_RESTRICTED \
+  '.config | [.subjects[0], .storage, .retention, .max_age, .max_bytes] | join(" ")')
+check 'EVENTS_RESTRICTED on restricted.>, limits retention, one hour, 64 MiB' \
+  '[[ $OUT == "restricted.> file limits 3600000000000 67108864" ]]'
 OUT=$(stream_field EVENTS_DLQ '[.config.subjects[0], .config.storage, .config.max_age] | join(" ")')
 check 'EVENTS_DLQ on dlq.>, thirty days' '[[ $OUT == "dlq.> file 2592000000000000" ]]'
 
@@ -193,5 +217,22 @@ done
 check 'a deleted stream is created again within the check interval' '[[ $OUT == back ]]'
 OUT=$(compose ps --format '{{.Service}} {{.Health}}' nats-streams)
 check 'and the container is healthy again' '[[ $OUT == "nats-streams healthy" ]]'
+
+echo '=== 10. an existing stream is brought to the declaration when nats-streams starts'
+# The restricted stream as the former declaration left it on a host: seven days.
+compose exec -T nats-streams nats stream edit EVENTS_RESTRICTED --max-age 7d --force >/dev/null 2>&1
+OUT=$(stream_field EVENTS_RESTRICTED '.config.max_age')
+check 'the stream is set back to seven days' '[[ $OUT == 604800000000000 ]]'
+compose restart nats-streams >/dev/null 2>&1
+OUT=$(wait_for EVENTS_RESTRICTED '.config.max_age' 3600000000000)
+check 'one hour again after a restart' '[[ $OUT == 3600000000000 ]]'
+OUT=$(stream_field EVENTS_RESTRICTED \
+  '[.config.retention, .config.max_bytes, .state.messages] | join(" ")')
+check 'same retention and size cap, the stored code kept' '[[ $OUT == "limits 67108864 1" ]]'
+OUT=$(wait_healthy)
+check 'and the container is healthy' '[[ $OUT == "nats-streams healthy" ]]'
+compose restart nats-streams >/dev/null 2>&1
+OUT=$(wait_healthy)
+check 'a start with nothing to change is healthy too' '[[ $OUT == "nats-streams healthy" ]]'
 
 exit "$FAILED"
