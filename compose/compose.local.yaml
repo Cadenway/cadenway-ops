@@ -2,6 +2,8 @@
 #
 #   cp .env.example .env        (once; Compose reads compose/.env, which names this file and the
 #                                profile in COMPOSE_FILE and COMPOSE_PROFILES)
+#   docker compose run --rm internal-token-keys
+#                               (once; writes the key pairs of the internal token into compose/.env)
 #   docker compose up -d
 #   docker compose watch task-service
 #
@@ -10,6 +12,11 @@
 # organization, task, notification, API gateway, web application); `full` starts everything.
 # Browsers resolve `*.localhost` to the machine: http://app.cadenway.localhost,
 # http://mail.cadenway.localhost.
+#
+# The `environment` entries below are the ones each backend's own deploy/compose.yaml declares
+# (docs/service-environment.md lists them). They are repeated here because the stack runs the
+# definitions of the last release with images built from the sources: a variable the sources read
+# must not wait for a release to exist locally. Same names, same variables of compose/.env.
 #
 # Garage is the local object store, the stand-in for OVH Object Storage: S3 API on
 # http://s3.cadenway.localhost for the browser and on http://garage:3900 inside the stack, region
@@ -108,8 +115,43 @@ services:
         limits:
           memory: 256M
 
+  internal-token-keys:
+    # Not part of the stack: run once, by hand, after `cp .env.example .env`. It appends to
+    # compose/.env the Ed25519 key pair of each backend that signs the internal token, so that no
+    # private key is ever committed and Compose reads the keys like any other variable. A second
+    # run changes nothing. `docker compose run --rm internal-token-keys --print` prints fresh pairs
+    # instead, for the secrets of an environment. No network, no health check: it exits at once.
+    profiles: [setup]
+    image: node:24.22.3-alpine3.24@sha256:98e4e60b35fd50143e1838da2957488c25aa3a3efbd48bb679923f77d6d3d873
+    restart: 'no'
+    network_mode: none
+    entrypoint: ['node', '/stack/internal-token/generate-keys.mjs']
+    command: ['/stack/.env']
+    volumes:
+      - .:/stack
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
   api-gateway:
     profiles: [core, full]
+    environment:
+      INTERNAL_TOKEN_ISSUER: api-gateway
+      INTERNAL_TOKEN_PRIVATE_JWK: ${API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}
+      NATS_URL: ${NATS_URL}
+      NATS_USER: api-gateway
+      NATS_PASSWORD: ${API_GATEWAY_NATS_PASSWORD}
+      IDENTITY_SERVICE_URL: ${IDENTITY_SERVICE_URL}
+      ORGANIZATION_SERVICE_URL: ${ORGANIZATION_SERVICE_URL}
+      BILLING_SERVICE_URL: ${BILLING_SERVICE_URL}
+      TASK_SERVICE_URL: ${TASK_SERVICE_URL}
+      DOCUMENT_SERVICE_URL: ${DOCUMENT_SERVICE_URL}
+      STORAGE_SERVICE_URL: ${STORAGE_SERVICE_URL}
+      NOTIFICATION_SERVICE_URL: ${NOTIFICATION_SERVICE_URL}
+      AUTOMATION_SERVICE_URL: ${AUTOMATION_SERVICE_URL}
+      INTEGRATION_SERVICE_URL: ${INTEGRATION_SERVICE_URL}
+      SEARCH_SERVICE_URL: ${SEARCH_SERVICE_URL}
     build:
       context: ../../cadenway-api-gateway
       secrets: [npmrc]
@@ -121,6 +163,13 @@ services:
 
   realtime-gateway:
     profiles: [full]
+    environment:
+      INTERNAL_TOKEN_ISSUER: realtime-gateway
+      INTERNAL_TOKEN_PRIVATE_JWK: ${REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}
+      NATS_USER: realtime-gateway
+      NATS_PASSWORD: ${REALTIME_GATEWAY_NATS_PASSWORD}
+      IDENTITY_SERVICE_URL: ${IDENTITY_SERVICE_URL}
+      TASK_SERVICE_URL: ${TASK_SERVICE_URL}
     build:
       context: ../../cadenway-realtime-gateway
       secrets: [npmrc]
@@ -135,6 +184,14 @@ services:
 
   identity-service:
     profiles: [core, full]
+    environment:
+      MIGRATION_DATABASE_URL: ${IDENTITY_SERVICE_MIGRATION_DATABASE_URL}
+      NATS_USER: identity
+      NATS_PASSWORD: ${IDENTITY_NATS_PASSWORD}
+      INTERNAL_TOKEN_AUDIENCE: identity-service
+      INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
+        {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
+        "realtime-gateway": [${REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
     build:
       context: ../../cadenway-identity-service
       secrets: [npmrc]
@@ -146,6 +203,13 @@ services:
 
   organization-service:
     profiles: [core, full]
+    environment:
+      MIGRATION_DATABASE_URL: ${ORGANIZATION_SERVICE_MIGRATION_DATABASE_URL}
+      NATS_USER: organization
+      NATS_PASSWORD: ${ORGANIZATION_NATS_PASSWORD}
+      INTERNAL_TOKEN_AUDIENCE: organization-service
+      INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
+        {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
     build:
       context: ../../cadenway-organization-service
       secrets: [npmrc]
@@ -157,6 +221,13 @@ services:
 
   billing-service:
     profiles: [full]
+    environment:
+      MIGRATION_DATABASE_URL: ${BILLING_SERVICE_MIGRATION_DATABASE_URL}
+      NATS_USER: billing
+      NATS_PASSWORD: ${BILLING_NATS_PASSWORD}
+      INTERNAL_TOKEN_AUDIENCE: billing-service
+      INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
+        {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
     build:
       context: ../../cadenway-billing-service
       secrets: [npmrc]
@@ -168,6 +239,16 @@ services:
 
   task-service:
     profiles: [core, full]
+    environment:
+      MIGRATION_DATABASE_URL: ${TASK_SERVICE_MIGRATION_DATABASE_URL}
+      NATS_USER: task
+      NATS_PASSWORD: ${TASK_NATS_PASSWORD}
+      INTERNAL_TOKEN_AUDIENCE: task-service
+      INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
+        {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
+        "realtime-gateway": [${REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
+        "automation-service": [${AUTOMATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS}],
+        "integration-service": [${INTEGRATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS}]}
     build:
       context: ../../cadenway-task-service
       secrets: [npmrc]
@@ -179,6 +260,13 @@ services:
 
   document-service:
     profiles: [full]
+    environment:
+      MIGRATION_DATABASE_URL: ${DOCUMENT_SERVICE_MIGRATION_DATABASE_URL}
+      NATS_USER: document
+      NATS_PASSWORD: ${DOCUMENT_NATS_PASSWORD}
+      INTERNAL_TOKEN_AUDIENCE: document-service
+      INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
+        {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
     build:
       context: ../../cadenway-document-service
       secrets: [npmrc]
@@ -190,6 +278,20 @@ services:
 
   storage-service:
     profiles: [full]
+    environment:
+      MIGRATION_DATABASE_URL: ${STORAGE_SERVICE_MIGRATION_DATABASE_URL}
+      NATS_USER: storage
+      NATS_PASSWORD: ${STORAGE_NATS_PASSWORD}
+      INTERNAL_TOKEN_AUDIENCE: storage-service
+      INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
+        {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+      S3_ENDPOINT: ${STORAGE_S3_ENDPOINT}
+      S3_PUBLIC_ENDPOINT: ${STORAGE_S3_PUBLIC_ENDPOINT}
+      S3_REGION: ${STORAGE_S3_REGION}
+      S3_BUCKET: ${STORAGE_S3_BUCKET}
+      S3_ACCESS_KEY_ID: ${STORAGE_S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${STORAGE_S3_SECRET_ACCESS_KEY}
+      S3_FORCE_PATH_STYLE: ${STORAGE_S3_FORCE_PATH_STYLE}
     build:
       context: ../../cadenway-storage-service
       secrets: [npmrc]
@@ -197,10 +299,26 @@ services:
       watch:
         - action: rebuild
           path: ../../cadenway-storage-service/src
-    depends_on: *data
+    depends_on:
+      <<: *data
+      garage:
+        condition: service_healthy
 
   notification-service:
     profiles: [core, full]
+    environment:
+      MIGRATION_DATABASE_URL: ${NOTIFICATION_SERVICE_MIGRATION_DATABASE_URL}
+      NATS_USER: notification
+      NATS_PASSWORD: ${NOTIFICATION_NATS_PASSWORD}
+      INTERNAL_TOKEN_AUDIENCE: notification-service
+      INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
+        {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
+        "automation-service": [${AUTOMATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      MAIL_FROM: ${MAIL_FROM}
     build:
       context: ../../cadenway-notification-service
       secrets: [npmrc]
@@ -212,6 +330,17 @@ services:
 
   automation-service:
     profiles: [full]
+    environment:
+      MIGRATION_DATABASE_URL: ${AUTOMATION_SERVICE_MIGRATION_DATABASE_URL}
+      NATS_USER: automation
+      NATS_PASSWORD: ${AUTOMATION_NATS_PASSWORD}
+      INTERNAL_TOKEN_AUDIENCE: automation-service
+      INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
+        {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+      INTERNAL_TOKEN_ISSUER: automation-service
+      INTERNAL_TOKEN_PRIVATE_JWK: ${AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}
+      TASK_SERVICE_URL: ${TASK_SERVICE_URL}
+      NOTIFICATION_SERVICE_URL: ${NOTIFICATION_SERVICE_URL}
     build:
       context: ../../cadenway-automation-service
       secrets: [npmrc]
@@ -223,6 +352,16 @@ services:
 
   integration-service:
     profiles: [full]
+    environment:
+      MIGRATION_DATABASE_URL: ${INTEGRATION_SERVICE_MIGRATION_DATABASE_URL}
+      NATS_USER: integration
+      NATS_PASSWORD: ${INTEGRATION_NATS_PASSWORD}
+      INTERNAL_TOKEN_AUDIENCE: integration-service
+      INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
+        {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+      INTERNAL_TOKEN_ISSUER: integration-service
+      INTERNAL_TOKEN_PRIVATE_JWK: ${INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}
+      TASK_SERVICE_URL: ${TASK_SERVICE_URL}
     build:
       context: ../../cadenway-integration-service
       secrets: [npmrc]
@@ -234,6 +373,15 @@ services:
 
   search-service:
     profiles: [full]
+    environment:
+      MIGRATION_DATABASE_URL: ${SEARCH_SERVICE_MIGRATION_DATABASE_URL}
+      NATS_USER: search
+      NATS_PASSWORD: ${SEARCH_NATS_PASSWORD}
+      INTERNAL_TOKEN_AUDIENCE: search-service
+      INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
+        {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+      MEILI_URL: ${MEILI_URL}
+      MEILI_API_KEY: ${MEILI_MASTER_KEY}
     build:
       context: ../../cadenway-search-service
       secrets: [npmrc]
@@ -241,7 +389,10 @@ services:
       watch:
         - action: rebuild
           path: ../../cadenway-search-service/src
-    depends_on: *data
+    depends_on:
+      <<: *data
+      meilisearch:
+        condition: service_healthy
 
   webapp:
     profiles: [core, full]

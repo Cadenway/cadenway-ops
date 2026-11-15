@@ -18,9 +18,10 @@ stack builds each service from its sibling folder.
 
 ```bash
 cd compose
-cp .env.example .env              # once
-docker compose up -d              # start (stop: docker compose down)
-docker compose watch task-service # rebuild a service when its sources change
+cp .env.example .env                        # once
+docker compose run --rm internal-token-keys # once: the key pairs of the internal token
+docker compose up -d                        # start (stop: docker compose down)
+docker compose watch task-service           # rebuild a service when its sources change
 ```
 
 Then open `http://app.cadenway.localhost`. The `core` profile starts the infrastructure, the identity,

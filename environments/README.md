@@ -36,6 +36,9 @@ Values are taken literally; a value cannot contain a single quote (`'`).
 The stack variables match [`compose/.env.example`](../compose/.env.example), which holds the local
 values.
 
+The keys of the internal token, the outgoing e-mail and the object storage of the attachments add
+the secrets listed in [environment of the backends](../docs/service-environment.md#secrets).
+
 ## Registry access
 
 The images on GHCR are private: the agent logs in with `GHCR_PULL_USER` and `GHCR_PULL_TOKEN` before
