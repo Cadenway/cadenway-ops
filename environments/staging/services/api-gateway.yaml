@@ -8,9 +8,28 @@ services:
   api-gateway:
     image: ghcr.io/${GHCR_OWNER}/cadenway-api-gateway:${API_GATEWAY_VERSION}
     restart: unless-stopped
+    # The entries of the gateway in cadenway-ops docs/service-environment.md, plus ALLOWED_ORIGINS,
+    # built from DOMAIN and PUBLIC_SCHEME. Those two, REDIS_URL and the <NAME>_SERVICE_URL come from
+    # the environment file Ansible writes on the host, the private key from the secrets of the
+    # environment. The gateway trusts no issuer: it signs the calls it makes and authenticates the
+    # applications itself.
     environment:
       PORT: '3000'
       REDIS_URL: ${REDIS_URL}
+      # The web application and the website, the only origins CORS and the CSRF check accept.
+      ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN},${PUBLIC_SCHEME:-https}://${DOMAIN}
+      INTERNAL_TOKEN_ISSUER: api-gateway
+      INTERNAL_TOKEN_PRIVATE_JWK: ${API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}
+      IDENTITY_SERVICE_URL: ${IDENTITY_SERVICE_URL}
+      ORGANIZATION_SERVICE_URL: ${ORGANIZATION_SERVICE_URL}
+      BILLING_SERVICE_URL: ${BILLING_SERVICE_URL}
+      TASK_SERVICE_URL: ${TASK_SERVICE_URL}
+      DOCUMENT_SERVICE_URL: ${DOCUMENT_SERVICE_URL}
+      STORAGE_SERVICE_URL: ${STORAGE_SERVICE_URL}
+      NOTIFICATION_SERVICE_URL: ${NOTIFICATION_SERVICE_URL}
+      AUTOMATION_SERVICE_URL: ${AUTOMATION_SERVICE_URL}
+      INTEGRATION_SERVICE_URL: ${INTEGRATION_SERVICE_URL}
+      SEARCH_SERVICE_URL: ${SEARCH_SERVICE_URL}
     networks:
       - edge
       - internal
