@@ -34,12 +34,12 @@ each of them.
 
 ## Variables
 
-| Variable of the stack                   | Holds                                                 | Read as, in the service container |
-| --------------------------------------- | ----------------------------------------------------- | --------------------------------- |
-| `<NAME>_DB_MIGRATOR_PASSWORD`           | Password of `<service>_migrator`, given to PostgreSQL | Not passed to a service           |
-| `<NAME>_DB_APP_PASSWORD`                | Password of `<service>_app`, given to PostgreSQL      | Not passed to a service           |
-| `<NAME>_SERVICE_DATABASE_URL`           | URL of the application role, with its password        | `DATABASE_URL`                    |
-| `<NAME>_SERVICE_MIGRATION_DATABASE_URL` | URL of the migrator, with its password                | `MIGRATION_DATABASE_URL`          |
+| Variable of the stack                   | Holds                                                 | Read as                                                   |
+| --------------------------------------- | ----------------------------------------------------- | --------------------------------------------------------- |
+| `<NAME>_DB_MIGRATOR_PASSWORD`           | Password of `<service>_migrator`, given to PostgreSQL | Not passed to a service                                   |
+| `<NAME>_DB_APP_PASSWORD`                | Password of `<service>_app`, given to PostgreSQL      | Not passed to a service                                   |
+| `<NAME>_SERVICE_DATABASE_URL`           | URL of the application role, with its password        | `DATABASE_URL`, in the service container                  |
+| `<NAME>_SERVICE_MIGRATION_DATABASE_URL` | URL of the migrator, with its password                | `MIGRATION_DATABASE_URL`, in the migration container only |
 
 `<NAME>` is the service in capitals (`TASK`). `compose/.env.example` holds the local values; staging
 and production keep the four of each service in `secrets.sops.env`
@@ -47,13 +47,28 @@ and production keep the four of each service in `secrets.sops.env`
 
 The GitOps agent applies the migrations in a one-off container of the service, before it starts the
 new version (see [deployment](deployment.md)). That container has the environment of the service
-definition, so the definition carries both URLs. The service reads `DATABASE_URL`;
+definition plus `MIGRATION_DATABASE_URL`, which the agent reads from
+`<NAME>_SERVICE_MIGRATION_DATABASE_URL` in the secrets and hands to that one command through its
+environment (`docker compose run -e MIGRATION_DATABASE_URL`), never on a command line. The
+long-running container gets only `DATABASE_URL`: a service that is compromised at run time holds
+the application role, not the owner of its schema. The service reads `DATABASE_URL`;
 `src/migrate.ts` reads `MIGRATION_DATABASE_URL`. A service whose `src/migrate.ts` still reads
 `DATABASE_URL` cannot apply a migration: the application role is refused, the agent keeps the
 previous version and reports the commit as failed.
 
-Locally nothing applies the migrations at start-up. Once the definition of a service carries
-`MIGRATION_DATABASE_URL`, apply them with the command the agent runs:
+A definition that declares `DATABASE_URL` needs its migrator URL: the agent refuses a commit whose
+secrets miss `<NAME>_SERVICE_MIGRATION_DATABASE_URL` for such a definition, as it refuses a commit
+that leaves a variable unset, before anything changes.
+
+The definitions still declare `MIGRATION_DATABASE_URL: ${<NAME>_SERVICE_MIGRATION_DATABASE_URL}`
+until each service removes the line from its `deploy/compose.yaml`. Until then the running container
+holds the migrator URL too; the migration container gets the same value from the agent, so removing
+the line only rolls the service out once more, without it.
+
+Locally nothing applies the migrations at start-up. `compose/compose.local.yaml` keeps
+`MIGRATION_DATABASE_URL` on each service, from the placeholders of `compose/.env.example`: the one
+place where a running container holds it, on a workstation only, so that the command the agent runs
+works without the agent:
 
 ```bash
 docker compose run --rm --no-deps task-service node dist/migrate.js

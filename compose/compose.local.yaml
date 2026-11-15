@@ -18,6 +18,12 @@
 # definitions of the last release with images built from the sources: a variable the sources read
 # must not wait for a release to exist locally. Same names, same variables of compose/.env.
 #
+# One entry is local only: MIGRATION_DATABASE_URL, the URL of the migrator that owns the database of
+# each service. On a server the GitOps agent gives it to the one-off migration container alone; here
+# the service keeps it, with the placeholders of compose/.env.example, so that
+# `docker compose run --rm --no-deps <service> node dist/migrate.js` applies the migrations
+# (docs/database.md).
+#
 # Garage is the local object store, the stand-in for OVH Object Storage: S3 API on
 # http://s3.cadenway.localhost for the browser and on http://garage:3900 inside the stack, region
 # `garage`, path-style addressing. It starts with the `full` profile, like the storage service.
