@@ -2,8 +2,17 @@
 # On each release the deploy workflow checks it and copies it into cadenway-ops, as
 # environments/<env>/services/notification-service.yaml for the environment it deploys to.
 #
-# Internal service: no Traefik label, no published port. Secret values (the database URL carries a
-# password) are referenced by name; they live in cadenway-ops.
+# Internal service: no Traefik label, no published port. Secret values (the database URLs, the NATS
+# password, the SMTP account) are referenced by name; they live in cadenway-ops, which documents
+# every variable below in docs/service-environment.md. A variable added here must exist on the host
+# before the release that reads it: the GitOps agent refuses a commit that leaves one unset.
+#
+# INTERNAL_TOKEN_TRUSTED_ISSUERS lists who may call this service: the API gateway, and
+# automation-service (its notify action only). The folded scalar gives the service one line of JSON.
+#
+# SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD and MAIL_FROM are the outgoing e-mail, each from
+# the variable of the same name in cadenway-ops; nothing reads them until the e-mail sender is
+# wired.
 services:
   notification-service:
     image: ghcr.io/${GHCR_OWNER}/cadenway-notification-service:${NOTIFICATION_SERVICE_VERSION}
@@ -11,7 +20,19 @@ services:
     environment:
       PORT: '3016'
       DATABASE_URL: ${NOTIFICATION_SERVICE_DATABASE_URL}
+      MIGRATION_DATABASE_URL: ${NOTIFICATION_SERVICE_MIGRATION_DATABASE_URL}
       NATS_URL: ${NATS_URL}
+      NATS_USER: notification
+      NATS_PASSWORD: ${NOTIFICATION_NATS_PASSWORD}
+      INTERNAL_TOKEN_AUDIENCE: notification-service
+      INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
+        {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
+        "automation-service": [${AUTOMATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      MAIL_FROM: ${MAIL_FROM}
     networks:
       - internal
     healthcheck:
