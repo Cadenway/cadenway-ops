@@ -54,9 +54,10 @@ ENVIRONMENT=staging CADENWAY_SERVICES=../environments/staging/services \
   --env-file ../environments/staging/versions.env -f compose.yaml
 
 # Prints, for each configuration, `<file>.<fact>=<value>` lines: its project, its edge network,
-# every network name, the Docker provider options of its Traefik, the services Traefik serves, and
-# those it would reach on another network than the edge (a label pointing elsewhere, or a service
-# not joined to it). An error goes to the same file, and every check below then fails.
+# every network name, the Docker provider options of its Traefik and the networks Traefik joins,
+# the services Traefik serves, and those it would reach on another network than the edge (a label
+# pointing elsewhere, or a service not joined to it). An error goes to the same file, and every
+# check below then fails.
 docker run --rm -i --network none -v "$MOUNT:/work" "$IMAGE" node --input-type=module - \
   >"$WORK/facts" 2>&1 <<'JS' || true
 import { readFileSync } from 'node:fs';
@@ -85,6 +86,8 @@ for (const file of ['first', 'second', 'default', 'staging']) {
   print('networks', Object.values(config.networks).map((network) => network.name).sort().join(' '));
   print('constraints', option('constraints'));
   print('network', option('network'));
+  const joins = Object.keys(config.services.traefik?.networks ?? {});
+  print('joins', joins.map((key) => config.networks[key].name).sort().join(' '));
   print('served', served.map(([name]) => name).sort().join(' '));
   print('astray', astray.map(([name]) => name).sort().join(' '));
 }
@@ -116,6 +119,9 @@ check 'the default one too' \
 check 'each one reaches the containers on the edge network of its project' \
   '[[ $(fact first.network) == "$FIRST-edge-local" &&
     $(fact second.network) == "$SECOND-edge-local" ]]'
+check 'and joins that network only' \
+  '[[ $(fact first.joins) == "$FIRST-edge-local" && $(fact second.joins) == "$SECOND-edge-local" &&
+    $(fact default.joins) == cadenway-edge-local ]]'
 
 echo '=== 3. every service Traefik serves is on that network'
 check 'a definition of staging and a local service are served' \
