@@ -33,15 +33,28 @@ x-redis: &redis
   redis:
     condition: service_healthy
 
+# The exposed services of the staging definitions point Traefik at `cadenway-edge-<env>`; locally
+# their edge network is the one of the project (`networks` at the end of this file).
+x-edge: &edge
+  traefik.docker.network: ${COMPOSE_PROJECT_NAME}-edge-local
+
 services:
   traefik:
-    # The production Traefik lives in edge.yaml, a project of its own on each host. A workstation
-    # runs one stack, so the local Traefik sits in it: plain HTTP on one entry point, no TLS.
+    # The production Traefik lives in edge.yaml, a project of its own on each host. Locally each
+    # stack has its own: plain HTTP on one entry point, no TLS. A second stack on the same machine
+    # (`docker compose -p <name>`, with another TRAEFIK_HTTP_PORT) never routes to this one: each
+    # Traefik serves the containers of its own project, on the edge network of that project.
     image: traefik:v3.7.18@sha256:9c437ac4f09ce6f4980a8544902d3475fdf70a1a7c578729581d2535dfa7d635
     restart: unless-stopped
     command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
+      # The Docker socket lists the containers of every project on the host: without this
+      # constraint two local stacks merge their routers and balance requests between them.
+      - --providers.docker.constraints=Label(`com.docker.compose.project`,`${COMPOSE_PROJECT_NAME}`)
+      # For the containers without a `traefik.docker.network` label (Mailpit, Garage): on two
+      # networks, Traefik would otherwise pick either address, and `internal` is out of its reach.
+      - --providers.docker.network=${COMPOSE_PROJECT_NAME}-edge-local
       - --entrypoints.web.address=:80
       - --ping=true
     ports:
@@ -154,6 +167,7 @@ services:
       AUTOMATION_SERVICE_URL: ${AUTOMATION_SERVICE_URL}
       INTEGRATION_SERVICE_URL: ${INTEGRATION_SERVICE_URL}
       SEARCH_SERVICE_URL: ${SEARCH_SERVICE_URL}
+    labels: *edge
     build:
       context: ../../cadenway-api-gateway
       secrets: [npmrc]
@@ -173,6 +187,7 @@ services:
       NATS_PASSWORD: ${REALTIME_GATEWAY_NATS_PASSWORD}
       IDENTITY_SERVICE_URL: ${IDENTITY_SERVICE_URL}
       TASK_SERVICE_URL: ${TASK_SERVICE_URL}
+    labels: *edge
     build:
       context: ../../cadenway-realtime-gateway
       secrets: [npmrc]
@@ -401,6 +416,7 @@ services:
 
   webapp:
     profiles: [core, full]
+    labels: *edge
     build:
       context: ../../cadenway-webapp
       secrets: [npmrc]
@@ -411,6 +427,7 @@ services:
 
   website:
     profiles: [full]
+    labels: *edge
     build:
       context: ../../cadenway-website
       secrets: [npmrc]
@@ -419,8 +436,6 @@ services:
         - action: rebuild
           path: ../../cadenway-website/src
 
-# On a server the edge network of an environment is external, created by edge.yaml. Locally this
-# stack creates it.
 # The images install the private @cadenway/* packages: their build mounts a user-level npmrc as a
 # secret. It comes from the NPMRC environment variable of the shell that runs Compose, never from a
 # file of this repository. See docs/development.md.
@@ -428,9 +443,13 @@ secrets:
   npmrc:
     environment: NPMRC
 
+# On a server the edge network of an environment is external, created by edge.yaml. Locally this
+# stack creates it, named after the project so that two stacks never share it:
+# `cadenway-edge-local` for the default project, `<name>-edge-local` for `-p <name>`.
+# tests/local-isolation.sh checks it with the Traefik constraint above.
 networks:
   edge: !override
-    name: cadenway-edge-local
+    name: ${COMPOSE_PROJECT_NAME}-edge-local
 
 volumes:
   garage-meta:

@@ -30,6 +30,13 @@ docker compose watch task-service           # rebuild a service when its sources
 `compose/.env` sets Compose's own `COMPOSE_FILE` and `COMPOSE_PROFILES`, so the plain commands use
 the local overrides and the `core` profile; set `COMPOSE_PROFILES=full` there for every service.
 
+A second stack can run beside the first one, to check a branch for example, under another project
+name and Traefik port: `TRAEFIK_HTTP_PORT=8080 docker compose -p cadenway-check up -d`. It has its
+own volumes, its own edge network (`<project>-edge-local`) and a Traefik that serves the containers
+of its own project only, so neither stack routes to the other (`compose/tests/local-isolation.sh`).
+Both build the same image names (`ghcr.io/local/cadenway-<x>:local`): a stack runs the image last
+built by either one when its containers are next created.
+
 The backends sign their calls to each other with Ed25519 keys, and no private key is committed:
 `internal-token-keys` generates the pairs of this workstation into `compose/.env`. See
 [environment of the backends](service-environment.md) for these keys and for every variable a
