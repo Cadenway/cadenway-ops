@@ -138,6 +138,7 @@ services:
   api-gateway:
     profiles: [core, full]
     environment:
+      ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN},${PUBLIC_SCHEME:-https}://${DOMAIN}
       INTERNAL_TOKEN_ISSUER: api-gateway
       INTERNAL_TOKEN_PRIVATE_JWK: ${API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}
       NATS_URL: ${NATS_URL}
@@ -165,6 +166,7 @@ services:
   realtime-gateway:
     profiles: [full]
     environment:
+      ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}
       INTERNAL_TOKEN_ISSUER: realtime-gateway
       INTERNAL_TOKEN_PRIVATE_JWK: ${REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}
       NATS_USER: realtime-gateway
