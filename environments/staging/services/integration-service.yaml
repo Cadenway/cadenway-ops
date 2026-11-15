@@ -2,8 +2,17 @@
 # On each release the deploy workflow checks it and copies it into cadenway-ops, as
 # environments/<env>/services/integration-service.yaml for the environment it deploys to.
 #
-# Internal service: no Traefik label, no published port. Secret values (the database URL carries a
-# password) are referenced by name; they live in cadenway-ops.
+# Internal service: no Traefik label, no published port. Secret values (the database URLs and the
+# NATS password) are referenced by name; they live in cadenway-ops, which documents every variable
+# below in docs/service-environment.md. A variable added here must exist on the host before the
+# release that reads it: the GitOps agent refuses a commit that leaves one unset.
+#
+# INTERNAL_TOKEN_TRUSTED_ISSUERS lists who may call this service: the API gateway only. The folded
+# scalar gives the service one line of JSON.
+#
+# This service also calls task-service: it signs those calls as the issuer integration-service with
+# its own private key, and reaches it at TASK_SERVICE_URL. Nothing reads these three variables
+# until the first call is written.
 services:
   integration-service:
     image: ghcr.io/${GHCR_OWNER}/cadenway-integration-service:${INTEGRATION_SERVICE_VERSION}
@@ -11,7 +20,16 @@ services:
     environment:
       PORT: '3018'
       DATABASE_URL: ${INTEGRATION_SERVICE_DATABASE_URL}
+      MIGRATION_DATABASE_URL: ${INTEGRATION_SERVICE_MIGRATION_DATABASE_URL}
       NATS_URL: ${NATS_URL}
+      NATS_USER: integration
+      NATS_PASSWORD: ${INTEGRATION_NATS_PASSWORD}
+      INTERNAL_TOKEN_AUDIENCE: integration-service
+      INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
+        {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+      INTERNAL_TOKEN_ISSUER: integration-service
+      INTERNAL_TOKEN_PRIVATE_JWK: ${INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}
+      TASK_SERVICE_URL: ${TASK_SERVICE_URL}
     networks:
       - internal
     healthcheck:
