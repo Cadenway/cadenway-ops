@@ -110,11 +110,28 @@ SELECT EXISTS (SELECT FROM pg_roles WHERE rolname = :'service') AS has_former_ro
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO :"app";
 
--- Rows, never structure: every schema, table and sequence the migrator creates from now on.
-ALTER DEFAULT PRIVILEGES FOR ROLE :"migrator" GRANT USAGE ON SCHEMAS TO :"app";
+-- Rows, never structure, and only in `public`: every table and sequence the migrator creates there
+-- from now on. Another schema stays closed to the application role unless the code that creates it
+-- grants what the runtime needs, as @cadenway/nest-jobs does for its pg-boss schema. The journal of
+-- drizzle-kit lives in the `drizzle` schema: the application role must never rewrite it, or the
+-- next migration run would apply migrations again.
+-- A volume set up by an earlier version of this script holds database-wide default privileges:
+-- they are revoked first, so every run converges on the same state.
+ALTER DEFAULT PRIVILEGES FOR ROLE :"migrator" REVOKE USAGE ON SCHEMAS FROM :"app";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"migrator"
+  REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM :"app";
+ALTER DEFAULT PRIVILEGES FOR ROLE :"migrator" REVOKE USAGE, SELECT ON SEQUENCES FROM :"app";
+ALTER DEFAULT PRIVILEGES FOR ROLE :"migrator" IN SCHEMA public
   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"app";
-ALTER DEFAULT PRIVILEGES FOR ROLE :"migrator" GRANT USAGE, SELECT ON SEQUENCES TO :"app";
+ALTER DEFAULT PRIVILEGES FOR ROLE :"migrator" IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO :"app";
+-- The journal of drizzle-kit, on a volume where it was created under the former privileges.
+SELECT EXISTS (SELECT FROM pg_namespace WHERE nspname = 'drizzle') AS has_drizzle \gset
+\if :has_drizzle
+  REVOKE ALL ON ALL TABLES IN SCHEMA drizzle FROM :"app";
+  REVOKE ALL ON ALL SEQUENCES IN SCHEMA drizzle FROM :"app";
+  REVOKE ALL ON SCHEMA drizzle FROM :"app";
+\endif
 
 -- And what already exists in `public`, on a volume older than the two roles.
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"app";
