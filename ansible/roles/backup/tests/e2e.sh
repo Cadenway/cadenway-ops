@@ -2,7 +2,8 @@
 # End-to-end test of cadenway-backup and cadenway-restore against a real PostgreSQL and a local
 # S3 endpoint (`rclone serve s3`). Covers: a failed backup keeps the older backups, a good one
 # applies the retention, a restore with a missing dump changes nothing, a restore brings the data
-# back, drops the tables a later migration added, and starts the stopped service again.
+# back for the two roles of the service, drops the tables a later migration added, and starts the
+# stopped service again.
 #
 #   docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
 #     -v "$PWD/ansible/roles/backup:/backup:ro" docker:28.5.2-cli \
@@ -11,7 +12,7 @@
 # It creates and removes the containers cw-test-postgres and cw-test-task: never run it on a host.
 #
 # The assertions are strings evaluated by `check`, so they expand late on purpose.
-# shellcheck disable=SC2016,SC2034
+# shellcheck disable=SC2016,SC2034,SC2329
 set -euo pipefail
 apk add --quiet --no-cache bash jq curl age rclone util-linux coreutils >/dev/null
 curl -fsSL -o /usr/local/bin/sops https://github.com/getsops/sops/releases/download/v3.13.3/sops-v3.13.3.linux.amd64
@@ -36,15 +37,23 @@ docker run -d --name cw-test-task --label com.docker.compose.project=cadenway-te
 until docker exec cw-test-postgres pg_isready -U postgres -q 2>/dev/null; do sleep 1; done
 sleep 2
 sql() { docker exec -i cw-test-postgres psql -U postgres -v ON_ERROR_STOP=1 -tAq "$@"; }
+# The two roles of a service and their privileges, as compose/postgres/init creates them.
 sql <<'SQL'
-CREATE USER task WITH PASSWORD 'task';
-CREATE DATABASE task OWNER task;
+CREATE ROLE task_migrator LOGIN PASSWORD 'task_migrator';
+CREATE ROLE task_app LOGIN PASSWORD 'task_app';
+CREATE DATABASE task OWNER task_migrator;
+REVOKE ALL ON DATABASE task FROM PUBLIC;
+GRANT CONNECT ON DATABASE task TO task_app;
 SQL
 sql -d task <<'SQL'
-SET ROLE task;
+ALTER DEFAULT PRIVILEGES FOR ROLE task_migrator
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO task_app;
+SET ROLE task_migrator;
 CREATE TABLE tasks (id text PRIMARY KEY, title text);
 INSERT INTO tasks VALUES ('CAD-482', 'Écran SSO');
 SQL
+# Runs SQL as the application role, connected as itself: its CONNECT privilege is checked too.
+app() { docker exec -i cw-test-postgres psql -U task_app -d task -v ON_ERROR_STOP=1 -tAq "$@" 2>&1; }
 
 # Local S3 endpoint; the bucket is the folder /data/backups.
 rclone serve s3 /data --addr 127.0.0.1:9000 --auth-key key,secretkey >/tmp/s3.log 2>&1 &
@@ -102,14 +111,18 @@ check 'data untouched' '[[ $(sql -d task -c "SELECT title FROM tasks") == "Écra
 
 echo '=== 4. restore: data back, later tables gone, service started again'
 sql -d task <<'SQL'
-SET ROLE task;
+SET ROLE task_migrator;
 DELETE FROM tasks;
 CREATE TABLE added_by_a_later_migration (id int);
 SQL
 cadenway-restore test "$STAMP" /tmp/backup.key task 2>/tmp/out
 check 'row restored' '[[ $(sql -d task -c "SELECT title FROM tasks") == "Écran SSO" ]]'
 check 'later table dropped' '[[ -z $(sql -d task -c "SELECT 1 FROM pg_tables WHERE tablename = '\''added_by_a_later_migration'\''") ]]'
-check 'owned by the service user' '[[ $(sql -d task -c "SELECT tableowner FROM pg_tables WHERE tablename = '\''tasks'\''") == task ]]'
+check 'owned by the migrator' '[[ $(sql -d task -c "SELECT tableowner FROM pg_tables WHERE tablename = '\''tasks'\''") == task_migrator ]]'
+check 'read by the application role' '[[ $(app -c "SELECT title FROM tasks") == "Écran SSO" ]]'
+check 'structure still closed to it' '[[ $(app -c "DROP TABLE tasks") == *"must be owner of table tasks"* ]]'
+sql -d task -c 'SET ROLE task_migrator' -c 'CREATE TABLE added_after_the_restore (id int)'
+check 'later tables open to it too' '[[ -z $(app -c "SELECT id FROM added_after_the_restore") ]]'
 check 'service running again' '[[ $(docker inspect -f "{{.State.Running}}" cw-test-task) == true ]]'
 check 'no plaintext left' '[[ ! -e /var/lib/cadenway-restore ]]'
 

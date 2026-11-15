@@ -8,6 +8,10 @@
 # survive next to an older migration journal), the dump restored, and the service started again.
 # Without a database list, every backed-up database is restored.
 #
+# A database belongs to its `<database>_migrator` role and is used by `<database>_app`
+# (compose/postgres/init): the restore creates the database again for the first, lets the second
+# connect, and takes the privileges on the tables from the dump.
+#
 # The GitOps agent's lock is held for the whole restore: no deployment, migration or restart runs
 # meanwhile. The identity (the backup private key) is read from the given file only; the restore
 # playbook copies it to /run and removes it whatever the outcome.
@@ -44,15 +48,17 @@ restore_database() {
   if ((${#stopped[@]})); then docker stop --time 30 "${stopped[@]}" >/dev/null; fi
   local status=0
   docker exec -i "$postgres" psql --quiet --username=postgres --set=ON_ERROR_STOP=1 \
-    --set=db="$database" --file=- <<'SQL' || status=1
+    --set=db="$database" --set=migrator="${database}_migrator" --set=app="${database}_app" \
+    --file=- <<'SQL' || status=1
 DROP DATABASE IF EXISTS :"db" WITH (FORCE);
-CREATE DATABASE :"db" OWNER :"db";
+CREATE DATABASE :"db" OWNER :"migrator";
 REVOKE ALL ON DATABASE :"db" FROM PUBLIC;
+GRANT CONNECT ON DATABASE :"db" TO :"app";
 SQL
   if ((status == 0)); then
     age --decrypt --identity "$IDENTITY" "$dump" |
       docker exec -i "$postgres" pg_restore --username=postgres --exit-on-error \
-        --no-owner --role="$database" --dbname="$database" || status=1
+        --no-owner --role="${database}_migrator" --dbname="$database" || status=1
   fi
   # The service comes back whatever the outcome: the agent does not restart a stopped container.
   if ((${#stopped[@]})); then docker start "${stopped[@]}" >/dev/null; fi
