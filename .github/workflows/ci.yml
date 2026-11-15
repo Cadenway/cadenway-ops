@@ -197,9 +197,11 @@ jobs:
       - run: >-
           docker run --rm -v "$PWD:/mnt:ro" -w /mnt
           koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
-          compose/tests/service-wiring.sh
+          compose/tests/service-wiring.sh compose/tests/local-isolation.sh
       # The key generator, and the environment the local stack gives each backend from its keys.
       - run: bash compose/tests/service-wiring.sh
+      # Two local stacks on one Docker host: their own edge network, a Traefik for each project.
+      - run: bash compose/tests/local-isolation.sh
 
   conventions:
     name: Commit conventions
