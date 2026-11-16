@@ -14,7 +14,7 @@ refused.
 | User               | Backend                   | Publishes                                                                                       | Consumes                      |
 | ------------------ | ------------------------- | ----------------------------------------------------------------------------------------------- | ----------------------------- |
 | `identity`         | identity-service          | `evt.user.>`, `evt.session.>`, `evt.api-token.>`, `restricted.>`                                | `EVENTS`                      |
-| `organization`     | organization-service      | `evt.organization.>`, `evt.member.>`, `evt.domain.>`                                            | `EVENTS`                      |
+| `organization`     | organization-service      | `evt.organization.>`, `evt.member.>`, `evt.invitation.>`, `evt.domain.>`                        | `EVENTS`                      |
 | `billing`          | billing-service           | `evt.subscription.>`, `evt.quota.>`, `evt.invoice.>`                                            | `EVENTS`                      |
 | `task`             | task-service              | `evt.space.>`, `evt.list.>`, `evt.task.>`, `evt.comment.>`, `evt.approval.>`, `evt.milestone.>` | `EVENTS`                      |
 | `document`         | document-service          | `evt.doc.>`                                                                                     | `EVENTS`                      |
@@ -29,7 +29,11 @@ refused.
 
 A subject is `evt.<event-name>`, and an event name starts with its entity: the entity decides who
 may publish. The lists above are the events each service declares in its `AGENTS.md`, plus the
-decisions of the integration plan (`api-usage.recorded` for the gateway).
+decisions of the integration plan: `api-usage.recorded` for the gateway, and `invitation.issued`
+for organization-service, which sends the invitation e-mail through notification-service. The
+plan also keeps invitation events off the restricted stream: accepting an invitation requires a
+session whose verified address is the invited one, so the invitation id in the e-mail link is no
+secret capability.
 
 A service connects with three variables: `NATS_URL`, `NATS_USER` (the user above) and
 `NATS_PASSWORD`. Its definition takes the password from `<NAME>_NATS_PASSWORD` (`TASK_NATS_PASSWORD`,
@@ -46,6 +50,35 @@ subscribe to `evt.>`. A user that consumes may create a consumer on `EVENTS`, re
 and acknowledge them, whatever the subject: every event of `EVENTS` is readable by every consuming
 backend. No backend may delete a consumer; an operator removes an obsolete one with the `admin`
 user.
+
+`@cadenway/nest-messaging` gives each handler a durable pull consumer named `<service>__<handler>`
+with one filter subject, and uses these API subjects, granted on `EVENTS` to every user that
+consumes:
+
+| Step                                  | Subject                                                                   |
+| ------------------------------------- | ------------------------------------------------------------------------- |
+| Create the consumer, or align it      | `$JS.API.CONSUMER.CREATE.EVENTS.<consumer>.<subject>`                     |
+| Read the consumer                     | `$JS.API.CONSUMER.INFO.EVENTS.<consumer>`                                 |
+| Pull messages                         | `$JS.API.CONSUMER.MSG.NEXT.EVENTS.<consumer>`, replies on `_INBOX.<user>` |
+| Acknowledge, or ask for a later retry | `$JS.ACK.EVENTS.<consumer>.>`                                             |
+
+A new consumer therefore changes nothing here. The rights do not tie a consumer to its service: a
+permission matches whole subject tokens, so it cannot match the `<service>__` start of a consumer
+name. So a backend that consumes may also pull from the consumer of another one and acknowledge
+there, which takes those messages from it, and may change it, its filter included, since the
+create subject also updates a consumer. A changed filter is caught only when the owner opens the
+consumer again: `@cadenway/nest-messaging` then refuses to run the handler on it. What must reach
+one backend only goes on a stream of its own (see [restricted events](#restricted-events)). The
+API gateway, which consumes nothing, has none of the four.
+
+Among the events backends read from one another, those of identity, organization and notification:
+
+| Reader         | Reads                                  | Published by | For                                                                             |
+| -------------- | -------------------------------------- | ------------ | ------------------------------------------------------------------------------- |
+| `identity`     | `evt.member.>`, `evt.organization.>`   | organization | Its projection of the memberships, checked when a session switches organization |
+| `organization` | `evt.user.>`                           | identity     | Its directory of the users: names and e-mails in the member list                |
+| `notification` | `evt.invitation.>`                     | organization | The invitation e-mail                                                           |
+| `notification` | `restricted.>`, on `EVENTS_RESTRICTED` | identity     | The security e-mails (see below)                                                |
 
 ## Restricted events
 
@@ -126,6 +159,8 @@ for the entities it owns, and subscribe to `rebuild.<its user>.>` only (`rebuild
 
 - A new entity: add `evt.<entity>.>` and `rebuild.*.<entity>` to the user of the backend that owns
   it. Until then its publication is refused.
+- A new consumer on `EVENTS`: nothing, as long as its backend already consumes (see
+  [reading events](#reading-events)).
 - A new backend: add its user, its `<NAME>_NATS_PASSWORD` to the `nats` service of
   `compose/infra.yaml`, to `compose/.env.example` and to the secrets of each environment.
 

@@ -3,8 +3,9 @@
 # compose/.env.example. Covers: the three streams and their limits, a backend that publishes its
 # own subjects only, events read through consumers and never through a subscription, the restricted
 # stream read by notification only, inboxes kept apart, the dead-letter path, streams no backend
-# can change, a lost stream created again, an existing stream brought to its declaration, and the
-# hashes that make a host restart the broker.
+# can change, a lost stream created again, an existing stream brought to its declaration, the
+# hashes that make a host restart the broker, and the events of organizations, members,
+# invitations and users that a backend publishes and another one reads through its own consumer.
 #
 #   bash compose/tests/nats-permissions.sh
 #
@@ -40,6 +41,14 @@ as() {
 add_consumer() {
   as "$1" consumer add "$2" "$3" --filter "$4" --pull --ack explicit \
     --deliver all --replay instant --max-deliver 5 --wait 30s --defaults
+}
+# Prints the body of the request @cadenway/nest-messaging sends on
+# $JS.API.CONSUMER.CREATE.EVENTS.<consumer>.<filter>. Arguments: consumer name, filter subject.
+consumer_config() {
+  printf '{"stream_name":"EVENTS","action":"create","config":{"name":"%s","durable_name":"%s",' \
+    "$1" "$1"
+  printf '"filter_subject":"%s","ack_policy":"explicit","deliver_policy":"all",' "$2"
+  printf '"max_deliver":5,"ack_wait":30000000000}}'
 }
 # Prints fields of a stream's configuration; jq runs in the container, which has it.
 # Arguments: stream, jq filter.
@@ -234,5 +243,62 @@ check 'and the container is healthy' '[[ $OUT == "nats-streams healthy" ]]'
 compose restart nats-streams >/dev/null 2>&1
 OUT=$(wait_healthy)
 check 'a start with nothing to change is healthy too' '[[ $OUT == "nats-streams healthy" ]]'
+
+echo '=== 11. the events backends read from one another, through consumers of their own'
+# Publisher, event, reader. The reader is also the backend that must not forge the event. The
+# consumer is named as the kit names it, <service>__<handler>; the broker grants consumers by
+# stream, not by name, so the handler names here are examples. A refusal is checked on the subject
+# the kit uses, sent as is: the command line asks for CONSUMER.INFO first, which a user that
+# consumes nothing is refused as well.
+for row in \
+  'organization organization.created.v1 identity' \
+  'organization organization.updated.v1 identity' \
+  'organization member.joined.v1 identity' \
+  'organization member.role-changed.v1 identity' \
+  'organization member.removed.v1 identity' \
+  'organization invitation.issued.v1 notification' \
+  'identity user.signed-up.v1 organization' \
+  'identity user.email-verified.v1 organization' \
+  'identity user.profile-updated.v1 organization'; do
+  read -r owner event reader <<<"$row"
+  consumer="$reader-service__on-${event//./-}"
+  create="\$JS.API.CONSUMER.CREATE.EVENTS.$consumer.evt.$event"
+  next="\$JS.API.CONSUMER.MSG.NEXT.EVENTS.$consumer"
+  OUT=$(as "$owner" request "evt.$event" "{\"event\":\"$event\"}")
+  check "$owner publishes $event" '[[ $OUT == *"\"stream\":\"EVENTS\""* ]]'
+  OUT=$(as "$reader" request "evt.$event" '{}')
+  check "$reader cannot publish $event" '[[ $OUT == *"$REFUSED for Publish to \"evt.$event\""* ]]'
+  OUT=$(add_consumer "$reader" EVENTS "$consumer" "evt.$event")
+  check "$reader creates $consumer" '[[ $OUT == *"Unprocessed Messages: 1"* ]]'
+  OUT=$(as "$reader" consumer next EVENTS "$consumer" --count 1 --ack)
+  check "$reader reads $event through it" \
+    '[[ $OUT == *"{\"event\":\"$event\"}"* && $OUT == *"Acknowledged message"* ]]'
+  OUT=$(as "$reader" consumer info EVENTS "$consumer" --json)
+  check "the broker has its acknowledgement of $event" \
+    '[[ $OUT == *"\"num_ack_pending\": 0"* && $OUT == *"\"num_pending\": 0"* ]]'
+  OUT=$(as api-gateway request "$create" "$(consumer_config "$consumer" "evt.$event")")
+  check "the API gateway cannot create $consumer" \
+    '[[ $OUT == *"$REFUSED for Publish to \"$create\""* ]]'
+  OUT=$(as api-gateway request "$next" '{"batch":1,"expires":500000000}')
+  check "nor pull from $consumer" '[[ $OUT == *"$REFUSED for Publish to \"$next\""* ]]'
+done
+delete='$JS.API.CONSUMER.DELETE.EVENTS.identity-service__on-member-joined-v1'
+OUT=$(as task consumer rm EVENTS identity-service__on-member-joined-v1 --force)
+check 'no backend deletes the consumer of another one' \
+  '[[ $OUT == *"$REFUSED for Publish to \"$delete\""* ]]'
+OUT=$(as identity consumer info EVENTS identity-service__on-member-joined-v1 --json)
+check 'which is still there' '[[ $OUT == *"\"name\": \"identity-service__on-member-joined-v1\""* ]]'
+compose exec -T nats-streams sh -c 'nats --user notification --password notification \
+  --inbox-prefix _INBOX.notification sub "rebuild.notification.>" --count 1 \
+  >/tmp/rebuild-invitation 2>&1 &'
+sleep 1
+OUT=$(as organization pub rebuild.notification.invitation '{"id":"invitation-1"}')
+sleep 1
+OUT=$OUT$(compose exec -T nats-streams cat /tmp/rebuild-invitation)
+check 'organization re-emits an invitation for notification' \
+  '[[ $OUT != *"$REFUSED"* && $OUT == *invitation-1* ]]'
+OUT=$(as identity pub rebuild.notification.invitation '{}')
+check 'and no other backend does' \
+  '[[ $OUT == *"$REFUSED for Publish to \"rebuild.notification.invitation\""* ]]'
 
 exit "$FAILED"
