@@ -11,8 +11,13 @@
 # automation-service (its notify action only). The folded scalar gives the service one line of JSON.
 #
 # SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD and MAIL_FROM are the outgoing e-mail, each from
-# the variable of the same name in cadenway-ops; nothing reads them until the e-mail sender is
-# wired.
+# the variable of the same name in cadenway-ops. WEB_APP_URL, the origin the links of the e-mails
+# point to, is built from PUBLIC_SCHEME and DOMAIN, as the ALLOWED_ORIGINS of the gateways, so no
+# environment sets it.
+#
+# MIGRATION_DATABASE_URL is deliberately absent: the GitOps agent of cadenway-ops hands the
+# migrator's URL to the one-off migration container only (docs/database.md there), so the running
+# service never holds the owner credentials of its schema.
 services:
   notification-service:
     image: ghcr.io/${GHCR_OWNER}/cadenway-notification-service:${NOTIFICATION_SERVICE_VERSION}
@@ -20,7 +25,6 @@ services:
     environment:
       PORT: '3016'
       DATABASE_URL: ${NOTIFICATION_SERVICE_DATABASE_URL}
-      MIGRATION_DATABASE_URL: ${NOTIFICATION_SERVICE_MIGRATION_DATABASE_URL}
       NATS_URL: ${NATS_URL}
       NATS_USER: notification
       NATS_PASSWORD: ${NOTIFICATION_NATS_PASSWORD}
@@ -33,6 +37,7 @@ services:
       SMTP_USER: ${SMTP_USER}
       SMTP_PASSWORD: ${SMTP_PASSWORD}
       MAIL_FROM: ${MAIL_FROM}
+      WEB_APP_URL: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}
     networks:
       - internal
     healthcheck:
