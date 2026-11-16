@@ -5,7 +5,8 @@
 # change, a missing secret, an unpullable image (retried, the others still deployed), an unhealthy
 # first container (removed), a concurrent run that leaves the running one alone, and the migrator
 # URL of a database given to the migration container only, never on a command line, with a commit
-# that misses it refused.
+# that misses it refused. Companion cases cover activation and scaling, failure isolation,
+# rollback to a definition with only the owner, and validation of process settings.
 #
 #   docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/agent:/agent:ro" \
 #     docker:28.5.2-cli sh -c "apk add --no-cache bash >/dev/null && bash /agent/tests/e2e.sh"
@@ -323,6 +324,139 @@ data_secrets "DATA_SERVICE_MIGRATION_DATABASE_URL=$MIGRATOR_URL"
 commit 'restore DATA_SERVICE_MIGRATION_DATABASE_URL'
 run_agent
 check 'restored' 'head_is applied && [[ $(data_id) == "$BEFORE" ]]'
+
+# Both Task processes intentionally share the owner's version and application database. The
+# fixture's executable records every migration, even if mistakenly run with the companion.
+write_task() {
+  local replicas=$1 owner_health=$2 relay_health=$3 relay_image=${4:-'busybox:${TASK_SERVICE_VERSION}'}
+  cat >"$S/task-service.yaml" <<EOF
+services:
+  task-service:
+    image: busybox:\${TASK_SERVICE_VERSION}
+    command: ['sh', '-c', 'trap "exit 0" TERM; while :; do sleep 1 & wait; done']
+    environment:
+      DATABASE_URL: \${TASK_SERVICE_DATABASE_URL}
+      TASK_SERVICE_OUTBOX_MODE: \${TASK_SERVICE_OUTBOX_MODE:-legacy}
+    configs:
+      - { source: task-migrate, target: /dist/migrate.js }
+      - { source: task-node, target: /usr/local/bin/node, mode: 0555 }
+    networks: [internal]
+    healthcheck: { test: ['CMD', '$owner_health'], interval: 2s, retries: 2 }
+EOF
+  if [[ $replicas != absent ]]; then
+    cat >>"$S/task-service.yaml" <<EOF
+  task-service-relay:
+    image: $relay_image
+    command: ['sh', '-c', 'trap "exit 0" TERM; while :; do sleep 1 & wait; done']
+    environment:
+      DATABASE_URL: \${TASK_SERVICE_DATABASE_URL}
+    configs:
+      - { source: task-migrate, target: /dist/migrate.js }
+      - { source: task-node, target: /usr/local/bin/node, mode: 0555 }
+    deploy:
+      replicas: $replicas
+    networks: [internal]
+    healthcheck: { test: ['CMD', '$relay_health'], interval: 2s, retries: 2 }
+EOF
+  fi
+  cat >>"$S/task-service.yaml" <<'EOF'
+configs:
+  task-migrate:
+    content: 'run by the stand-in node'
+  task-node:
+    content: |
+      #!/bin/sh
+      printf 'task fixture migration ran\n'
+networks:
+  internal: {}
+EOF
+}
+task_id() { containers task-service | cut -d' ' -f1; }
+relay_ids() { containers task-service-relay | cut -d' ' -f1 | sort; }
+task_settings() {
+  printf 'TASK_SERVICE_OUTBOX_MODE=%s\nTASK_SERVICE_RELAY_REPLICAS=%s\n' "$1" "$2" \
+    >"$R/environments/test/processes.env"
+}
+readonly TASK_REPLICAS='${TASK_SERVICE_RELAY_REPLICAS:-0}'
+
+echo '=== 15. stage the owner with its companion disabled'
+echo '  - ${CADENWAY_SERVICES:-../environments/test/services}/task-service.yaml' >>"$R/compose/compose.yaml"
+echo 'TASK_SERVICE_VERSION=1.37.0' >>"$R/environments/test/versions.env"
+data_secrets "DATA_SERVICE_MIGRATION_DATABASE_URL=$MIGRATOR_URL" \
+  'TASK_SERVICE_DATABASE_URL=postgres://fixture@db/task' \
+  'TASK_SERVICE_MIGRATION_DATABASE_URL=postgres://fixture-owner@db/task'
+write_task "$TASK_REPLICAS" true true
+task_settings dedicated 0
+commit 'stage task without companion'
+run_agent
+check 'task is healthy and relay is absent' 'head_is applied && [[ -n $(task_id) && -z $(relay_ids) ]]'
+check 'only the task owner migrated' '[[ $(grep -cF "task fixture migration ran" <<<"$OUT") == 1 ]]'
+check 'task reads the owner role from Git' '[[ $(docker exec "$(task_id)" printenv TASK_SERVICE_OUTBOX_MODE) == dedicated ]]'
+TASK=$(task_id)
+
+echo '=== 16. activate the companion, then scale it up to two instances'
+task_settings dedicated 1
+commit 'activate task relay'
+run_agent
+check 'relay starts without rolling its owner' 'head_is applied && [[ $(task_id) == "$TASK" && $(relay_ids | wc -l) == 1 ]]'
+check 'a companion never runs a migration' '[[ $OUT != *"task fixture migration ran"* ]]'
+RELAY=$(relay_ids)
+task_settings dedicated 2
+commit 'scale task relay to two'
+run_agent
+check 'scale-up keeps the healthy replica' 'head_is applied && [[ $(relay_ids | wc -l) == 2 ]] && relay_ids | grep -Fxq "$RELAY"'
+check 'scale-up keeps the owner and runs no migration' '[[ $(task_id) == "$TASK" && $OUT != *"task fixture migration ran"* ]]'
+RELAYS=$(relay_ids)
+
+echo '=== 17. a failed owner keeps its companions untouched'
+write_task "$TASK_REPLICAS" false true
+task_settings dedicated 1
+commit 'deploy an unhealthy task owner'
+run_agent
+check 'failed owner and healthy companions keep serving' 'head_is failed && [[ $(task_id) == "$TASK" && $(relay_ids) == "$RELAYS" ]]'
+
+echo '=== 18. a failed companion rollout keeps both earlier replicas'
+write_task "$TASK_REPLICAS" true false
+task_settings dedicated 2
+commit 'deploy unhealthy task relays'
+run_agent
+check 'failed candidates removed, the earlier replicas kept' 'head_is failed && [[ $(relay_ids) == "$RELAYS" ]]'
+check 'replacement never restarted the owner' '[[ $(task_id) == "$TASK" ]]'
+
+echo '=== 19. scale down, and roll back to the owner-only definition'
+write_task "$TASK_REPLICAS" true true
+task_settings dedicated 1
+commit 'scale down task relay'
+run_agent
+check 'scale-down keeps the oldest healthy replica without migrating' 'head_is applied && [[ $(relay_ids) == "$RELAY" && $OUT != *"task fixture migration ran"* ]]'
+write_task absent true true
+task_settings legacy 0
+sed -i 's/^TASK_SERVICE_VERSION=.*/TASK_SERVICE_VERSION=1.36.1/' "$R/environments/test/versions.env"
+commit 'roll back the task deployment'
+run_agent
+check 'roll back the owner and remove the absent companion' 'head_is applied && [[ -z $(relay_ids) && $(containers task-service) == *busybox:1.36.1* ]]'
+
+echo '=== 20. refuse a companion with a different image'
+TASK=$(task_id)
+write_task "$TASK_REPLICAS" true true busybox:1.37.0
+task_settings dedicated 1
+commit 'misconfigure the task relay image'
+run_agent
+check 'invalid companion rejected without touching owner' 'head_is failed && [[ $(task_id) == "$TASK" && -z $(relay_ids) && $OUT == *"invalid companion declaration"* ]]'
+
+echo '=== 21. refuse overlap with inline processing'
+write_task "$TASK_REPLICAS" true true
+task_settings legacy 1
+commit 'attempt to run the legacy and dedicated relays together'
+run_agent
+check 'overlapping owner mode rejected' 'head_is failed && [[ $(task_id) == "$TASK" && -z $(relay_ids) && $OUT == *"invalid companion declaration"* ]]'
+
+echo '=== 22. reject unknown settings before configuring the deployment'
+task_settings dedicated 1
+echo 'UNRECOGNIZED_SETTING=1' >>"$R/environments/test/processes.env"
+commit 'add an unsupported process setting'
+run_agent
+check 'unsupported setting refused before any replacement' 'head_is failed && [[ $(task_id) == "$TASK" && -z $(relay_ids) && $OUT == *"invalid process settings"* ]]'
 
 echo '=== cleanup'
 docker compose -p cadenway-test down -v --remove-orphans >/dev/null 2>&1 || true
