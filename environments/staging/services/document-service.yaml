@@ -9,6 +9,10 @@
 #
 # INTERNAL_TOKEN_TRUSTED_ISSUERS lists who may call this service: the API gateway only. The folded
 # scalar gives the service one line of JSON.
+#
+# MIGRATION_DATABASE_URL is deliberately absent: the GitOps agent of cadenway-ops hands the
+# migrator's URL to the one-off migration container only (docs/database.md there), so the running
+# service never holds the owner credentials of its schema.
 services:
   document-service:
     image: ghcr.io/${GHCR_OWNER}/cadenway-document-service:${DOCUMENT_SERVICE_VERSION}
@@ -16,7 +20,6 @@ services:
     environment:
       PORT: '3014'
       DATABASE_URL: ${DOCUMENT_SERVICE_DATABASE_URL}
-      MIGRATION_DATABASE_URL: ${DOCUMENT_SERVICE_MIGRATION_DATABASE_URL}
       NATS_URL: ${NATS_URL}
       NATS_USER: document
       NATS_PASSWORD: ${DOCUMENT_NATS_PASSWORD}
