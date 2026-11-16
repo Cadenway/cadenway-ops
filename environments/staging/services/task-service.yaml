@@ -10,6 +10,10 @@
 # INTERNAL_TOKEN_TRUSTED_ISSUERS lists who may call this service: the API gateway, the realtime
 # gateway (access checks before a socket joins a room), and automation-service and
 # integration-service (actions only). The folded scalar gives the service one line of JSON.
+#
+# MIGRATION_DATABASE_URL is deliberately absent: the GitOps agent of cadenway-ops hands the
+# migrator's URL to the one-off migration container only (docs/database.md there), so the running
+# service never holds the owner credentials of its schema.
 services:
   task-service:
     image: ghcr.io/${GHCR_OWNER}/cadenway-task-service:${TASK_SERVICE_VERSION}
@@ -17,7 +21,6 @@ services:
     environment:
       PORT: '3013'
       DATABASE_URL: ${TASK_SERVICE_DATABASE_URL}
-      MIGRATION_DATABASE_URL: ${TASK_SERVICE_MIGRATION_DATABASE_URL}
       NATS_URL: ${NATS_URL}
       NATS_USER: task
       NATS_PASSWORD: ${TASK_NATS_PASSWORD}
