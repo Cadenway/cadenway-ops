@@ -22,7 +22,7 @@ services:
       INTERNAL_TOKEN_PRIVATE_JWK: ${REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}
       IDENTITY_SERVICE_URL: ${IDENTITY_SERVICE_URL}
       TASK_SERVICE_URL: ${TASK_SERVICE_URL}
-      # Read by @cadenway/nest-messaging once the gateway consumes events; nothing reads them yet.
+      # The broker, read by @cadenway/nest-messaging: readiness answers 503 while it does not answer.
       NATS_URL: ${NATS_URL}
       NATS_USER: realtime-gateway
       NATS_PASSWORD: ${REALTIME_GATEWAY_NATS_PASSWORD}
