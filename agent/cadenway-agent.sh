@@ -50,7 +50,7 @@ declare -Ar COMPANION_OWNERS=(
 # Positive replica counts require the owner's inline background process to be disabled.
 declare -Ar COMPANION_OWNER_MODES=(
   [task-service-relay]=TASK_SERVICE_OUTBOX_MODE=dedicated
-  [notification-service-worker]=NOTIFICATION_SERVICE_PROCESS_ROLE=api
+  [notification-service-worker]=NOTIFICATION_PROCESS_ROLE=api
 )
 export SOPS_AGE_KEY_FILE=${SOPS_AGE_KEY_FILE:-/etc/cadenway/age.key}
 
@@ -112,13 +112,24 @@ apply_edge() {
 }
 
 # Runs docker compose for one environment with its definitions, settings, versions and secrets.
-env_compose() {
+env_compose() (
   local env=$1
   shift
   local worktree=$ROOT/envs/$env
   local process_file=$worktree/environments/$env/processes.env
+  local notification_role
   local -a process_settings=()
-  [[ ! -f $process_file ]] || process_settings=(--env-file "$process_file")
+  if [[ -f $process_file ]]; then
+    process_settings=(--env-file "$process_file")
+    notification_role=$(dotenv_value "$process_file" NOTIFICATION_SERVICE_PROCESS_ROLE)
+    if [[ ${notification_role%$'\r'} == api ]]; then
+      # Owner-specific overrides use Compose's unset-only defaults. Empty values keep SMTP
+      # credentials in the worker while allowing the combined owner to inherit them on rollback.
+      export NOTIFICATION_OWNER_SMTP_HOST='' NOTIFICATION_OWNER_SMTP_PORT=''
+      export NOTIFICATION_OWNER_SMTP_USER='' NOTIFICATION_OWNER_SMTP_PASSWORD=''
+      export NOTIFICATION_OWNER_MAIL_FROM='' NOTIFICATION_OWNER_WEB_APP_URL=''
+    fi
+  fi
   CADENWAY_SERVICES=../environments/$env/services \
     docker compose -p "cadenway-$env" --project-directory "$worktree/compose" \
     -f "$worktree/compose/compose.yaml" \
@@ -127,7 +138,7 @@ env_compose() {
     --env-file "$SECRETS_DIR/$env/secrets.env" \
     "${process_settings[@]}" \
     "$@"
-}
+)
 
 # Replica counts and owner modes are desired Git state, independent of image releases. Keep the
 # optional file limited to these literal, non-secret settings before Compose interpolates it.

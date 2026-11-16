@@ -22,6 +22,10 @@ A positive replica count requires `dedicated` for Task or `api` for Notification
 effective Compose configuration. Updating the file in Git triggers the agent without releasing
 a new service image.
 
+With Notification in `api` mode, the agent empties the owner-specific SMTP and email URL
+overrides when it runs Compose. The worker still receives its mail configuration. Switching
+the owner back to `combined` restores the shared mail configuration for inline delivery.
+
 Install this version of the agent on the staging host before enabling companions. Ansible copies
 the executable to the host. Updating the GitOps repository alone updates the desired state.
 

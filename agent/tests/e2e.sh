@@ -6,7 +6,8 @@
 # first container (removed), a concurrent run that leaves the running one alone, and the migrator
 # URL of a database given to the migration container only, never on a command line, with a commit
 # that misses it refused. Companion cases cover activation and scaling, failure isolation,
-# rollback to a definition with only the owner, and validation of process settings.
+# rollback to a definition with only the owner, validation of process settings, and isolation of
+# Notification's mail configuration when its worker runs separately.
 #
 #   docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/agent:/agent:ro" \
 #     docker:28.5.2-cli sh -c "apk add --no-cache bash >/dev/null && bash /agent/tests/e2e.sh"
@@ -457,6 +458,80 @@ echo 'UNRECOGNIZED_SETTING=1' >>"$R/environments/test/processes.env"
 commit 'add an unsupported process setting'
 run_agent
 check 'unsupported setting refused before any replacement' 'head_is failed && [[ $(task_id) == "$TASK" && -z $(relay_ids) && $OUT == *"invalid process settings"* ]]'
+
+notification_settings() {
+  task_settings legacy 0
+  printf 'NOTIFICATION_SERVICE_PROCESS_ROLE=%s\nNOTIFICATION_SERVICE_WORKER_REPLICAS=%s\n' "$1" "$2" \
+    >>"$R/environments/test/processes.env"
+}
+notification_smtp_environment() {
+  local id
+  id=$(containers "$1" | cut -d' ' -f1)
+  docker inspect --format '{{json .Config.Env}}' "$id" |
+    jq -r 'map(select(test("^(SMTP_|MAIL_FROM=|WEB_APP_URL=)"))) | sort | .[]'
+}
+
+echo '=== 23. give SMTP settings only to the dedicated Notification worker'
+write_task absent true true
+echo '  - ${CADENWAY_SERVICES:-../environments/test/services}/notification-service.yaml' >>"$R/compose/compose.yaml"
+echo 'NOTIFICATION_SERVICE_VERSION=1.37.0' >>"$R/environments/test/versions.env"
+data_secrets "DATA_SERVICE_MIGRATION_DATABASE_URL=$MIGRATOR_URL" \
+  'TASK_SERVICE_DATABASE_URL=postgres://fixture@db/task' \
+  'TASK_SERVICE_MIGRATION_DATABASE_URL=postgres://fixture-owner@db/task' \
+  'NOTIFICATION_SERVICE_DATABASE_URL=postgres://fixture@db/notification' \
+  'NOTIFICATION_SERVICE_MIGRATION_DATABASE_URL=postgres://fixture-owner@db/notification' \
+  'SMTP_HOST=mail.example.test' 'SMTP_PORT=2525' 'SMTP_USER=fixture' 'SMTP_PASSWORD=fixture' \
+  'MAIL_FROM=notification@example.test'
+cat >"$S/notification-service.yaml" <<'EOF'
+services:
+  notification-service:
+    image: busybox:${NOTIFICATION_SERVICE_VERSION}
+    command: ['sleep', 'infinity']
+    environment:
+      DATABASE_URL: ${NOTIFICATION_SERVICE_DATABASE_URL}
+      NOTIFICATION_PROCESS_ROLE: ${NOTIFICATION_SERVICE_PROCESS_ROLE:-combined}
+      SMTP_HOST: ${NOTIFICATION_OWNER_SMTP_HOST-${SMTP_HOST}}
+      SMTP_PORT: ${NOTIFICATION_OWNER_SMTP_PORT-${SMTP_PORT}}
+      SMTP_USER: ${NOTIFICATION_OWNER_SMTP_USER-${SMTP_USER}}
+      SMTP_PASSWORD: ${NOTIFICATION_OWNER_SMTP_PASSWORD-${SMTP_PASSWORD}}
+      MAIL_FROM: ${NOTIFICATION_OWNER_MAIL_FROM-${MAIL_FROM}}
+      WEB_APP_URL: ${NOTIFICATION_OWNER_WEB_APP_URL-http://app.example.test}
+    networks: [internal]
+    healthcheck: { test: ['CMD', 'true'], interval: 2s, retries: 2 }
+  notification-service-worker:
+    image: busybox:${NOTIFICATION_SERVICE_VERSION}
+    command: ['sh', '-c', 'trap "exit 0" TERM; while :; do sleep 1 & wait; done']
+    environment:
+      DATABASE_URL: ${NOTIFICATION_SERVICE_DATABASE_URL}
+      NOTIFICATION_PROCESS_ROLE: worker
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      MAIL_FROM: ${MAIL_FROM}
+      WEB_APP_URL: http://app.example.test
+    deploy:
+      replicas: ${NOTIFICATION_SERVICE_WORKER_REPLICAS:-0}
+    networks: [internal]
+    healthcheck: { test: ['CMD', 'true'], interval: 2s, retries: 2 }
+networks:
+  internal: {}
+EOF
+notification_settings api 1
+commit 'separate Notification worker and SMTP configuration'
+run_agent
+check 'Notification applies with one worker' 'head_is applied && [[ $(containers notification-service-worker | wc -l) == 1 ]]'
+EMPTY_SMTP_ENVIRONMENT=$'MAIL_FROM=\nSMTP_HOST=\nSMTP_PASSWORD=\nSMTP_PORT=\nSMTP_USER=\nWEB_APP_URL='
+WORKER_SMTP_ENVIRONMENT=$'MAIL_FROM=notification@example.test\nSMTP_HOST=mail.example.test\nSMTP_PASSWORD=fixture\nSMTP_PORT=2525\nSMTP_USER=fixture\nWEB_APP_URL=http://app.example.test'
+check 'the API owner gets no mail settings' '[[ $(notification_smtp_environment notification-service) == "$EMPTY_SMTP_ENVIRONMENT" ]]'
+check 'the worker keeps all mail settings' '[[ $(notification_smtp_environment notification-service-worker) == "$WORKER_SMTP_ENVIRONMENT" ]]'
+
+echo '=== 24. restore the combined owner and drain the worker'
+notification_settings combined 0
+commit 'restore Notification inline job execution'
+run_agent
+check 'the companion is gone' 'head_is applied && [[ -z $(containers notification-service-worker) ]]'
+check 'the combined owner receives mail settings again' '[[ $(notification_smtp_environment notification-service) == "$WORKER_SMTP_ENVIRONMENT" ]]'
 
 echo '=== cleanup'
 docker compose -p cadenway-test down -v --remove-orphans >/dev/null 2>&1 || true
