@@ -13,6 +13,7 @@
 #      not healthy: run its migrations in a one-off container, to which the agent gives the migrator
 #      URL of its database, start the new container beside the old one, wait for `healthy`, then
 #      remove the old one. A failure keeps the old container;
+#      reconcile allowlisted companion replicas after their owners, with migrations on owners only;
 #   4. record the commit as applied; or as failed when the desired state itself is wrong (never
 #      retried); or retry on the next tick when the failure is transient (registry, network), and
 #      notify once per commit.
@@ -41,6 +42,16 @@ readonly LOCK_FILE=${CADENWAY_LOCK_FILE:-/run/lock/cadenway-agent.lock}
 readonly MIRROR=$ROOT/ops.git
 # Exit status of a failure worth retrying on the next tick (sysexits EX_TEMPFAIL).
 readonly TRANSIENT=75
+# Companions are defined in their owner's Compose file and share its release and database.
+declare -Ar COMPANION_OWNERS=(
+  [task-service-relay]=task-service
+  [notification-service-worker]=notification-service
+)
+# Positive replica counts require the owner's inline background process to be disabled.
+declare -Ar COMPANION_OWNER_MODES=(
+  [task-service-relay]=TASK_SERVICE_OUTBOX_MODE=dedicated
+  [notification-service-worker]=NOTIFICATION_SERVICE_PROCESS_ROLE=api
+)
 export SOPS_AGE_KEY_FILE=${SOPS_AGE_KEY_FILE:-/etc/cadenway/age.key}
 
 ALERT_WEBHOOK_URL=''
@@ -105,13 +116,40 @@ env_compose() {
   local env=$1
   shift
   local worktree=$ROOT/envs/$env
+  local process_file=$worktree/environments/$env/processes.env
+  local -a process_settings=()
+  [[ ! -f $process_file ]] || process_settings=(--env-file "$process_file")
   CADENWAY_SERVICES=../environments/$env/services \
     docker compose -p "cadenway-$env" --project-directory "$worktree/compose" \
     -f "$worktree/compose/compose.yaml" \
     --env-file "$SETTINGS_DIR/env/$env.env" \
     --env-file "$worktree/environments/$env/versions.env" \
     --env-file "$SECRETS_DIR/$env/secrets.env" \
+    "${process_settings[@]}" \
     "$@"
+}
+
+# Replica counts and owner modes are desired Git state, independent of image releases. Keep the
+# optional file limited to these literal, non-secret settings before Compose interpolates it.
+valid_process_settings() {
+  local file=$ROOT/envs/$1/environments/$1/processes.env line key
+  local -A seen=()
+  [[ ! -L $file ]] || return 1
+  [[ -e $file ]] || return 0
+  [[ -f $file ]] || return 1
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=${line%$'\r'}
+    case $line in
+      '' | \#*) continue ;;
+      TASK_SERVICE_RELAY_REPLICAS=[012] | NOTIFICATION_SERVICE_WORKER_REPLICAS=[012] | \
+        TASK_SERVICE_OUTBOX_MODE=legacy | TASK_SERVICE_OUTBOX_MODE=dedicated | \
+        NOTIFICATION_SERVICE_PROCESS_ROLE=combined | NOTIFICATION_SERVICE_PROCESS_ROLE=api) ;;
+      *) return 1 ;;
+    esac
+    key=${line%%=*}
+    [[ ! -v seen[$key] ]] || return 1
+    seen[$key]=1
+  done <"$file"
 }
 
 # Deployables are the files of environments/<env>/services/; their version is <NAME>_VERSION.
@@ -131,9 +169,12 @@ database_deployables() {
     grep -xF -f <(basename -s .yaml "$ROOT/envs/$env/environments/$env/services"/*.yaml) || true
 }
 
-# Container ids of one service of the environment, oldest first.
+# Container ids of one service of the environment, oldest first. Only companions reconcile stopped
+# containers as well, so abandoned rollout candidates cannot accumulate across commits.
 service_containers() {
-  docker ps --filter "label=com.docker.compose.project=cadenway-$1" \
+  local -a states=()
+  [[ ${3:-} != all ]] || states=(--all)
+  docker ps "${states[@]}" --filter "label=com.docker.compose.project=cadenway-$1" \
     --filter "label=com.docker.compose.service=$2" --format '{{.CreatedAt}}|{{.ID}}' |
     sort | cut -d'|' -f2
 }
@@ -142,14 +183,17 @@ container_health() {
   docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$1"
 }
 
-# Waits until every given container reports `healthy`; fails on `unhealthy`, an exit or the timeout.
+# Waits until every given container reports `healthy` or, for owners without a healthcheck,
+# `running`. Fails on an unhealthy status, an exit or a timeout.
 wait_healthy() {
-  local deadline=$((SECONDS + HEALTH_TIMEOUT)) id status
+  local required=$1 deadline=$((SECONDS + HEALTH_TIMEOUT)) id status
+  shift
   for id in "$@"; do
     while :; do
-      status=$(container_health "$id")
+      status=$(container_health "$id") || return 1
       case $status in
-        healthy | running) break ;;
+        healthy) break ;;
+        running) [[ $required == yes ]] || break ;;
         unhealthy | exited | dead) return 1 ;;
       esac
       ((SECONDS < deadline)) || return 1
@@ -199,7 +243,7 @@ roll_out() {
     --scale "$service=$((${#old[@]} + 1))" "$service" || return 1
   mapfile -t new < <(comm -13 <(printf '%s\n' "${old[@]}" | sort) \
     <(service_containers "$env" "$service" | sort))
-  if ((${#new[@]} == 0)) || ! wait_healthy "${new[@]}"; then
+  if ((${#new[@]} == 0)) || ! wait_healthy no "${new[@]}"; then
     log "$env/$service: the new container is not healthy; the old one keeps serving"
     for id in "${new[@]}"; do docker rm -f "$id" >/dev/null || true; done
     return 1
@@ -247,6 +291,88 @@ apply_service() {
   else
     roll_out "$env" "$service" || return 1
   fi
+  mkdir -p "${record%/*}"
+  printf '%s\n' "$desired" >"$record"
+}
+
+# A companion is an internal process, using its owner's image and application database. A missing
+# definition is equivalent to zero replicas, including when rolling back to an older Compose file.
+companion_replicas() {
+  local env=$1 service=$2 owner=${COMPANION_OWNERS[$2]}
+  local owner_mode=${COMPANION_OWNER_MODES[$service]}
+  env_compose "$env" config --format json | jq -er --arg service "$service" --arg owner "$owner" \
+    --arg mode_variable "${owner_mode%%=*}" --arg mode "${owner_mode#*=}" '
+    .services[$service] as $companion | .services[$owner] as $owner
+    | if $companion == null then 0
+      elif $owner == null or $companion.image != $owner.image
+        or ($companion.networks // {} | keys) != ["internal"]
+        or ($companion.labels // {} | length) != 0
+        or ($companion.ports // [] | length) != 0
+        or $companion.network_mode != null
+        or ($companion.healthcheck.test // ["NONE"])[0] == "NONE"
+        or $companion.healthcheck.disable == true
+        or ($companion.environment.DATABASE_URL // "") == ""
+        or $companion.environment.DATABASE_URL != $owner.environment.DATABASE_URL
+        or ($companion.environment // {} | has("MIGRATION_DATABASE_URL"))
+        or ([0, 1, 2] | index($companion.deploy.replicas)) == null
+        or ($companion.deploy.replicas > 0 and (
+          $owner.environment[$mode_variable] != $mode
+          or ($owner.healthcheck.test // ["NONE"])[0] == "NONE"
+          or $owner.healthcheck.disable == true))
+      then error("invalid companion definition")
+      else $companion.deploy.replicas end'
+}
+
+# Stops only containers identified by this environment and companion's Compose labels. A longer
+# grace than for HTTP services lets Nest close the worker and settle an in-flight attempt.
+stop_companion() {
+  local id
+  for id in "$@"; do
+    docker stop --time 60 "$id" >/dev/null && docker rm "$id" >/dev/null || return 1
+  done
+}
+
+# Reconciles a companion after its owner applied. Keep healthy matching replicas on scale changes.
+# Start replacement candidates together and wait for all of them before touching older instances.
+apply_companion() {
+  local env=$1 service=$2 replicas=$3 inventory record desired hash id count code=0
+  local -a before=() kept=() obsolete=() new=()
+  inventory=$(service_containers "$env" "$service" all) || return 1
+  mapfile -t before < <(printf '%s' "$inventory")
+  if ((replicas == 0)); then
+    stop_companion "${before[@]}"
+    return
+  fi
+
+  record=$STATE_DIR/$env/services/$service
+  desired=$(fingerprint "$env" "$service") || return 1
+  hash=${desired%% *}
+  for id in "${before[@]}"; do
+    if ((${#kept[@]} < replicas)) && [[ $(read_state "$record") == "$desired" ]] &&
+      [[ $(container_health "$id") == healthy ]] &&
+      [[ $(docker inspect --format '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$id") == "$hash" ]]; then
+      kept+=("$id")
+    else
+      obsolete+=("$id")
+    fi
+  done
+
+  count=$((replicas - ${#kept[@]}))
+  if ((count > 0)); then
+    env_compose "$env" pull --quiet "$service" || return "$TRANSIENT"
+    # Create without starting, so Compose cannot restart a stopped container from an older release.
+    env_compose "$env" up --no-start --no-deps --no-recreate \
+      --scale "$service=$((${#before[@]} + count))" "$service" || code=$?
+    inventory=$(service_containers "$env" "$service" all) || return 1
+    mapfile -t new < <(comm -13 <(printf '%s\n' "${before[@]}" | sort) <(printf '%s\n' "$inventory" | sort))
+    if ((code != 0 || ${#new[@]} != count)) || ! docker start "${new[@]}" >/dev/null ||
+      ! wait_healthy yes "${new[@]}"; then
+      log "$env/$service: companion candidates failed; retaining the earlier instances"
+      for id in "${new[@]}"; do docker rm -f "$id" >/dev/null || true; done
+      return 1
+    fi
+  fi
+  stop_companion "${obsolete[@]}" || return 1
   mkdir -p "${record%/*}"
   printf '%s\n' "$desired" >"$record"
 }
@@ -307,8 +433,9 @@ missing_variables() {
 apply_environment() {
   local env=$1 commit=$2
   local worktree=$ROOT/envs/$env state=$STATE_DIR/$env
-  local applied failed start=$SECONDS file service version missing code result=0
+  local applied failed start=$SECONDS file service version missing code owner replicas result=0
   local -a deployables=() infrastructure=() changed=()
+  local -A companion_targets=() owners_applied=()
   mkdir -p "$state"
   applied=$(read_state "$state/applied")
   failed=$(read_state "$state/failed")
@@ -327,7 +454,10 @@ apply_environment() {
     log "$env: ${commit:0:12} cannot be checked out; trying again on the next tick"
     return "$TRANSIENT"
   fi
-  if ! decrypt_secrets "$env"; then
+  if ! valid_process_settings "$env"; then
+    result=1
+    log "$env: invalid process settings in processes.env"
+  elif ! decrypt_secrets "$env"; then
     result=1
     log "$env: the secrets of ${commit:0:12} cannot be decrypted by this host"
   else
@@ -345,6 +475,21 @@ apply_environment() {
   fi
 
   if ((result == 0)); then
+    for service in "${!COMPANION_OWNERS[@]}"; do
+      owner=${COMPANION_OWNERS[$service]}
+      if [[ -e $worktree/environments/$env/services/$service.yaml ]] ||
+        ! replicas=$(companion_replicas "$env" "$service"); then
+        log "$env/$service: invalid companion declaration for $owner"
+        result=1
+        break
+      fi
+      version=$(dotenv_value "$worktree/environments/$env/versions.env" "$(version_variable "$owner")")
+      companion_targets[$service]=${replicas:-0}
+      [[ -n $version ]] || companion_targets[$service]=0
+    done
+  fi
+
+  if ((result == 0)); then
     # A deployable without a version (never released) is not started.
     for file in "$worktree/environments/$env/services"/*.yaml; do
       service=$(basename "$file" .yaml)
@@ -352,7 +497,8 @@ apply_environment() {
       [[ -n $version ]] && deployables+=("$service")
     done
     mapfile -t infrastructure < <(env_compose "$env" config --services |
-      grep -vxF -f <(basename -s .yaml "$worktree/environments/$env/services"/*.yaml))
+      grep -vxF -f <(basename -s .yaml "$worktree/environments/$env/services"/*.yaml) |
+      grep -vxF -f <(printf '%s\n' "${!COMPANION_OWNERS[@]}"))
     if ((${#infrastructure[@]} == 0)); then
       result=1
     elif ! env_compose "$env" pull --quiet "${infrastructure[@]}" ||
@@ -363,16 +509,44 @@ apply_environment() {
   fi
 
   if ((result == 0)); then
+    # Stop disabled companions first. A rollback may re-enable background processing in the owner.
+    for service in "${!companion_targets[@]}"; do
+      if [[ ${companion_targets[$service]} == 0 ]] && ! apply_companion "$env" "$service" 0; then
+        log "$env/$service: unable to stop the companion before applying its owner"
+        result=1
+      fi
+    done
+  fi
+
+  if ((result == 0)); then
     for service in "${deployables[@]}"; do
       code=0
       apply_service "$env" "$service" || code=$?
       if ((code == 0)); then
+        owners_applied[$service]=1
         changed+=("$service")
       elif ((code == TRANSIENT)); then
         ((result == 1)) || result=$TRANSIENT
       else
         result=1
         notify "cadenway $env: $service failed at ${commit:0:12}; the previous container keeps serving"
+      fi
+    done
+    for service in "${!companion_targets[@]}"; do
+      owner=${COMPANION_OWNERS[$service]}
+      replicas=${companion_targets[$service]}
+      if ((replicas == 0)) || [[ ! -v owners_applied[$owner] ]]; then
+        continue
+      fi
+      code=0
+      apply_companion "$env" "$service" "$replicas" || code=$?
+      if ((code == 0)); then
+        changed+=("$service")
+      elif ((code == TRANSIENT)); then
+        ((result == 1)) || result=$TRANSIENT
+      else
+        result=1
+        notify "cadenway $env: $service failed at ${commit:0:12}; the previous containers keep serving"
       fi
     done
   fi
