@@ -11,12 +11,12 @@ Set the desired capacity and the owner modes in the optional
 `environments/<env>/processes.env` file. The agent accepts only these literal values and
 rejects unknown or repeated keys.
 
-| Setting | Values |
-| --- | --- |
-| `TASK_SERVICE_OUTBOX_MODE` | `legacy`, `dedicated` |
-| `TASK_SERVICE_RELAY_REPLICAS` | `0`, `1`, `2` |
-| `NOTIFICATION_SERVICE_PROCESS_ROLE` | `combined`, `api` |
-| `NOTIFICATION_SERVICE_WORKER_REPLICAS` | `0`, `1`, `2` |
+| Setting                                | Values                |
+| -------------------------------------- | --------------------- |
+| `TASK_SERVICE_OUTBOX_MODE`             | `legacy`, `dedicated` |
+| `TASK_SERVICE_RELAY_REPLICAS`          | `0`, `1`, `2`         |
+| `NOTIFICATION_SERVICE_PROCESS_ROLE`    | `combined`, `api`     |
+| `NOTIFICATION_SERVICE_WORKER_REPLICAS` | `0`, `1`, `2`         |
 
 A positive replica count requires `dedicated` for Task or `api` for Notification in the
 effective Compose configuration. Updating the file in Git triggers the agent without releasing
