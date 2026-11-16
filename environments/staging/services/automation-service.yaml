@@ -13,6 +13,10 @@
 # This service also calls task-service and notification-service: it signs those calls as the
 # issuer automation-service with its own private key, and reaches them at TASK_SERVICE_URL and
 # NOTIFICATION_SERVICE_URL. Nothing reads these four variables until the first call is written.
+#
+# MIGRATION_DATABASE_URL is deliberately absent: the GitOps agent of cadenway-ops hands the
+# migrator's URL to the one-off migration container only (docs/database.md there), so the running
+# service never holds the owner credentials of its schema.
 services:
   automation-service:
     image: ghcr.io/${GHCR_OWNER}/cadenway-automation-service:${AUTOMATION_SERVICE_VERSION}
@@ -20,7 +24,6 @@ services:
     environment:
       PORT: '3017'
       DATABASE_URL: ${AUTOMATION_SERVICE_DATABASE_URL}
-      MIGRATION_DATABASE_URL: ${AUTOMATION_SERVICE_MIGRATION_DATABASE_URL}
       NATS_URL: ${NATS_URL}
       NATS_USER: automation
       NATS_PASSWORD: ${AUTOMATION_NATS_PASSWORD}
