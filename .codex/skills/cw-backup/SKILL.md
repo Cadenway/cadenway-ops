@@ -3,6 +3,6 @@ name: cw-backup
 description: Build backups and restore tests.
 ---
 
-Use the **cw-ops-backup-restore-builder** specialist for this task when delegation is available and authorized; otherwise read `.codex/agents/cw-ops-backup-restore-builder.toml` and follow its instructions directly: the user-provided arguments
-
-The agent carries its own procedure and rules; do not restate them.
+Delegate the user's arguments to **cw-ops-backup-restore-builder** if delegation is available and authorized.
+Otherwise read and follow `.codex/agents/cw-ops-backup-restore-builder.toml` directly with those arguments.
+Do not restate its rules or procedure.

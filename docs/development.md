@@ -6,7 +6,9 @@
 
 The Compose stack (local and server), the shared edge Traefik, the Ansible roles and playbooks, the GitOps agent with its end-to-end test, and the CI exist in this checkout. Terraform and `seed/` do not exist yet. Nothing has been applied to a real host: see [deployment](deployment.md) for the operator steps.
 
-The commands below are the documented **target workflow**, copied from the repository overview and instructions. They are not proof that scripts, infrastructure, CI, or dependencies currently exist. Inspect the repository's actual manifests and files before running them, and report unavailable checks rather than inventing replacements. Run Git, pnpm, build, and test commands with this repository as the working directory, never from the parent workspace.
+Run Git, pnpm, build, and test commands with this repository as the working directory. The
+[full local quality gate](#full-local-quality-gate) lists the commands available in this checkout
+and the checks that apply when Terraform files are present.
 
 ## Before making a change
 
@@ -62,41 +64,54 @@ The `core` profile starts the infrastructure, the identity, organization, task a
 services, the API gateway and the web application: open `http://app.cadenway.localhost`, and
 `http://mail.cadenway.localhost` for the e-mails the stack sends (Mailpit). The `full` profile adds
 Garage, the local object store: its S3 API answers on `http://s3.cadenway.localhost`, with the
-placeholder key and bucket of `compose/.env.example`. Terraform runs only
-from its GitHub Action; the Terraform and Ansible credentials never live in this repository.
+placeholder key and bucket of `compose/.env.example`. Terraform applies through GitHub Actions.
+The Terraform and Ansible credentials are managed outside this repository.
 
 ## Minimum checks by change
 
-The scripts below are this repository's contract. While the repository is being bootstrapped,
-create them with these exact names; afterwards, use them and never an ad-hoc equivalent. Run the
-narrowest check that covers the change first, then widen:
+Use the [checks by change in AGENTS.md](../AGENTS.md#commands-and-quality-gates) to select and report the smallest applicable verification.
 
-| Changed                         | Minimum check                                                                                                   |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Compose or Traefik              | `docker compose … config -q`, `yamllint .`                                                                      |
-| Ansible                         | `ansible-lint ansible/`, `ansible-playbook --syntax-check`, then `--check` on a staging host when the user asks |
-| Terraform                       | `terraform fmt -check`, `terraform validate`; `plan` only when the user asks                                    |
-| Agent script                    | `shellcheck agent/*.sh`                                                                                         |
-| Environments                    | `docker compose … config -q` with the environment's `versions.env`                                              |
-| Docs or agent instructions only | Scoped formatting and link review                                                                               |
+## Full local quality gate
 
-Report the commands you actually ran and their results; a check you did not run is reported as not
-run.
+Run these steps from the repository root. The same procedure backs `/cw-quality` in Claude Code
+and `$cw-quality` in Codex.
 
-## Planned full check list
-
-The following commands match the planned local gate. Run `/cw-quality` in Claude Code or
-`$cw-quality` in Codex without arguments. Verify CI coverage once workflows exist.
+Run these examples in Bash. For the Compose checks, use a checkout and shell without live
+environment files or values. Compose resolves only the checked-in placeholders and version files.
+Record any missing-variable warnings in the check result. A successful configuration check
+verifies the Compose definitions before runtime credentials are supplied.
 
 ```bash
-docker compose -f compose/compose.yaml -f compose/compose.local.yaml config -q
-yamllint .
-ansible-lint ansible/
-ansible-playbook --syntax-check ansible/playbooks/setup.yml
-terraform -chdir=terraform fmt -check
-terraform -chdir=terraform validate
-shellcheck agent/*.sh
+pnpm format:check
+docker compose --env-file compose/.env.example -f compose/compose.yaml -f compose/compose.local.yaml --profile full config -q
+ACME_EMAIL=ci@example.com docker compose -f compose/edge.yaml config -q
 ```
+
+Validate the staging and production definitions with their version files.
+
+```bash
+ENVIRONMENT=staging CADENWAY_SERVICES=../environments/staging/services \
+  docker compose -p cadenway-staging --env-file compose/.env.example \
+  --env-file environments/staging/versions.env -f compose/compose.yaml config -q
+ENVIRONMENT=prod CADENWAY_SERVICES=../environments/prod/services \
+  docker compose -p cadenway-prod --env-file compose/.env.example \
+  --env-file environments/prod/versions.env -f compose/compose.yaml config -q
+```
+
+For the operations checks, use the same example inventory and shell files as CI.
+
+```bash
+yamllint --strict .
+ansible-playbook -i ansible/inventory/hosts.example.yml --syntax-check ansible/playbooks/*.yml
+ansible-lint ansible/
+shellcheck agent/cadenway-agent.sh agent/tests/e2e.sh ansible/tests/run.sh \
+  ansible/roles/backup/files/cadenway-backup.sh ansible/roles/backup/files/cadenway-restore.sh \
+  ansible/roles/backup/tests/e2e.sh
+```
+
+When `terraform/` exists, use `terraform -chdir=terraform fmt -check` and
+`terraform -chdir=terraform validate` with the required providers available. Report missing
+tools, collections, providers, or files as unavailable.
 
 ## Collaboration and release
 

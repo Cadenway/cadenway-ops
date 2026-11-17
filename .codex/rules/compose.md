@@ -6,13 +6,17 @@ paths:
 
 # Docker Compose
 
-- `compose.yaml` includes `infra.yaml` and `${CADENWAY_SERVICES:-../environments/staging/services}/*.yaml`:
-  the agent points it at `environments/<env>/services/`; locally it runs the staging definitions;
-  `compose.local.yaml` adds development overrides only.
-- Networks: `edge` (`cadenway-edge-<env>`, external, created by `edge.yaml`; Traefik and what it serves)
-  and `internal`. Internal services have no Traefik label and no published port. Traefik router,
-  service and network names carry `${ENVIRONMENT:-local}`.
-- Images from GHCR with the version variable of `versions.env` (`${TASK_SERVICE_VERSION}`).
-- Every service has a healthcheck, a memory limit and `restart: unless-stopped`.
-- `environments/<env>/services/*.yaml` are copied from each service's `deploy/compose.yaml` by its
-  deploy workflow: change them there.
+Use `cw-compose-layout` for hosted and local Compose, including the `infra.yaml` and
+`CADENWAY_SERVICES` includes, staging definitions for local development and edge naming with
+`${ENVIRONMENT:-local}`. Keep local overrides in `compose.local.yaml`. Internal services have no
+Traefik labels or published ports.
+
+Use GHCR images with `versions.env` variables such as `${TASK_SERVICE_VERSION}`. Every service
+needs a healthcheck, a memory limit and `restart: unless-stopped`. Change source definitions in
+the owner service's `deploy/compose.yaml`; deployment copies them into the environment.
+
+## Review example
+
+For example, a worker may need a different memory limit or number of replicas. Before changing
+it, document the observed bottleneck and check the total PostgreSQL connections across replicas.
+Validate the affected Compose definitions and preserve the existing health and network boundaries.
