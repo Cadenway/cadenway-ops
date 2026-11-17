@@ -33,8 +33,16 @@ identity EVENTS identity-service__project-member-removed evt.member.removed.v1 o
 organization EVENTS organization-service__project-user-signed-up evt.user.signed-up.v1 identity identity
 organization EVENTS organization-service__project-user-email-verified evt.user.email-verified.v1 identity notification
 organization EVENTS organization-service__project-user-profile-updated evt.user.profile-updated.v1 identity search
+organization EVENTS organization-service__project-user-email-changed evt.user.email-changed.v1 identity notification
+organization EVENTS organization-service__remove-deleted-user evt.user.deleted.v1 identity task
 notification EVENTS notification-service__request-invitation-email evt.invitation.issued.v1 organization organization
+notification EVENTS notification-service__request-password-changed-email evt.user.password-changed.v1 identity organization
+notification EVENTS notification-service__request-email-changed-email evt.user.email-changed.v1 identity organization
+notification EVENTS notification-service__request-new-device-email evt.session.opened-on-new-device.v1 identity realtime-gateway
+notification EVENTS notification-service__request-deletion-scheduled-email evt.user.deletion-scheduled.v1 identity identity
+notification EVENTS notification-service__request-deletion-cancelled-email evt.user.deletion-cancelled.v1 identity billing
 notification EVENTS_RESTRICTED notification-service__request-code-email restricted.one-time-code.issued.v1 identity identity
+notification EVENTS_RESTRICTED notification-service__request-password-reset-email restricted.password-reset-link.issued.v1 identity organization
 '
 # What `nats consumer next` prints of a delivery: the attempt, the consumer and stream sequences.
 readonly DELIVERY='tries: ([0-9]+) / cons seq: ([0-9]+) / str seq: ([0-9]+)'
@@ -349,7 +357,12 @@ echo '=== 12. each granted consumer works for its owner, and for no other backen
 # other backend acknowledges on the reply subject of a message the owner holds: had it the right,
 # the message would leave the owner. The rows are read before the loop, since `docker compose exec`
 # reads the standard input of the commands inside it.
+#
+# Two consumers may filter one event (evt.user.email-changed.v1 feeds organization and
+# notification): the later one finds every copy published here, none taken by the acknowledgements
+# of the other, so the pending counts are kept per filter.
 mapfile -t ROWS < <(sed '/^$/d' <<<"$CONSUMERS")
+declare -A SENT=()
 for row in "${ROWS[@]}"; do
   read -r owner stream consumer filter publisher other <<<"$row"
   create="\$JS.API.CONSUMER.CREATE.$stream.$consumer.$filter"
@@ -358,13 +371,16 @@ for row in "${ROWS[@]}"; do
   delete="\$JS.API.CONSUMER.DELETE.$stream.$consumer"
   OUT=$(as "$publisher" request "$filter" "{\"event\":\"$filter\"}")
   check "$publisher publishes $filter" '[[ $OUT == *"\"stream\":\"$stream\""* ]]'
+  SENT[$filter]=$((${SENT[$filter]:-0} + 1))
+  pending=${SENT[$filter]}
+  left=$((pending - 1))
   OUT=$(as "$owner" request "$filter" '{}')
   check "$owner cannot publish it" '[[ $OUT == *"$REFUSED for Publish to \"$filter\""* ]]'
   OUT=$(create_consumer "$other" "$stream" "$consumer" "$filter")
   check "$other cannot create $consumer" '[[ $OUT == *"$REFUSED for Publish to \"$create\""* ]]'
   OUT=$(create_consumer "$owner" "$stream" "$consumer" "$filter")
   check "$owner creates it, or aligns it" \
-    '[[ $OUT == *"\"name\":\"$consumer\""* && $OUT == *"\"num_pending\":1"* && $OUT != *"\"error\""* ]]'
+    '[[ $OUT == *"\"name\":\"$consumer\""* && $OUT == *"\"num_pending\":$pending"* && $OUT != *"\"error\""* ]]'
   OUT=$(as "$other" request "$info" '')
   check "$other cannot read it" \
     '[[ $OUT == *"$REFUSED for Publish to \"$info\""* && $OUT != *"\"num_pending\""* ]]'
@@ -385,7 +401,7 @@ for row in "${ROWS[@]}"; do
   OUT=$(as "$owner" pub "$ack" '+ACK')
   OUT=$OUT$(as "$owner" consumer info "$stream" "$consumer" --json)
   check "$owner acknowledges it" \
-    '[[ $OUT != *"$REFUSED"* && $OUT == *"\"num_ack_pending\": 0"* && $OUT == *"\"num_pending\": 0"* ]]'
+    '[[ $OUT != *"$REFUSED"* && $OUT == *"\"num_ack_pending\": 0"* && $OUT == *"\"num_pending\": $left"* ]]'
   OUT=$(as "$other" request "$delete" '')
   check "$other cannot delete it" '[[ $OUT == *"$REFUSED for Publish to \"$delete\""* ]]'
   OUT=$(compose exec -T nats-streams nats consumer info "$stream" "$consumer" --json 2>&1 || true)
