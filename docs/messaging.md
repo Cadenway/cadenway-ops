@@ -11,21 +11,21 @@ retries) belong to cadenway-service-kit. This page is what the broker enforces.
 `compose/nats/nats-server.conf` declares one user per backend. A connection without a user is
 refused.
 
-| User               | Backend                   | Publishes                                                                                       | Consumes                      |
-| ------------------ | ------------------------- | ----------------------------------------------------------------------------------------------- | ----------------------------- |
-| `identity`         | identity-service          | `evt.user.>`, `evt.session.>`, `evt.api-token.>`, `restricted.>`                                | `EVENTS`                      |
-| `organization`     | organization-service      | `evt.organization.>`, `evt.member.>`, `evt.invitation.>`, `evt.domain.>`                        | `EVENTS`                      |
-| `billing`          | billing-service           | `evt.subscription.>`, `evt.quota.>`, `evt.invoice.>`                                            | `EVENTS`                      |
-| `task`             | task-service              | `evt.space.>`, `evt.list.>`, `evt.task.>`, `evt.comment.>`, `evt.approval.>`, `evt.milestone.>` | `EVENTS`                      |
-| `document`         | document-service          | `evt.doc.>`                                                                                     | `EVENTS`                      |
-| `storage`          | storage-service           | `evt.file.>`                                                                                    | `EVENTS`                      |
-| `notification`     | notification-service      | `evt.notification.>`, `evt.reminder.>`, `dlq.>`                                                 | `EVENTS`, `EVENTS_RESTRICTED` |
-| `automation`       | automation-service        | `evt.automation.>`                                                                              | `EVENTS`                      |
-| `integration`      | integration-service       | `evt.git.>`                                                                                     | `EVENTS`                      |
-| `search`           | search-service            | nothing                                                                                         | `EVENTS`                      |
-| `api-gateway`      | API gateway               | `evt.api-usage.>`                                                                               | nothing                       |
-| `realtime-gateway` | realtime gateway          | nothing                                                                                         | `EVENTS`                      |
-| `admin`            | `nats-streams`, operators | everything                                                                                      | everything                    |
+| User               | Backend                   | Publishes                                                                                       | Consumes ([consumers](#consumers))          |
+| ------------------ | ------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `identity`         | identity-service          | `evt.user.>`, `evt.session.>`, `evt.api-token.>`, `restricted.>`                                | three consumers on `EVENTS`                 |
+| `organization`     | organization-service      | `evt.organization.>`, `evt.member.>`, `evt.invitation.>`, `evt.domain.>`                        | three consumers on `EVENTS`                 |
+| `billing`          | billing-service           | `evt.subscription.>`, `evt.quota.>`, `evt.invoice.>`                                            | nothing yet                                 |
+| `task`             | task-service              | `evt.space.>`, `evt.list.>`, `evt.task.>`, `evt.comment.>`, `evt.approval.>`, `evt.milestone.>` | nothing yet                                 |
+| `document`         | document-service          | `evt.doc.>`                                                                                     | nothing yet                                 |
+| `storage`          | storage-service           | `evt.file.>`                                                                                    | nothing yet                                 |
+| `notification`     | notification-service      | `evt.notification.>`, `evt.reminder.>`, `dlq.>`                                                 | one on `EVENTS`, one on `EVENTS_RESTRICTED` |
+| `automation`       | automation-service        | `evt.automation.>`                                                                              | nothing yet                                 |
+| `integration`      | integration-service       | `evt.git.>`                                                                                     | nothing yet                                 |
+| `search`           | search-service            | nothing                                                                                         | nothing yet                                 |
+| `api-gateway`      | API gateway               | `evt.api-usage.>`                                                                               | nothing                                     |
+| `realtime-gateway` | realtime gateway          | nothing                                                                                         | nothing yet                                 |
+| `admin`            | `nats-streams`, operators | everything                                                                                      | everything                                  |
 
 A subject is `evt.<event-name>`, and an event name starts with its entity: the entity decides who
 may publish. The lists above are the events each service declares in its `AGENTS.md`, plus the
@@ -46,56 +46,108 @@ receives. A client left on the default `_INBOX.>` prefix is refused its first re
 ## Reading events
 
 Events are read through JetStream consumers, never through a plain subscription: no backend may
-subscribe to `evt.>`. A user that consumes may create a consumer on `EVENTS`, read its messages
-and acknowledge them, whatever the subject: every event of `EVENTS` is readable by every consuming
-backend. No backend may delete a consumer; an operator removes an obsolete one with the `admin`
-user.
+subscribe to `evt.>`. A backend reads through the [consumers](#consumers) granted to it, each by
+its exact name and filter, and through nothing else: it reads only the events those consumers
+filter.
 
 `@cadenway/nest-messaging` gives each handler a durable pull consumer named `<service>__<handler>`
-with one filter subject, and uses these API subjects, granted on `EVENTS` to every user that
-consumes:
+that filters one event, and uses four API subjects on it. Each is granted to the user that owns
+the consumer, for that consumer only:
 
-| Step                                  | Subject                                                                   |
-| ------------------------------------- | ------------------------------------------------------------------------- |
-| Create the consumer, or align it      | `$JS.API.CONSUMER.CREATE.EVENTS.<consumer>.<subject>`                     |
-| Read the consumer                     | `$JS.API.CONSUMER.INFO.EVENTS.<consumer>`                                 |
-| Pull messages                         | `$JS.API.CONSUMER.MSG.NEXT.EVENTS.<consumer>`, replies on `_INBOX.<user>` |
-| Acknowledge, or ask for a later retry | `$JS.ACK.EVENTS.<consumer>.>`                                             |
+| Step                                             | Subject                                                                     |
+| ------------------------------------------------ | --------------------------------------------------------------------------- |
+| Create the consumer, or align its settings       | `$JS.API.CONSUMER.CREATE.<stream>.<consumer>.<filter>`                      |
+| Read the consumer                                | `$JS.API.CONSUMER.INFO.<stream>.<consumer>`                                 |
+| Pull messages                                    | `$JS.API.CONSUMER.MSG.NEXT.<stream>.<consumer>`, replies on `_INBOX.<user>` |
+| Acknowledge, ask for a later retry, or terminate | `$JS.ACK.<stream>.<consumer>.>`                                             |
 
-A new consumer therefore changes nothing here. The rights do not tie a consumer to its service: a
-permission matches whole subject tokens, so it cannot match the `<service>__` start of a consumer
-name. So a backend that consumes may also pull from the consumer of another one and acknowledge
-there, which takes those messages from it, and may change it, its filter included, since the
-create subject also updates a consumer. A changed filter is caught only when the owner opens the
-consumer again: `@cadenway/nest-messaging` then refuses to run the handler on it. What must reach
-one backend only goes on a stream of its own (see [restricted events](#restricted-events)). The
-API gateway, which consumes nothing, has none of the four.
+No wildcard stands for a stream, a consumer or a filter. The last `>` covers only the delivery
+counters the server appends to the reply subject of a message. Therefore:
 
-Among the events backends read from one another, those of identity, organization and notification:
+- A backend cannot create, read, pull from, acknowledge on or change the consumer of another one:
+  it cannot take the messages of another backend, nor refilter its consumer.
+- It cannot open a consumer under a name it was not given: a new handler waits for its grant (see
+  [adding a consumer](#adding-a-consumer)).
+- It cannot give its own consumer another filter. The filter is part of the granted create
+  subject, and the server refuses a create whose body filters another subject. The kit would
+  refuse to run the handler on such a consumer anyway: a handler consumes exactly one event.
+- No backend may delete a consumer, its own included. `@cadenway/nest-messaging` never deletes
+  one; an operator removes an obsolete one with the `admin` user.
 
-| Reader         | Reads                                  | Published by | For                                                                             |
-| -------------- | -------------------------------------- | ------------ | ------------------------------------------------------------------------------- |
-| `identity`     | `evt.member.>`, `evt.organization.>`   | organization | Its projection of the memberships, checked when a session switches organization |
-| `organization` | `evt.user.>`                           | identity     | Its directory of the users: names and e-mails in the member list                |
-| `notification` | `evt.invitation.>`                     | organization | The invitation e-mail                                                           |
-| `notification` | `restricted.>`, on `EVENTS_RESTRICTED` | identity     | The security e-mails (see below)                                                |
+The kit uses no other consumer subject: no list of the consumers, and not
+`$JS.API.CONSUMER.DURABLE.CREATE`, the former create subject, which carries no filter. At start-up
+it reads the streams it uses (`$JS.API.STREAM.INFO.<stream>`), which each user keeps for its
+streams.
+
+## Consumers
+
+The consumers granted today, as the services declare them on their `main` branch:
+
+| User           | Consumer                                             | Stream              | Filter                               | Published by | For                                                                             |
+| -------------- | ---------------------------------------------------- | ------------------- | ------------------------------------ | ------------ | ------------------------------------------------------------------------------- |
+| `identity`     | `identity-service__project-member-joined`            | `EVENTS`            | `evt.member.joined.v1`               | organization | Its projection of the memberships, checked when a session switches organization |
+| `identity`     | `identity-service__project-member-role-changed`      | `EVENTS`            | `evt.member.role-changed.v1`         | organization | The same projection                                                             |
+| `identity`     | `identity-service__project-member-removed`           | `EVENTS`            | `evt.member.removed.v1`              | organization | The same projection                                                             |
+| `organization` | `organization-service__project-user-signed-up`       | `EVENTS`            | `evt.user.signed-up.v1`              | identity     | Its directory of the users: names and e-mails in the member list                |
+| `organization` | `organization-service__project-user-email-verified`  | `EVENTS`            | `evt.user.email-verified.v1`         | identity     | The same directory                                                              |
+| `organization` | `organization-service__project-user-profile-updated` | `EVENTS`            | `evt.user.profile-updated.v1`        | identity     | The same directory                                                              |
+| `notification` | `notification-service__request-invitation-email`     | `EVENTS`            | `evt.invitation.issued.v1`           | organization | The invitation e-mail                                                           |
+| `notification` | `notification-service__request-code-email`           | `EVENTS_RESTRICTED` | `restricted.one-time-code.issued.v1` | identity     | The code e-mail (see [restricted events](#restricted-events))                   |
+
+The other backends consume nothing yet, and keep only the stream information the kit reads at
+start-up. The API gateway consumes nothing.
+
+### Adding a consumer
+
+A new handler is a new consumer, and its grant is a deployment prerequisite, like a new environment
+variable: it is merged here and has reached an environment before the release of the service that
+adds the handler runs there. A release that comes first is refused its consumer (`Permissions
+Violation for Publish to "$JS.API.CONSUMER..."`), and the refusal fails its start-up.
+
+The service repository reads what to request from its own code:
+
+| Value                  | Where it comes from                                                                                                                                      |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<service>`            | The `service` option of its `MessagingModule` (`identity-service`)                                                                                       |
+| `<handler>`            | The `handler` it gives `EventConsumers.subscribe` (`project-member-joined`)                                                                              |
+| `<stream>`, `<filter>` | `EVENTS` and `evt.<event>` for the `event` it gives `subscribe`; `EVENTS_RESTRICTED` and `restricted.<event>` when its `restrictedEvents` list the event |
+
+and asks for these four subjects on its NATS user:
+
+```text
+$JS.API.CONSUMER.CREATE.<stream>.<service>__<handler>.<filter>
+$JS.API.CONSUMER.INFO.<stream>.<service>__<handler>
+$JS.API.CONSUMER.MSG.NEXT.<stream>.<service>__<handler>
+$JS.ACK.<stream>.<service>__<handler>.>
+```
+
+The pull request here adds them to the user in `compose/nats/nats-server.conf`, adds the consumer
+to the list at the top of `compose/tests/nats-permissions.sh` (with the backend that publishes the
+event and another backend that must be refused) and to the table above, and changes
+`NATS_SERVER_CONF_SHA256`. The test fails when the configuration and its list differ.
+
+- Renaming a handler, or making it consume another event, makes a new consumer: it needs a new
+  grant.
+- A handler that is removed leaves its consumer on the broker until an operator deletes it. Its
+  grant is removed once no running release uses it.
 
 ## Restricted events
 
 The identity events that carry a single-use code or link for a security e-mail (sign-in code,
 reset link) must reach notification-service only. A subscription permission alone would not keep
-them private: a message stored in a stream is read through a consumer or by its sequence, and the
-name of a consumer cannot be matched by a permission. They therefore live outside `evt.>`, in a
-stream of their own:
+them private: a message stored in a stream is also read by its sequence, a right granted per
+stream, which the dead-letter worker needs on every stream it copies from. They therefore live
+outside `evt.>`, in a stream of their own, with its own short retention:
 
 - subject `restricted.<event-name>`, stream `EVENTS_RESTRICTED`;
 - `identity` is the only user that publishes on `restricted.>`;
-- `notification` is the only user that may create a consumer on `EVENTS_RESTRICTED`, pull from one,
-  or read one of its messages by sequence. Nobody may subscribe to `restricted.>`.
+- `notification` is the only user granted a consumer on `EVENTS_RESTRICTED`, and the only one that
+  may read one of its messages by sequence. Nobody may subscribe to `restricted.>`.
 
-The events do not exist yet: their names are chosen in cadenway-api-contracts, and
-`@cadenway/nest-messaging` has to publish an event marked as restricted on `restricted.` instead of
-`evt.` and bind its consumer to `EVENTS_RESTRICTED`.
+The contracts mark an event restricted (`RESTRICTED_EVENT_NAMES` of `@cadenway/contracts`, today
+`one-time-code.issued.v1`), and `@cadenway/nest-messaging` publishes and consumes the events a
+service lists in `restrictedEvents` on `restricted.` and `EVENTS_RESTRICTED` instead of `evt.` and
+`EVENTS`.
 
 ## Streams
 
@@ -159,8 +211,9 @@ for the entities it owns, and subscribe to `rebuild.<its user>.>` only (`rebuild
 
 - A new entity: add `evt.<entity>.>` and `rebuild.*.<entity>` to the user of the backend that owns
   it. Until then its publication is refused.
-- A new consumer on `EVENTS`: nothing, as long as its backend already consumes (see
-  [reading events](#reading-events)).
+- A new consumer, on `EVENTS` or `EVENTS_RESTRICTED`: its four subjects on the user of its
+  backend, deployed before the release that adds the handler (see
+  [adding a consumer](#adding-a-consumer)). Until then the release fails at start-up.
 - A new backend: add its user, its `<NAME>_NATS_PASSWORD` to the `nats` service of
   `compose/infra.yaml`, to `compose/.env.example` and to the secrets of each environment.
 
@@ -184,4 +237,8 @@ services reconnect with theirs once their own definition is applied.
 ## Checks
 
 `compose/tests/nats-permissions.sh` starts the broker of `compose/infra.yaml` as a throwaway
-project and proves the above against it; CI runs it on every pull request.
+project and proves the above against it; CI runs it on every pull request. For the consumers, it
+checks that the configuration grants exactly the consumers of its list, each with its four
+subjects and nothing more; that each one works for its owner, on the subjects the kit uses; that
+another backend is refused its create, read, pull, acknowledgement and deletion; and that a name or
+a filter nobody was given is refused to the backend it would belong to.
