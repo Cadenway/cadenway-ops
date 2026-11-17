@@ -9,41 +9,17 @@
  *  - A real formatting failure is reported (exit 2) so the agent sees it.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { findCheckoutRoot, readHookPayload } from './hook-runtime.mjs';
 
-const REPO_NAME = 'cadenway-ops';
 const PRETTIER_EXT = new Set(['.ts', '.mts', '.cts', '.js', '.mjs', '.cjs', '.json', '.yml', '.yaml', '.md', '.html', '.css', '.scss']);
 const TERRAFORM_EXT = new Set(['.tf', '.tfvars']);
 const SKIP = ['/node_modules/', '/dist/', '/coverage/', '/.angular/', '/storybook-static/', '/.terraform/', '/.git/'];
 
-function isRepoRoot(dir) {
-  const marker = path.join(dir, '.claude', '.claude-plugin', 'plugin.json');
-  if (!existsSync(marker)) return false;
-  try {
-    return JSON.parse(readFileSync(marker, 'utf8'))?.name === REPO_NAME;
-  } catch {
-    return false;
-  }
-}
-
-function findRepoRoot(start) {
-  let dir = path.resolve(start);
-  for (;;) {
-    if (isRepoRoot(dir)) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
-
 function main() {
-  let payload;
-  try {
-    payload = JSON.parse(readFileSync(0, 'utf8') || '{}');
-  } catch {
-    return 0;
-  }
+  const payload = readHookPayload();
+  if (payload === undefined) return 0;
   const input = payload?.tool_input;
   const file = input?.file_path ?? input?.filePath;
   if (!file) return 0;
@@ -51,7 +27,7 @@ function main() {
   const absolute = path.resolve(cwd, file);
   const normalized = absolute.replace(/\\/g, '/');
   if (SKIP.some((s) => normalized.includes(s)) || !existsSync(absolute)) return 0;
-  const root = findRepoRoot(path.dirname(absolute));
+  const root = findCheckoutRoot(path.dirname(absolute));
   if (!root) return 0;
   const ext = path.extname(absolute).toLowerCase();
 

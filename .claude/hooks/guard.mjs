@@ -18,11 +18,9 @@
  * only acts inside a cadenway-ops checkout (marker: `.claude/.claude-plugin/plugin.json` named
  * cadenway-ops), so it is inert elsewhere.
  */
-import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-
-const REPO_NAME = 'cadenway-ops';
+import { findCheckoutRoot, readHookPayload } from './hook-runtime.mjs';
 
 const GENERATED = [
   [/^(?:.*\/)?node_modules\//, 'an installed dependency'],
@@ -56,25 +54,9 @@ const REPO_RULES = [
 
 const deny = (message) => ({ message });
 
-function isRepoRoot(dir) {
-  const marker = path.join(dir, '.claude', '.claude-plugin', 'plugin.json');
-  if (!existsSync(marker)) return false;
-  try {
-    return JSON.parse(readFileSync(marker, 'utf8'))?.name === REPO_NAME;
-  } catch {
-    return false;
-  }
-}
-
 /** Walks upward from a path and returns the nearest cadenway-ops checkout root, or null. */
 export function findRepoRoot(start) {
-  let dir = path.resolve(start);
-  for (;;) {
-    if (isRepoRoot(dir)) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
+  return findCheckoutRoot(start);
 }
 
 /** Extracts the text a tool intends to write (Write, Edit or MultiEdit payloads). */
@@ -128,12 +110,8 @@ export function evaluateWrite(relative, text) {
 }
 
 function main() {
-  let payload;
-  try {
-    payload = JSON.parse(readFileSync(0, 'utf8') || '{}');
-  } catch {
-    return 0;
-  }
+  const payload = readHookPayload();
+  if (payload === undefined) return 0;
   const input = payload?.tool_input;
   const file = input?.file_path ?? input?.filePath;
   if (!file) return 0;

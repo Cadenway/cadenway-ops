@@ -3,6 +3,4 @@ description: "Write a runbook."
 argument-hint: "<procedure>"
 ---
 
-Delegate to the **cw-ops-runbook-writer** subagent: $ARGUMENTS
-
-The agent carries its own procedure and rules; do not restate them.
+Delegate to subagent **cw-ops-runbook-writer** without restating its rules or procedure: $ARGUMENTS

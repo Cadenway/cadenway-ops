@@ -1,32 +1,20 @@
 # cadenway-ops: agent instructions
 
-These instructions are mandatory for every AI assistant working in this repository, whatever the
-vendor. [CLAUDE.md](CLAUDE.md) imports them for Claude Code. Explicit user instructions take
-precedence over procedures, never over the hard limits below.
-
-This file states the **rules**. See the tooling guides for [Claude Code](.claude/README.md)
-and [Codex](.codex/README.md) for agents, skills, commands and hooks.
+These shared instructions apply to every assistant. Explicit user instructions take precedence over
+procedures within the hard limits below. Claude Code imports this file through [CLAUDE.md](CLAUDE.md).
 
 ## First read
 
-- `environments/<env>/versions.env` and `compose/compose.yaml` before any deployment change.
-- `ansible/roles/<role>/` before changing the machine.
-- The [repositories document](https://claude.ai/artifact/BPinmYxoF3mbK8w9BMB43N), sections "Exploitation" and "Déploiement".
+- Before a deployment change, read `environments/<env>/versions.env` and `compose/compose.yaml`.
+  Before changing the host, read the relevant `ansible/roles/<role>/`.
+- Use the [repositories document](https://claude.ai/artifact/BPinmYxoF3mbK8w9BMB43N) sections
+  "Exploitation", "Déploiement" and "Avant la production" as needed.
 
 ## What this repository is
 
-The structure and workflows below describe the bootstrap target. Check the checkout for available files and commands.
-
-cadenway-ops is the whole operation of Cadenway: what exists at OVH (Terraform), how the VPS is prepared (Ansible), and what runs in each environment (Docker Compose files, service definitions, versions and encrypted secrets read by the GitOps agent). It is also where local development starts the stack.
-
-```text
-terraform/        ← VPS, DNS zone, Object Storage; state in Object Storage, locked
-ansible/          ← inventory, roles (base, docker, agent, backup), playbooks (setup, backup, restore)
-compose/          ← compose.yaml, infra.yaml, edge.yaml (one Traefik per host), compose.local.yaml, postgres/init/
-environments/     ← staging/ and prod/: services/ (definitions), versions.env, secrets.sops.env
-agent/            ← sync script, systemd timer and its end-to-end test
-seed/             ← mockup data for staging and local
-```
+This repository owns OVH infrastructure, host configuration, environment definitions, GitOps
+rollout and the local stack. Use the [ownership map](docs/architecture.md#architectural-ownership)
+for directory boundaries. Check the checkout before relying on the bootstrap target.
 
 ## Language
 
@@ -39,61 +27,68 @@ seed/             ← mockup data for staging and local
 
 ## Architectural ownership
 
-- `terraform/`: OVH resources only.
-- `ansible/`: machine configuration only.
-- `compose/`: shared infrastructure services and local overrides.
-- `environments/`: the desired state the agent applies.
-- `agent/`: the sync script (pull, decrypt, migrate, roll out, health check, alert).
+- Use the [deployment guide](docs/deployment.md) for pull-based rollout, edge routing and topology.
+  Traefik is the only exposed container. The apex and its `www.` redirect, `app.`, `api.` and
+  `realtime.` use Let's Encrypt. Services otherwise stay on the internal network.
+- Use the [database guide](docs/database.md) for the shared PostgreSQL host and service-owned
+  databases and roles. Use `cw-compose-layout` for Redis, JetStream, Meilisearch and local
+  Compose overrides (sibling builds, Mailpit, localhost domains and Garage in the full profile).
+  Production files and backups use OVH Object Storage.
+- Keep environment secrets SOPS/age encrypted in Git. Only the VPS key decrypts them.
+  The deploy bot writes versions. Preserve the CODEOWNERS approval for `environments/prod/` and
+  `terraform/`.
 
 ## Boundaries (hard rules)
 
 - No application code here; service definitions in `environments/<env>/services/` are copied from each service's `deploy/compose.yaml` by its deploy workflow.
 - No plaintext secret, private key, state file or decrypted `.env` in the repository.
-- Terraform runs only from the GitHub Action; Ansible playbooks are idempotent.
+- Terraform applies through GitHub Actions. Ansible playbooks are idempotent.
 - Nothing opens an inbound path to the VPS for deployments: the agent pulls.
 
 ## GitHub files (`.github/`)
 
-This repository carries everything GitHub reads from it; Cadenway has no organization `.github`
-repository and nothing is inherited.
+Keep this repository's [README](.github/README.md), community files, templates, code owners and
+complete workflows in `.github/`. Cadenway has no organization-level files, cross-repository
+reusable workflows or shared Renovate preset. Use the paired `github.md` rules when editing
+GitHub files. Apply changes to shared material through separate pull requests in each owner.
 
-- [`.github/README.md`](.github/README.md) is the repository home page; `CONTRIBUTING.md`,
-  `CODE_OF_CONDUCT.md`, `SECURITY.md`, `SUPPORT.md`, `PULL_REQUEST_TEMPLATE.md`, `ISSUE_TEMPLATE/` and
-  `CODEOWNERS` sit next to it.
-- `.github/workflows/` holds this repository's complete CI, release workflows: no reusable
-  workflow from another repository. The Renovate configuration is complete here too, with no shared
-  preset.
-- The parts shared with the other repositories are duplicated on purpose; a change to them is repeated
-  in each repository through its own pull request.
+## Code quality
+
+- Read the affected entry point, its callers, and its relevant tests before editing.
+  Preserve the behavior callers rely on unless the task changes it.
+- Keep the diff focused. Use names that express intent and reuse existing code when
+  it preserves the required behavior. Extract code when it clarifies a responsibility.
+- Keep business decisions with their owning module. Validate external inputs at the
+  boundary and use documented public interfaces across modules and repositories.
+- For writes that can fail, overlap, or be retried, verify the resulting state.
+  Check transaction boundaries, tenant scope, and repeated delivery where relevant.
+- For collections and repeated work, check what grows with input size. Measure or
+  inspect the bottleneck before adding an index, cache, worker, or replica.
+- Run the repository checks that cover the affected behavior. Report the commands
+  and their results, including checks that did not run and tests that selected zero cases.
 
 ## Commands and quality gates
 
-The scripts below are this repository's contract. While the repository is being bootstrapped,
-create them with these exact names; afterwards, use them and never an ad-hoc equivalent. Run the
-narrowest check that covers the change first, then widen:
+Start with the smallest check that covers the change. See the
+[full local gate](docs/development.md#full-local-quality-gate) for the repository-wide sequence.
 
 | Changed                         | Minimum check                                                                                                   |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Compose or Traefik              | `docker compose … config -q`, `yamllint .`                                                                      |
+| Compose or Traefik              | `docker compose … config -q` with the gate's example inputs, `yamllint --strict .`                              |
 | Ansible                         | `ansible-lint ansible/`, `ansible-playbook --syntax-check`, then `--check` on a staging host when the user asks |
 | Terraform                       | `terraform fmt -check`, `terraform validate`; `plan` only when the user asks                                    |
 | Agent script                    | `shellcheck agent/*.sh`                                                                                         |
 | Environments                    | `docker compose … config -q` with the environment's `versions.env`                                              |
 | Docs or agent instructions only | Scoped formatting and link review                                                                               |
 
-Report the commands you actually ran and their results; a check you did not run is reported as not
-run.
-
 ## Git and branch flow
 
-- Trunk-based: work branches come from `main`, named `<type>/<lowercase-kebab-description>` with a
-  type among `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`,
-  `revert`; put the Cadenway task id first when there is one (`feat/cad-482-sso-screen`). Never an
-  agent name as a prefix. Validate with `git check-ref-format --branch <name>`.
-- Commits and PR titles follow Conventional Commits: `type(scope): subject`, English, imperative,
-  lowercase subject, no trailing period, at most 100 characters; `!` only for a breaking change.
-- Pull requests target `main` and are squash-merged after review and green CI. Not versioned: every merge to `main` is the new desired state. Bot commits update `environments/staging/` automatically and `environments/prod/` after the approval in the service repository.
-- Stage only the files of your task; preserve other people's changes in the working tree.
+Use the paired `git-and-commits.md` rule for trunk-based branches, Conventional Commits and
+staging only task files. Validate branch names with `git check-ref-format --branch <name>`.
+
+Pull requests target `main` and are squash-merged after review and green CI. Each merge becomes
+the desired state. Bot commits update staging automatically and production after service-side
+approval. See [collaboration and release](docs/development.md#collaboration-and-release).
 
 ## Hard limits (never without the user's explicit request in this conversation)
 
@@ -114,14 +109,11 @@ not to find another way around it.
 
 ## Agent tooling
 
-- **Claude Code**: [CLAUDE.md](CLAUDE.md) and [.claude/README.md](.claude/README.md): the
-  `cw-ops-*` agents, the `/cw-*` commands (`/cw-quality` runs the whole local gate),
-  path-scoped rules and hooks.
-- **Codex**: [.codex/README.md](.codex/README.md) covers the specialists, `$cw-*` skills, rules and hooks.
-- **Builders** (assigned writes): `cw-ops-compose-builder`, `cw-ops-traefik-maintainer`, `cw-ops-ansible-role-builder`, `cw-ops-terraform-builder`, `cw-ops-agent-maintainer`, `cw-ops-secrets-steward`, `cw-ops-backup-restore-builder`, `cw-ops-observability-builder`, `cw-ops-runbook-writer`, `cw-ops-github-maintainer`.
-- **Reviewers** (read-only): `cw-ops-deploy-reviewer`, `cw-ops-security-auditor`.
-- Specialists are available, not mandatory. Delegate a bounded responsibility with explicit files and
-  checks, assign disjoint files to parallel agents and integrate their results yourself.
+Use the [Claude](.claude/README.md#agents) or [Codex](.codex/README.md) guide for specialists,
+commands, skills, scoped rules and hooks. Read the active assistant's matching rules for every
+touched path and load skills relevant to the task. Specialists are available when needed.
+Give each delegate a bounded assignment, owning checkout, explicit files and checks. Keep
+parallel write scopes disjoint and integrate the results.
 
 ## Repository hygiene
 
@@ -137,5 +129,5 @@ not to find another way around it.
 
 ## References
 
-- [Interactive mockup](https://claude.ai/artifact/KYRM7AnsYLiBLBLKy8i4HE), [integration guide](https://claude.ai/artifact/CpJHVCiFfF9j3KbHQ2S1Et) and
-  [repositories and packages](https://claude.ai/artifact/BPinmYxoF3mbK8w9BMB43N) (living documents).
+Use the [documentation index](docs/README.md#sources-and-policy) for the mockup, integration
+guide and repositories document.

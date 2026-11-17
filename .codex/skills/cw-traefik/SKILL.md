@@ -3,6 +3,6 @@ name: cw-traefik
 description: Change Traefik routing or security.
 ---
 
-Use the **cw-ops-traefik-maintainer** specialist for this task when delegation is available and authorized; otherwise read `.codex/agents/cw-ops-traefik-maintainer.toml` and follow its instructions directly: the user-provided arguments
-
-The agent carries its own procedure and rules; do not restate them.
+Delegate the user's arguments to **cw-ops-traefik-maintainer** if delegation is available and authorized.
+Otherwise read and follow `.codex/agents/cw-ops-traefik-maintainer.toml` directly with those arguments.
+Do not restate its rules or procedure.

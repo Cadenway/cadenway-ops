@@ -36,9 +36,9 @@
  * plugin is installed elsewhere.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findCheckoutRoot, hasRepoMarker, readHookPayload, repositoryName } from './hook-runtime.mjs';
 
 /**
  * Constant TYPES
@@ -86,7 +86,7 @@ const PROTECTED_BRANCHES = new Set(['main']);
  *
  * @type {string}
  */
-const REPO_NAME = 'cadenway-ops';
+const REPO_NAME = repositoryName;
 
 /**
  * Function parseSegments
@@ -728,13 +728,7 @@ export function evaluateCommand(command, { git }) {
  * @returns {boolean} True when the manifest exists and names this repository.
  */
 function isRepoRoot(dir) {
-  const manifest = path.join(dir, '.claude', '.claude-plugin', 'plugin.json');
-  if (!existsSync(manifest)) return false;
-  try {
-    return JSON.parse(readFileSync(manifest, 'utf8'))?.name === REPO_NAME;
-  } catch {
-    return false;
-  }
+  return hasRepoMarker(dir, REPO_NAME);
 }
 
 /**
@@ -749,13 +743,7 @@ function isRepoRoot(dir) {
  * @returns {string | null} Matching checkout root, or null when no ancestor is the Web repository.
  */
 export function findRepoRoot(start) {
-  let dir = path.resolve(start);
-  for (;;) {
-    if (isRepoRoot(dir)) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
+  return findCheckoutRoot(start, isRepoRoot);
 }
 
 /**
@@ -768,12 +756,8 @@ export function findRepoRoot(start) {
  * @returns {number} Exit status 2 for a denied command and 0 when the hook has nothing to block.
  */
 function main() {
-  let payload;
-  try {
-    payload = JSON.parse(readFileSync(0, 'utf8') || '{}');
-  } catch {
-    return 0;
-  }
+  const payload = readHookPayload();
+  if (payload === undefined) return 0;
   const command = payload?.tool_input?.command ?? payload?.tool_input?.cmd;
   const cwd = payload?.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   if (typeof command !== 'string' || !findRepoRoot(cwd)) return 0;

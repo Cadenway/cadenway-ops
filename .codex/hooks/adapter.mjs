@@ -4,16 +4,23 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+
+function runClaudeHook(script, payload) {
+  const result = spawnSync(process.execPath, [path.join(root, '.claude', 'hooks', script)], {
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+    cwd: root,
+  });
+  if (result.stderr) process.stderr.write(result.stderr);
+  return result.status ?? 1;
+}
+
 let event;
 try { event = JSON.parse(readFileSync(0, 'utf8')); } catch { process.exit(0); }
 const input = event.tool_input || {};
 const tool = event.tool_name;
 if (tool === 'Bash') {
-  const result = spawnSync(process.execPath, [path.join(root, '.claude/hooks/guard-git.mjs')], {
-    input: JSON.stringify({ ...event, cwd: root }), encoding: 'utf8', cwd: root,
-  });
-  if (result.stderr) process.stderr.write(result.stderr);
-  process.exit(result.status ?? 1);
+  process.exit(runClaudeHook('guard-git.mjs', { ...event, cwd: root }));
 }
 if (tool !== 'apply_patch' || typeof input.command !== 'string') process.exit(0);
 const patch = input.command;
@@ -50,10 +57,7 @@ if (event.hook_event_name === 'PreToolUse') {
     const absolute = path.resolve(event.cwd || root, f.file);
     const rel = path.relative(root, absolute);
     if (rel.startsWith('..') || path.isAbsolute(rel)) continue;
-    const result = spawnSync(process.execPath, [path.join(root, '.claude/hooks/format.mjs')], {
-      input: JSON.stringify({ cwd: root, tool_input: { file_path: absolute } }), encoding: 'utf8', cwd: root,
-    });
-    if (result.stderr) process.stderr.write(result.stderr);
-    if (result.status !== 0) process.exit(result.status ?? 1);
+    const status = runClaudeHook('format.mjs', { cwd: root, tool_input: { file_path: absolute } });
+    if (status !== 0) process.exit(status);
   }
 }

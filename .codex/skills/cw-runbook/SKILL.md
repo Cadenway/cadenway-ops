@@ -3,6 +3,6 @@ name: cw-runbook
 description: Write a runbook.
 ---
 
-Use the **cw-ops-runbook-writer** specialist for this task when delegation is available and authorized; otherwise read `.codex/agents/cw-ops-runbook-writer.toml` and follow its instructions directly: the user-provided arguments
-
-The agent carries its own procedure and rules; do not restate them.
+Delegate the user's arguments to **cw-ops-runbook-writer** if delegation is available and authorized.
+Otherwise read and follow `.codex/agents/cw-ops-runbook-writer.toml` directly with those arguments.
+Do not restate its rules or procedure.
