@@ -47,8 +47,9 @@ receives. A client left on the default `_INBOX.>` prefix is refused its first re
 
 Events are read through JetStream consumers, never through a plain subscription: no backend may
 subscribe to `evt.>`. A backend reads through the [consumers](#consumers) granted to it, each by
-its exact name and filter, and through nothing else: it reads only the events those consumers
-filter.
+its exact name and filter: it reads only the events those consumers filter. The one exception is
+the [dead-letter worker](#dead-letters) of notification-service, which reads any message of
+`EVENTS` and `EVENTS_RESTRICTED` by its sequence.
 
 `@cadenway/nest-messaging` gives each handler a durable pull consumer named `<service>__<handler>`
 that filters one event, and uses four API subjects on it. Each is granted to the user that owns
@@ -69,15 +70,26 @@ counters the server appends to the reply subject of a message. Therefore:
 - It cannot open a consumer under a name it was not given: a new handler waits for its grant (see
   [adding a consumer](#adding-a-consumer)).
 - It cannot give its own consumer another filter. The filter is part of the granted create
-  subject, and the server refuses a create whose body filters another subject. The kit would
-  refuse to run the handler on such a consumer anyway: a handler consumes exactly one event.
+  subject, and the server refuses a create whose body filters another subject or names another
+  consumer. The kit would refuse to run the handler on such a consumer anyway: a handler consumes
+  exactly one event.
 - No backend may delete a consumer, its own included. `@cadenway/nest-messaging` never deletes
   one; an operator removes an obsolete one with the `admin` user.
 
-The kit uses no other consumer subject: no list of the consumers, and not
-`$JS.API.CONSUMER.DURABLE.CREATE`, the former create subject, which carries no filter. At start-up
-it reads the streams it uses (`$JS.API.STREAM.INFO.<stream>`), which each user keeps for its
-streams.
+The kit uses no other consumer subject: no list of the consumers, and not the older
+`$JS.API.CONSUMER.DURABLE.CREATE`, which carries no filter and is granted to nobody. At start-up it
+reads the streams it uses (`$JS.API.STREAM.INFO.<stream>`), which each user keeps for its streams.
+
+### What a grant does not limit
+
+A permission matches the subject of a request, not its body. Apart from the name and the filter,
+which the server ties to the subject, the owner of a consumer chooses its settings, and the server
+accepts a push delivery subject the owner itself may not publish on (checked against NATS 2.15.2).
+A backend taken over could therefore have the events of its own consumers delivered to another
+subject, such as `dlq.>` or the rebuild subject of another backend: never an event it cannot
+already read, but to readers that were not meant to receive it. Closing that would take consumers
+created by the platform with the `admin` user, the services keeping only the read, pull and
+acknowledgement subjects (`manageConsumers: false` in `@cadenway/nest-messaging`): not done.
 
 ## Consumers
 
@@ -125,6 +137,12 @@ The pull request here adds them to the user in `compose/nats/nats-server.conf`, 
 to the list at the top of `compose/tests/nats-permissions.sh` (with the backend that publishes the
 event and another backend that must be refused) and to the table above, and changes
 `NATS_SERVER_CONF_SHA256`. The test fails when the configuration and its list differ.
+
+The service repository adds the same four subjects to the copy of these permissions its own
+development broker runs (`compose.dev.yaml`), so that its integration tests meet the refusal the
+environments would. To try a handler on the local stack before its grant is merged, add the grant
+to your checkout of `nats-server.conf` and recreate the broker
+(`docker compose up -d --force-recreate nats`).
 
 - Renaming a handler, or making it consume another event, makes a new consumer: it needs a new
   grant.

@@ -24,8 +24,8 @@ readonly REFUSED='Permissions Violation'
 
 # The consumers nats/nats-server.conf grants, one per line: the user that owns it, its stream, its
 # name, its filter subject, the user that publishes that event, and another backend that tries to
-# use the consumer. Section 2 fails when this list and the configuration differ, so a grant always
-# comes with its test.
+# use the consumer (section 12 then tries one of them as every other backend). Section 2 fails when
+# this list and the configuration differ, so a grant always comes with its test.
 readonly CONSUMERS='
 identity EVENTS identity-service__project-member-joined evt.member.joined.v1 organization organization
 identity EVENTS identity-service__project-member-role-changed evt.member.role-changed.v1 organization notification
@@ -38,6 +38,13 @@ notification EVENTS_RESTRICTED notification-service__request-code-email restrict
 '
 # What `nats consumer next` prints of a delivery: the attempt, the consumer and stream sequences.
 readonly DELIVERY='tries: ([0-9]+) / cons seq: ([0-9]+) / str seq: ([0-9]+)'
+# The system subjects a backend may have besides those of its consumers: the start-up checks of
+# @cadenway/nest-messaging, and for notification alone the reads and advisories of the dead-letter
+# worker.
+readonly STREAM_INFO='^publish \$JS\.API\.(INFO|STREAM\.NAMES|STREAM\.INFO\.(EVENTS|EVENTS_RESTRICTED|EVENTS_DLQ))$'
+readonly CONSUMER_API='^publish \$JS\.(API\.CONSUMER\.(CREATE|INFO|MSG\.NEXT)|ACK)\.'
+readonly DEAD_LETTER_READ='^publish \$JS\.API\.STREAM\.MSG\.GET\.(EVENTS|EVENTS_RESTRICTED)$'
+readonly DEAD_LETTER_ADVISORY='^subscribe \$JS\.EVENT\.ADVISORY\.CONSUMER\.(MAX_DELIVERIES|MSG_TERMINATED)\.(EVENTS|EVENTS_RESTRICTED)\.>$'
 
 compose() { docker compose -p "$PROJECT" --env-file .env.example -f infra.yaml "$@"; }
 cleanup() { compose down --volumes --remove-orphans >/dev/null 2>&1 || true; }
@@ -66,17 +73,21 @@ consumer_config() {
 create_consumer() {
   as "$1" request "\$JS.API.CONSUMER.CREATE.$2.$3.$4" "$(consumer_config "$2" "$3" "$4")"
 }
-# Prints, for each consumer subject of nats/nats-server.conf, the user it is granted to and the
-# subject: `identity $JS.API.CONSUMER.INFO.EVENTS.identity-service__project-member-joined`.
+# Prints each subject nats/nats-server.conf allows a backend user, with the user and the right:
+# `identity publish $JS.API.CONSUMER.INFO.EVENTS.identity-service__project-member-joined`. The
+# `admin` user is left out.
 granted_subjects() {
   awk '
-    /^ *user:/ { user = $2; gsub(/"/, "", user) }
-    {
+    /^ *#/ { next }
+    /^ *user:/ { user = $2; gsub(/"/, "", user); right = ""; next }
+    user != "" && user != "admin" {
       for (i = 1; i <= NF; i++) {
-        if ($i ~ /^"\$JS\.(API\.CONSUMER|ACK)\./) {
+        if ($i == "publish:") right = "publish"
+        else if ($i == "subscribe:") right = "subscribe"
+        else if (right != "" && $i ~ /^\[?"/) {
           subject = $i
-          gsub(/[",]/, "", subject)
-          print user, subject
+          gsub(/[]["{},]/, "", subject)
+          print user, right, subject
         }
       }
     }' nats/nats-server.conf
@@ -123,13 +134,33 @@ check 'ENSURE_STREAMS_SHA256 is the hash of ensure-streams.sh' \
 
 echo '=== 2. each consumer is granted by its exact name to its owner, and nothing else is'
 mapfile -t GRANTS < <(granted_subjects)
+CONSUMER_GRANTS=()
 CREATES=()
+OUT=''
 for grant in "${GRANTS[@]}"; do
-  read -r user subject <<<"$grant"
-  if [[ $subject =~ ^\$JS\.API\.CONSUMER\.CREATE\.([^.]+)\.([^.]+)\.(.+)$ ]]; then
-    CREATES+=("$user ${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]}")
+  read -r user right subject <<<"$grant"
+  if [[ $subject == [*\>]* ]]; then
+    # A first token that is a wildcard would match the JetStream API and every acknowledgement.
+    OUT+=" $user:$subject"
+  elif [[ $subject != \$* || "$right $subject" =~ $STREAM_INFO ]]; then
+    continue
+  elif [[ "$right $subject" =~ $CONSUMER_API ]]; then
+    CONSUMER_GRANTS+=("$user $subject")
+    stem=$subject
+    [[ $stem == '$JS.ACK.'* ]] && stem=${stem%.>}
+    [[ $stem == *[*\>]* ]] && OUT+=" $user:$subject"
+    if [[ $subject =~ ^\$JS\.API\.CONSUMER\.CREATE\.([^.]+)\.([^.]+)\.(.+)$ ]]; then
+      CREATES+=("$user ${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]}")
+    fi
+  elif [[ $user == notification && ("$right $subject" =~ $DEAD_LETTER_READ ||
+    "$right $subject" =~ $DEAD_LETTER_ADVISORY) ]]; then
+    continue
+  else
+    OUT+=" $user:$subject"
   fi
 done
+check 'no backend has a system subject beyond its consumers, its streams and the dead letters' \
+  '[[ ${#GRANTS[@]} -gt 0 && -z $OUT ]]'
 EXPECTED=$(sed '/^$/d' <<<"$CONSUMERS" | cut -d ' ' -f 1-4 | sort)
 OUT=$(printf '%s\n' "${CREATES[@]}" | sort)
 check 'the consumers of nats-server.conf are the ones this test covers' '[[ $OUT == "$EXPECTED" ]]'
@@ -138,12 +169,14 @@ for row in "${CREATES[@]}"; do
   read -r user stream consumer _ <<<"$row"
   for subject in "\$JS.API.CONSUMER.INFO.$stream.$consumer" \
     "\$JS.API.CONSUMER.MSG.NEXT.$stream.$consumer" "\$JS.ACK.$stream.$consumer.>"; do
-    printf '%s\n' "${GRANTS[@]}" | grep -Fqx -- "$user $subject" || OUT+=" $user:$subject"
+    printf '%s\n' "${CONSUMER_GRANTS[@]}" | grep -Fqx -- "$user $subject" || OUT+=" $user:$subject"
   done
   [[ $consumer == "$user-service__"* || $consumer == "${user}__"* ]] || OUT+=" $user:$consumer"
 done
 check 'each has its four subjects, granted to the service its name starts with' '[[ -z $OUT ]]'
-OUT=$((${#GRANTS[@]} - 4 * ${#CREATES[@]}))
+OUT=$(printf '%s\n' "${CREATES[@]}" | awk '$2 == "EVENTS_RESTRICTED" && $1 != "notification"')
+check 'only notification has a consumer on EVENTS_RESTRICTED (decision D7)' '[[ -z $OUT ]]'
+OUT=$((${#CONSUMER_GRANTS[@]} - 4 * ${#CREATES[@]}))
 check 'and no user has any other consumer or acknowledgement subject' '[[ $OUT == 0 ]]'
 
 compose up -d --wait nats nats-streams >/dev/null 2>&1
@@ -213,7 +246,11 @@ OUT=$(as notification sub 'restricted.>' --count 1)
 check 'notification itself cannot subscribe: consumers only' '[[ $OUT == *"$REFUSED for Subscription"* ]]'
 OUT=$(as notification consumer next EVENTS_RESTRICTED "$code" --count 1 --ack)
 check 'notification reads the code through its consumer' \
-  '[[ $OUT == *482913* && $OUT == *"Acknowledged message"* ]]'
+  '[[ $OUT == *482913* && $OUT == *"Acknowledged message"* && $OUT != *"$REFUSED"* ]]'
+# Acknowledged on the reply subject the server gave the delivery: it falls inside the grant.
+OUT=$(as notification consumer info EVENTS_RESTRICTED "$code" --json)
+check 'and the broker has its acknowledgement' \
+  '[[ $OUT == *"\"num_ack_pending\": 0"* && $OUT == *"\"num_pending\": 0"* ]]'
 
 echo '=== 7. a backend listens to its own inbox only'
 OUT=$(as task sub '_INBOX.notification.>' --count 1)
@@ -355,6 +392,35 @@ for row in "${ROWS[@]}"; do
   check 'which is still there, on its filter' \
     '[[ $OUT == *"\"filter_subject\": \"$filter\""* ]]'
 done
+# Every other backend, on one consumer that holds a message.
+held=identity-service__project-member-joined
+as organization request evt.member.joined.v1 '{"event":"held"}' >/dev/null
+OUT=$(as identity consumer next EVENTS "$held" --count 1 --no-ack)
+ack="\$JS.ACK.EVENTS.$held.unknown"
+if [[ $OUT =~ $DELIVERY ]]; then
+  ack="\$JS.ACK.EVENTS.$held.${BASH_REMATCH[1]}.${BASH_REMATCH[3]}.${BASH_REMATCH[2]}.0.0"
+fi
+create="\$JS.API.CONSUMER.CREATE.EVENTS.$held.evt.member.joined.v1"
+info="\$JS.API.CONSUMER.INFO.EVENTS.$held"
+next="\$JS.API.CONSUMER.MSG.NEXT.EVENTS.$held"
+delete="\$JS.API.CONSUMER.DELETE.EVENTS.$held"
+for user in organization billing task document storage notification automation integration \
+  search api-gateway realtime-gateway; do
+  OUT=$(create_consumer "$user" EVENTS "$held" evt.member.joined.v1)
+  OUT+=$(as "$user" request "$info" '')
+  OUT+=$(as "$user" request "$next" '{"batch":1,"expires":500000000}')
+  OUT+=$(as "$user" pub "$ack" '+ACK')
+  OUT+=$(as "$user" request "$delete" '')
+  check "$user is refused the create, read, pull, acknowledgement and deletion of $held" \
+    '[[ $OUT == *"$REFUSED for Publish to \"$create\""* && $OUT == *"$REFUSED for Publish to \"$info\""*
+      && $OUT == *"$REFUSED for Publish to \"$next\""* && $OUT == *"$REFUSED for Publish to \"$ack\""*
+      && $OUT == *"$REFUSED for Publish to \"$delete\""* && $OUT != *"\"event\":\"held\""* ]]'
+done
+OUT=$(as identity consumer info EVENTS "$held" --json)
+check 'the message is still held by identity' '[[ $OUT == *"\"num_ack_pending\": 1"* ]]'
+OUT=$(as identity pub "$ack" '+ACK')
+OUT=$OUT$(as identity consumer info EVENTS "$held" --json)
+check 'which acknowledges it' '[[ $OUT != *"$REFUSED"* && $OUT == *"\"num_ack_pending\": 0"* ]]'
 compose exec -T nats-streams sh -c 'nats --user notification --password notification \
   --inbox-prefix _INBOX.notification sub "rebuild.notification.>" --count 1 \
   >/tmp/rebuild-invitation 2>&1 &'
@@ -405,6 +471,10 @@ OUT=$(as identity request "\$JS.API.CONSUMER.CREATE.EVENTS.$own.evt.member.joine
   "$(consumer_config EVENTS "$own" 'evt.>')")
 check 'nor widen the filter in the body of its granted subject: the server refuses it' \
   '[[ $OUT != *"$REFUSED"* && $OUT == *"\"err_code\":10131"* ]]'
+OUT=$(as identity request "\$JS.API.CONSUMER.CREATE.EVENTS.$own.evt.member.joined.v1" \
+  "$(consumer_config EVENTS organization-service__project-user-signed-up evt.member.joined.v1)")
+check 'nor reach the consumer of another backend through it: the server refuses that too' \
+  '[[ $OUT != *"$REFUSED"* && $OUT == *"\"err_code\":10017"* ]]'
 delete="\$JS.API.CONSUMER.DELETE.EVENTS.$own"
 OUT=$(as identity request "$delete" '')
 check 'nor delete it: an operator does' '[[ $OUT == *"$REFUSED for Publish to \"$delete\""* ]]'
