@@ -36,6 +36,9 @@ organization EVENTS organization-service__project-user-profile-updated evt.user.
 organization EVENTS organization-service__project-user-email-changed evt.user.email-changed.v1 identity notification
 organization EVENTS organization-service__project-user-two-step evt.user.two-step-verification-changed.v1 identity notification
 organization EVENTS organization-service__remove-deleted-user evt.user.deleted.v1 identity task
+task EVENTS task-service__project-member-joined evt.member.joined.v1 organization identity
+task EVENTS task-service__project-member-role-changed evt.member.role-changed.v1 organization notification
+task EVENTS task-service__project-member-removed evt.member.removed.v1 organization search
 notification EVENTS notification-service__request-invitation-email evt.invitation.issued.v1 organization organization
 notification EVENTS notification-service__request-password-changed-email evt.user.password-changed.v1 identity organization
 notification EVENTS notification-service__request-email-changed-email evt.user.email-changed.v1 identity organization
