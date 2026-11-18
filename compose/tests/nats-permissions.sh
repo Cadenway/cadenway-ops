@@ -34,6 +34,7 @@ organization EVENTS organization-service__project-user-signed-up evt.user.signed
 organization EVENTS organization-service__project-user-email-verified evt.user.email-verified.v1 identity notification
 organization EVENTS organization-service__project-user-profile-updated evt.user.profile-updated.v1 identity search
 organization EVENTS organization-service__project-user-email-changed evt.user.email-changed.v1 identity notification
+organization EVENTS organization-service__project-user-two-step evt.user.two-step-verification-changed.v1 identity notification
 organization EVENTS organization-service__remove-deleted-user evt.user.deleted.v1 identity task
 notification EVENTS notification-service__request-invitation-email evt.invitation.issued.v1 organization organization
 notification EVENTS notification-service__request-password-changed-email evt.user.password-changed.v1 identity organization
@@ -41,6 +42,7 @@ notification EVENTS notification-service__request-email-changed-email evt.user.e
 notification EVENTS notification-service__request-new-device-email evt.session.opened-on-new-device.v1 identity realtime-gateway
 notification EVENTS notification-service__request-deletion-scheduled-email evt.user.deletion-scheduled.v1 identity identity
 notification EVENTS notification-service__request-deletion-cancelled-email evt.user.deletion-cancelled.v1 identity billing
+notification EVENTS notification-service__request-two-step-email evt.user.two-step-verification-changed.v1 identity organization
 notification EVENTS_RESTRICTED notification-service__request-code-email restricted.one-time-code.issued.v1 identity identity
 notification EVENTS_RESTRICTED notification-service__request-password-reset-email restricted.password-reset-link.issued.v1 identity organization
 '
