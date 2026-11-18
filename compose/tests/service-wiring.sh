@@ -157,9 +157,13 @@ const notification = services['notification-service'].environment;
 if (notification.SMTP_HOST !== 'mailpit' || notification.SMTP_PORT !== '1025') fail('SMTP');
 const search = services['search-service'].environment;
 if (search.MEILI_URL !== 'http://meilisearch:7700' || !search.MEILI_API_KEY) fail('Meilisearch');
+// The relying party is the domain, and the web application its only origin.
+const identity = services['identity-service'].environment;
+if (identity.WEBAUTHN_RP_ID !== 'cadenway.localhost') fail('WebAuthn relying party');
+if (identity.WEBAUTHN_ORIGINS !== 'http://app.cadenway.localhost') fail('WebAuthn origins');
 console.log('wired');
 JS
 ) || true
-check 'trusted issuers, private keys, addresses, SMTP, S3 and Meilisearch' '[[ $OUT == wired ]]'
+check 'trusted issuers, private keys, addresses, SMTP, S3, Meilisearch and WebAuthn' '[[ $OUT == wired ]]'
 
 exit "$FAILED"
