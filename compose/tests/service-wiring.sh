@@ -157,9 +157,9 @@ const notification = services['notification-service'].environment;
 if (notification.SMTP_HOST !== 'mailpit' || notification.SMTP_PORT !== '1025') fail('SMTP');
 const search = services['search-service'].environment;
 if (search.MEILI_URL !== 'http://meilisearch:7700' || !search.MEILI_API_KEY) fail('Meilisearch');
-// The relying party is the domain, and the web application its only origin.
+// The relying party is the host of the web application, also its only origin.
 const identity = services['identity-service'].environment;
-if (identity.WEBAUTHN_RP_ID !== 'cadenway.localhost') fail('WebAuthn relying party');
+if (identity.WEBAUTHN_RP_ID !== 'app.cadenway.localhost') fail('WebAuthn relying party');
 if (identity.WEBAUTHN_ORIGINS !== 'http://app.cadenway.localhost') fail('WebAuthn origins');
 console.log('wired');
 JS

@@ -108,7 +108,7 @@ removes the line from its `deploy/compose.yaml`.
 
 | Backend              | Trusts                                                                         | Also declares                                                                                                                                                                                                                                                                                                                                                      |
 | -------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| identity-service     | `api-gateway`, `realtime-gateway`                                              | `PASSWORD_PEPPER: ${IDENTITY_PASSWORD_PEPPER}`, the secret its keys derive from, kept outside the database; `WEBAUTHN_RP_ID: ${DOMAIN}`, `WEBAUTHN_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}`, the relying party of its security keys                                                                                                                       |
+| identity-service     | `api-gateway`, `realtime-gateway`                                              | `PASSWORD_PEPPER: ${IDENTITY_PASSWORD_PEPPER}`, the secret its keys derive from, kept outside the database; `WEBAUTHN_RP_ID: app.${DOMAIN}`, `WEBAUTHN_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}`, the relying party of its security keys                                                                                                                   |
 | organization-service | `api-gateway`                                                                  |                                                                                                                                                                                                                                                                                                                                                                    |
 | billing-service      | `api-gateway`                                                                  |                                                                                                                                                                                                                                                                                                                                                                    |
 | task-service         | `api-gateway`, `realtime-gateway`, `automation-service`, `integration-service` |                                                                                                                                                                                                                                                                                                                                                                    |
@@ -126,19 +126,23 @@ and the CSRF check of the API gateway read it. The API gateway accepts the web a
 public site; the realtime gateway, which only the web application opens, accepts the web
 application. Both values are built from `PUBLIC_SCHEME` and `DOMAIN`, so no environment sets it.
 
-`WEBAUTHN_RP_ID` is the relying-party id of the security keys identity-service registers: the
-domain of the environment, to which a browser binds each key. `WEBAUTHN_ORIGINS` lists,
-comma-separated, the exact origins a key may be registered or used from: the web application only.
-The origin check is what keeps environments apart: a page of `app.staging.cadenway.com` may ask a
-browser for a key of `cadenway.com`, and production refuses the answer because its origin is not
-listed. Both values come from `DOMAIN` and `PUBLIC_SCHEME`, like `ALLOWED_ORIGINS`, so no
-environment sets them and a host needs nothing new.
+`WEBAUTHN_RP_ID` is the relying-party id of the security keys identity-service registers, to which
+a browser binds each key: the host of the web application, `app.${DOMAIN}`. A browser lets a page
+ask only for the keys of its own host or of a parent domain, so no other page under the domain, the
+web application of staging (`app.staging.cadenway.com`) included, can ask for a key of production
+(`app.cadenway.com`): the keys of staging and production stay apart. The id is final once keys
+exist: changing it makes every registered key unusable. `WEBAUTHN_ORIGINS` lists, comma-separated,
+the exact origins a key may be registered or used from, the web application only, and
+identity-service still checks the origin of every answer against it exactly. Both values come from
+`DOMAIN` and `PUBLIC_SCHEME`, like `ALLOWED_ORIGINS`, so no environment sets them and a host needs
+nothing new.
 
 `PASSWORD_PEPPER` is kept outside the database of identity-service. The service derives from it,
-each with its own HKDF-SHA-256 label, the secret key of the password hashes, the key of the code
-hashes and, from the release that adds two-step verification, the key that encrypts the
-authenticator-app secrets and the key of the backup code hashes. Changing it makes every stored
-password, pending code, authenticator app and backup code unusable: there is no rotation.
+each with its own HKDF-SHA-256 label, the secret key of the password hashes and the key of the code
+hashes. The two-step verification release of identity-service adds two derivations, the key that
+encrypts the authenticator-app secrets and the key of the backup code hashes; the releases before it
+have neither. Changing the pepper makes every stored password and pending code unusable, and, from
+that release, every authenticator app and backup code too: there is no rotation.
 
 A `<NAME>_SERVICE_URL` is declared as `${<NAME>_SERVICE_URL}`: `http://<name>-service:<port>` on the
 internal network, the same in every environment.
