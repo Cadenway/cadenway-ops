@@ -11,21 +11,21 @@ retries) belong to cadenway-service-kit. This page is what the broker enforces.
 `compose/nats/nats-server.conf` declares one user per backend. A connection without a user is
 refused.
 
-| User               | Backend                   | Publishes                                                                                       | Consumes ([consumers](#consumers))          |
-| ------------------ | ------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `identity`         | identity-service          | `evt.user.>`, `evt.session.>`, `evt.api-token.>`, `restricted.>`                                | three consumers on `EVENTS`                 |
-| `organization`     | organization-service      | `evt.organization.>`, `evt.member.>`, `evt.invitation.>`, `evt.domain.>`                        | five consumers on `EVENTS`                  |
-| `billing`          | billing-service           | `evt.subscription.>`, `evt.quota.>`, `evt.invoice.>`                                            | nothing yet                                 |
-| `task`             | task-service              | `evt.space.>`, `evt.list.>`, `evt.task.>`, `evt.comment.>`, `evt.approval.>`, `evt.milestone.>` | nothing yet                                 |
-| `document`         | document-service          | `evt.doc.>`                                                                                     | nothing yet                                 |
-| `storage`          | storage-service           | `evt.file.>`                                                                                    | nothing yet                                 |
-| `notification`     | notification-service      | `evt.notification.>`, `evt.reminder.>`, `dlq.>`                                                 | six on `EVENTS`, two on `EVENTS_RESTRICTED` |
-| `automation`       | automation-service        | `evt.automation.>`                                                                              | nothing yet                                 |
-| `integration`      | integration-service       | `evt.git.>`                                                                                     | nothing yet                                 |
-| `search`           | search-service            | nothing                                                                                         | nothing yet                                 |
-| `api-gateway`      | API gateway               | `evt.api-usage.>`                                                                               | nothing                                     |
-| `realtime-gateway` | realtime gateway          | nothing                                                                                         | nothing yet                                 |
-| `admin`            | `nats-streams`, operators | everything                                                                                      | everything                                  |
+| User               | Backend                   | Publishes                                                                                       | Consumes ([consumers](#consumers))            |
+| ------------------ | ------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `identity`         | identity-service          | `evt.user.>`, `evt.session.>`, `evt.api-token.>`, `restricted.>`                                | three consumers on `EVENTS`                   |
+| `organization`     | organization-service      | `evt.organization.>`, `evt.member.>`, `evt.invitation.>`, `evt.domain.>`                        | six consumers on `EVENTS`                     |
+| `billing`          | billing-service           | `evt.subscription.>`, `evt.quota.>`, `evt.invoice.>`                                            | nothing yet                                   |
+| `task`             | task-service              | `evt.space.>`, `evt.list.>`, `evt.task.>`, `evt.comment.>`, `evt.approval.>`, `evt.milestone.>` | nothing yet                                   |
+| `document`         | document-service          | `evt.doc.>`                                                                                     | nothing yet                                   |
+| `storage`          | storage-service           | `evt.file.>`                                                                                    | nothing yet                                   |
+| `notification`     | notification-service      | `evt.notification.>`, `evt.reminder.>`, `dlq.>`                                                 | seven on `EVENTS`, two on `EVENTS_RESTRICTED` |
+| `automation`       | automation-service        | `evt.automation.>`                                                                              | nothing yet                                   |
+| `integration`      | integration-service       | `evt.git.>`                                                                                     | nothing yet                                   |
+| `search`           | search-service            | nothing                                                                                         | nothing yet                                   |
+| `api-gateway`      | API gateway               | `evt.api-usage.>`                                                                               | nothing                                       |
+| `realtime-gateway` | realtime gateway          | nothing                                                                                         | nothing yet                                   |
+| `admin`            | `nats-streams`, operators | everything                                                                                      | everything                                    |
 
 A subject is `evt.<event-name>`, and an event name starts with its entity: the entity decides who
 may publish. The lists above are the events each service declares in its `AGENTS.md`, plus the
@@ -96,24 +96,26 @@ acknowledgement subjects (`manageConsumers: false` in `@cadenway/nest-messaging`
 The consumers granted today, as the services declare them on their `main` branch or will in the
 release that adds them (see [adding a consumer](#adding-a-consumer)):
 
-| User           | Consumer                                                 | Stream              | Filter                                     | Published by | For                                                                             |
-| -------------- | -------------------------------------------------------- | ------------------- | ------------------------------------------ | ------------ | ------------------------------------------------------------------------------- |
-| `identity`     | `identity-service__project-member-joined`                | `EVENTS`            | `evt.member.joined.v1`                     | organization | Its projection of the memberships, checked when a session switches organization |
-| `identity`     | `identity-service__project-member-role-changed`          | `EVENTS`            | `evt.member.role-changed.v1`               | organization | The same projection                                                             |
-| `identity`     | `identity-service__project-member-removed`               | `EVENTS`            | `evt.member.removed.v1`                    | organization | The same projection                                                             |
-| `organization` | `organization-service__project-user-signed-up`           | `EVENTS`            | `evt.user.signed-up.v1`                    | identity     | Its directory of the users: names and e-mails in the member list                |
-| `organization` | `organization-service__project-user-email-verified`      | `EVENTS`            | `evt.user.email-verified.v1`               | identity     | The same directory                                                              |
-| `organization` | `organization-service__project-user-profile-updated`     | `EVENTS`            | `evt.user.profile-updated.v1`              | identity     | The same directory                                                              |
-| `organization` | `organization-service__project-user-email-changed`       | `EVENTS`            | `evt.user.email-changed.v1`                | identity     | The same directory                                                              |
-| `organization` | `organization-service__remove-deleted-user`              | `EVENTS`            | `evt.user.deleted.v1`                      | identity     | Removing the memberships of a deleted account                                   |
-| `notification` | `notification-service__request-invitation-email`         | `EVENTS`            | `evt.invitation.issued.v1`                 | organization | The invitation e-mail                                                           |
-| `notification` | `notification-service__request-password-changed-email`   | `EVENTS`            | `evt.user.password-changed.v1`             | identity     | The password-changed security e-mail                                            |
-| `notification` | `notification-service__request-email-changed-email`      | `EVENTS`            | `evt.user.email-changed.v1`                | identity     | The address-changed security e-mail                                             |
-| `notification` | `notification-service__request-new-device-email`         | `EVENTS`            | `evt.session.opened-on-new-device.v1`      | identity     | The new-device sign-in security e-mail                                          |
-| `notification` | `notification-service__request-deletion-scheduled-email` | `EVENTS`            | `evt.user.deletion-scheduled.v1`           | identity     | The deletion-scheduled security e-mail                                          |
-| `notification` | `notification-service__request-deletion-cancelled-email` | `EVENTS`            | `evt.user.deletion-cancelled.v1`           | identity     | The deletion-cancelled security e-mail                                          |
-| `notification` | `notification-service__request-code-email`               | `EVENTS_RESTRICTED` | `restricted.one-time-code.issued.v1`       | identity     | The code e-mail (see [restricted events](#restricted-events))                   |
-| `notification` | `notification-service__request-password-reset-email`     | `EVENTS_RESTRICTED` | `restricted.password-reset-link.issued.v1` | identity     | The password reset e-mail (see [restricted events](#restricted-events))         |
+| User           | Consumer                                                 | Stream              | Filter                                      | Published by | For                                                                             |
+| -------------- | -------------------------------------------------------- | ------------------- | ------------------------------------------- | ------------ | ------------------------------------------------------------------------------- |
+| `identity`     | `identity-service__project-member-joined`                | `EVENTS`            | `evt.member.joined.v1`                      | organization | Its projection of the memberships, checked when a session switches organization |
+| `identity`     | `identity-service__project-member-role-changed`          | `EVENTS`            | `evt.member.role-changed.v1`                | organization | The same projection                                                             |
+| `identity`     | `identity-service__project-member-removed`               | `EVENTS`            | `evt.member.removed.v1`                     | organization | The same projection                                                             |
+| `organization` | `organization-service__project-user-signed-up`           | `EVENTS`            | `evt.user.signed-up.v1`                     | identity     | Its directory of the users: names and e-mails in the member list                |
+| `organization` | `organization-service__project-user-email-verified`      | `EVENTS`            | `evt.user.email-verified.v1`                | identity     | The same directory                                                              |
+| `organization` | `organization-service__project-user-profile-updated`     | `EVENTS`            | `evt.user.profile-updated.v1`               | identity     | The same directory                                                              |
+| `organization` | `organization-service__project-user-email-changed`       | `EVENTS`            | `evt.user.email-changed.v1`                 | identity     | The same directory                                                              |
+| `organization` | `organization-service__project-user-two-step`            | `EVENTS`            | `evt.user.two-step-verification-changed.v1` | identity     | The same directory: the two-step verification column of the member list         |
+| `organization` | `organization-service__remove-deleted-user`              | `EVENTS`            | `evt.user.deleted.v1`                       | identity     | Removing the memberships of a deleted account                                   |
+| `notification` | `notification-service__request-invitation-email`         | `EVENTS`            | `evt.invitation.issued.v1`                  | organization | The invitation e-mail                                                           |
+| `notification` | `notification-service__request-password-changed-email`   | `EVENTS`            | `evt.user.password-changed.v1`              | identity     | The password-changed security e-mail                                            |
+| `notification` | `notification-service__request-email-changed-email`      | `EVENTS`            | `evt.user.email-changed.v1`                 | identity     | The address-changed security e-mail                                             |
+| `notification` | `notification-service__request-new-device-email`         | `EVENTS`            | `evt.session.opened-on-new-device.v1`       | identity     | The new-device sign-in security e-mail                                          |
+| `notification` | `notification-service__request-deletion-scheduled-email` | `EVENTS`            | `evt.user.deletion-scheduled.v1`            | identity     | The deletion-scheduled security e-mail                                          |
+| `notification` | `notification-service__request-deletion-cancelled-email` | `EVENTS`            | `evt.user.deletion-cancelled.v1`            | identity     | The deletion-cancelled security e-mail                                          |
+| `notification` | `notification-service__request-two-step-email`           | `EVENTS`            | `evt.user.two-step-verification-changed.v1` | identity     | The two-step verification security e-mail                                       |
+| `notification` | `notification-service__request-code-email`               | `EVENTS_RESTRICTED` | `restricted.one-time-code.issued.v1`        | identity     | The code e-mail (see [restricted events](#restricted-events))                   |
+| `notification` | `notification-service__request-password-reset-email`     | `EVENTS_RESTRICTED` | `restricted.password-reset-link.issued.v1`  | identity     | The password reset e-mail (see [restricted events](#restricted-events))         |
 
 The other backends consume nothing yet, and keep only the stream information the kit reads at
 start-up. The API gateway consumes nothing.
