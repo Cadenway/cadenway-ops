@@ -39,6 +39,7 @@ organization EVENTS organization-service__remove-deleted-user evt.user.deleted.v
 task EVENTS task-service__project-member-joined evt.member.joined.v1 organization identity
 task EVENTS task-service__project-member-role-changed evt.member.role-changed.v1 organization notification
 task EVENTS task-service__project-member-removed evt.member.removed.v1 organization search
+task EVENTS task-service__decide-notification-delivery-authorization evt.notification.delivery-authorization-requested.v1 notification organization
 storage EVENTS storage-service__record-task-purge evt.task.purged.v1 task organization
 notification EVENTS notification-service__request-invitation-email evt.invitation.issued.v1 organization organization
 notification EVENTS notification-service__request-password-changed-email evt.user.password-changed.v1 identity organization
@@ -47,6 +48,17 @@ notification EVENTS notification-service__request-new-device-email evt.session.o
 notification EVENTS notification-service__request-deletion-scheduled-email evt.user.deletion-scheduled.v1 identity identity
 notification EVENTS notification-service__request-deletion-cancelled-email evt.user.deletion-cancelled.v1 identity billing
 notification EVENTS notification-service__request-two-step-email evt.user.two-step-verification-changed.v1 identity organization
+notification EVENTS notification-service__inbox-task-delivery-authorized evt.task.notification-delivery-authorized.v1 task organization
+notification EVENTS notification-service__reminder-task-delivery-authorized evt.task.notification-delivery-authorized.v1 task organization
+notification EVENTS notification-service__inbox-task-assigned evt.task.assigned.v1 task organization
+notification EVENTS notification-service__inbox-task-status-changed evt.task.status-changed.v1 task organization
+notification EVENTS notification-service__inbox-comment-created evt.comment.created.v1 task organization
+notification EVENTS notification-service__inbox-comment-updated evt.comment.updated.v1 task organization
+notification EVENTS notification-service__inbox-description-mentions-changed evt.task.description-mentions-changed.v1 task organization
+notification EVENTS notification-service__inbox-approval-requested evt.approval.requested.v1 task organization
+notification EVENTS notification-service__inbox-approval-decided evt.approval.decided.v1 task organization
+notification EVENTS notification-service__inbox-task-access-requested evt.task.access-requested.v1 task organization
+notification EVENTS notification-service__inbox-task-access-approved evt.task.access-request-decided.v1 task organization
 notification EVENTS_RESTRICTED notification-service__request-code-email restricted.one-time-code.issued.v1 identity identity
 notification EVENTS_RESTRICTED notification-service__request-password-reset-email restricted.password-reset-link.issued.v1 identity organization
 '
