@@ -40,7 +40,10 @@ task EVENTS task-service__project-member-joined evt.member.joined.v1 organizatio
 task EVENTS task-service__project-member-role-changed evt.member.role-changed.v1 organization notification
 task EVENTS task-service__project-member-removed evt.member.removed.v1 organization search
 task EVENTS task-service__decide-notification-delivery-authorization evt.notification.delivery-authorization-requested.v1 notification organization
+task EVENTS task-service__verify-intake-attachment evt.intake.attachment-verified.v1 storage organization
 storage EVENTS storage-service__record-task-purge evt.task.purged.v1 task organization
+storage EVENTS storage-service__claim-intake-attachment evt.intake.attachment-claimed.v1 task organization
+storage EVENTS storage-service__release-intake-attachment evt.intake.attachment-released.v1 task organization
 notification EVENTS notification-service__request-invitation-email evt.invitation.issued.v1 organization organization
 notification EVENTS notification-service__request-password-changed-email evt.user.password-changed.v1 identity organization
 notification EVENTS notification-service__request-email-changed-email evt.user.email-changed.v1 identity organization
