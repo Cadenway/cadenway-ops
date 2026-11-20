@@ -259,9 +259,19 @@ write-ahead log, the dead row versions and the backups of PostgreSQL for as long
 
 ### Recover Realtime authorization
 
-After loss of the authorization advisory stream or JetStream volume, keep the Realtime replicas
-stopped until Identity sessions, Organization memberships and Task visibility have been
-reconciled. Bootstrap can recreate an empty stream before that reconciliation has taken place.
+The supervisor records the authorization advisory stream's creation identity in
+`nats-stream-state`, a volume separate from `nats-data`. Preserve both volumes when replacing
+containers. Once provisioned, a missing or replaced stream keeps the supervisor unhealthy and the
+supervisor does not automatically recreate or adopt it.
+
+After loss of the stream, either volume, or restoration to an earlier point, stop the Realtime
+replicas before replacing or reinitializing the stream. Reconcile Identity sessions, Organization
+memberships and Task visibility while admission is closed. An older backup of the same stream can
+have the original creation identity. If both volumes are lost, bootstrap cannot distinguish the
+loss from initial provisioning. In either case, keep Realtime stopped until reconciliation and
+verification of the invalidation backlog are complete. When the original stream cannot be
+restored, reset the persisted stream identity only while the replicas are stopped, then let the
+supervisor provision or adopt the repaired stream and verify its readiness before resuming.
 
 When the stream retains a terminal advisory, record the observed message sequence and reconcile
 the authorities while admission is closed. Delete only the observed message by sequence once

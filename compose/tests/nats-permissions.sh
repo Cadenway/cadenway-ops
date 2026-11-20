@@ -591,6 +591,10 @@ echo '=== 14. failed Realtime invalidations open a persistent authorization latc
 latch=REALTIME_AUTHORIZATION_ADVISORIES
 critical=realtime-gateway__relay-task-purged
 filter=evt.task.created.v1
+OUT=$(compose exec -T nats-streams cat /home/nats/realtime-authorization-advisories.created)
+EXPECTED=$(stream_field "$latch" '.created')
+check 'first bootstrap records the latch identity in its independent state volume' \
+  '[[ -n $OUT && $OUT == "$EXPECTED" ]]'
 # The preceding permission checks created this durable. All of these resources belong to this
 # disposable project, and a fresh consumer allows two actual broker-generated advisories.
 compose exec -T nats-streams nats consumer rm EVENTS "$critical" --force >/dev/null 2>&1
@@ -626,5 +630,40 @@ check 'the stream supervisor restarts successfully' '[[ $OUT == "nats-streams he
 OUT=$(stream_field "$latch" '[.state.messages, .state.last_seq] | join(" ")')
 check 'the authorization latch survives its declaration being reapplied' \
   '[[ $OUT == "1 $((before + 2))" ]]'
+
+echo '=== 15. loss or replacement of a provisioned latch requires recovery'
+compose exec -T nats-streams nats stream rm "$latch" --force >/dev/null 2>&1
+compose restart nats-streams >/dev/null 2>&1
+OUT=''
+for _ in $(seq 1 30); do
+  OUT=$(compose ps --format '{{.Service}} {{.Health}}' nats-streams)
+  [[ $OUT == 'nats-streams unhealthy' ]] && break
+  sleep 2
+done
+check 'a missing provisioned latch makes the stream supervisor unhealthy' \
+  '[[ $OUT == "nats-streams unhealthy" ]]'
+OUT=absent
+if compose exec -T nats-streams nats stream info "$latch" >/dev/null 2>&1; then OUT=present; fi
+check 'the missing latch is not automatically recreated' '[[ $OUT == absent ]]'
+OUT=$(stream_field EVENTS '.config.name')
+check 'the ordinary event stream remains available' '[[ $OUT == EVENTS ]]'
+
+# An operator-created replacement must not be silently adopted as the original latch.
+subject='$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.EVENTS.realtime-gateway__relay-task-purged'
+compose exec -T nats-streams nats stream add "$latch" --defaults --subjects "$subject" \
+  --storage file --retention limits --replicas 1 >/dev/null 2>&1
+compose restart nats-streams >/dev/null 2>&1
+OUT=''
+for _ in $(seq 1 30); do
+  OUT=$(compose ps --format '{{.Service}} {{.Health}}' nats-streams)
+  [[ $OUT == 'nats-streams unhealthy' ]] && break
+  sleep 2
+done
+check 'a replacement latch also requires recovery' '[[ $OUT == "nats-streams unhealthy" ]]'
+OUT=$(compose exec -T nats-streams cat /home/nats/realtime-authorization-advisories.created)
+check 'the recorded original identity is preserved' '[[ $OUT == "$EXPECTED" ]]'
+OUT=$(stream_field "$latch" '.created')
+check 'the replacement remains present and has a different identity' \
+  '[[ -n $OUT && $OUT != "$EXPECTED" ]]'
 
 exit "$FAILED"

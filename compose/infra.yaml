@@ -115,12 +115,14 @@ services:
     entrypoint: ['/bin/sh', '/etc/nats/ensure-streams.sh']
     environment:
       # SHA-256 of nats/ensure-streams.sh, for the same reason as NATS_SERVER_CONF_SHA256.
-      ENSURE_STREAMS_SHA256: 26483d347c3fda80d31ce83b98ed51b8ff153b9b88b21ac810017c39803c7827
+      ENSURE_STREAMS_SHA256: 552d969aabd95efcda07eace712eb29e13d3b070b49939eac24325373f9cedac
       NATS_URL: ${NATS_URL}
       NATS_USER: admin
       NATS_PASSWORD: ${NATS_ADMIN_PASSWORD}
     volumes:
       - ./nats/ensure-streams.sh:/etc/nats/ensure-streams.sh:ro
+      # Independent from nats-data so a broker volume replacement keeps the latch identity.
+      - nats-stream-state:/home/nats
     networks:
       - internal
     depends_on:
@@ -166,4 +168,5 @@ volumes:
   postgres-data:
   redis-data:
   nats-data:
+  nats-stream-state:
   meilisearch-data:
