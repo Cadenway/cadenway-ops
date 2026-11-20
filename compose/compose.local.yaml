@@ -280,6 +280,7 @@ services:
         "realtime-gateway": [${REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
         "automation-service": [${AUTOMATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS}],
         "integration-service": [${INTEGRATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+      DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: ${DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS:-}
     build:
       context: ../../cadenway-task-service
       secrets: [npmrc]
@@ -298,6 +299,8 @@ services:
       INTERNAL_TOKEN_AUDIENCE: document-service
       INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
         {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+      TASK_SERVICE_URL: ${DOCUMENT_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK:+${DOCUMENT_TASK_SERVICE_URL:-http://task-service:3013}}
+      INTERNAL_TOKEN_PRIVATE_JWK: ${DOCUMENT_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK:-}
     build:
       context: ../../cadenway-document-service
       secrets: [npmrc]

@@ -44,15 +44,15 @@ OUT=$(generate /work/.env) && OUT="succeeded: $OUT"
 check 'refuses a file that does not exist' '[[ $OUT == *"copy .env.example to .env first"* && $OUT != succeeded:* ]]'
 cp .env.example "$WORK/.env"
 OUT=$(generate /work/.env) || OUT="failed: $OUT"
-check 'writes the pairs' '[[ $OUT == *"wrote the key pairs of API_GATEWAY, REALTIME_GATEWAY, AUTOMATION_SERVICE, INTEGRATION_SERVICE, NOTIFICATION_SERVICE"* ]]'
+check 'writes the pairs' '[[ $OUT == *"wrote the key pairs of API_GATEWAY, REALTIME_GATEWAY, AUTOMATION_SERVICE, INTEGRATION_SERVICE, NOTIFICATION_SERVICE, DOCUMENT_SERVICE"* ]]'
 OUT=$(grep -c '_INTERNAL_TOKEN_\(PRIVATE_JWK\|PUBLIC_JWKS\)=' "$WORK/.env")
-check 'two variables per issuer' '[[ $OUT == 10 ]]'
+check 'two variables per issuer' '[[ $OUT == 12 ]]'
 BEFORE=$(sha256sum "$WORK/.env")
 OUT=$(generate /work/.env) || OUT="failed: $OUT"
 check 'a second run writes nothing' '[[ $OUT == *"nothing written"* && $(sha256sum "$WORK/.env") == "$BEFORE" ]]'
 OUT=$(generate --print) || OUT="failed: $OUT"
-check '--print prints ten unquoted lines' \
-  '[[ $(grep -c "^[A-Z_]*_INTERNAL_TOKEN_[A-Z_]*={\"kty\":\"OKP\"" <<<"$OUT") == 10 ]]'
+check '--print prints twelve unquoted lines' \
+  '[[ $(grep -c "^[A-Z_]*_INTERNAL_TOKEN_[A-Z_]*={\"kty\":\"OKP\"" <<<"$OUT") == 12 ]]'
 check 'and leaves the file alone' '[[ $(sha256sum "$WORK/.env") == "$BEFORE" ]]'
 
 echo '=== 2. the keys sign and verify'
@@ -67,7 +67,7 @@ const variables = Object.fromEntries(
     .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
 );
 const message = Buffer.from('cadenway');
-for (const issuer of ['API_GATEWAY', 'REALTIME_GATEWAY', 'AUTOMATION_SERVICE', 'INTEGRATION_SERVICE', 'NOTIFICATION_SERVICE']) {
+for (const issuer of ['API_GATEWAY', 'REALTIME_GATEWAY', 'AUTOMATION_SERVICE', 'INTEGRATION_SERVICE', 'NOTIFICATION_SERVICE', 'DOCUMENT_SERVICE']) {
   const quotedPrivate = variables[`${issuer}_INTERNAL_TOKEN_PRIVATE_JWK`];
   const quotedPublic = variables[`${issuer}_INTERNAL_TOKEN_PUBLIC_JWKS`];
   if (!/^'.*'$/.test(quotedPrivate) || !/^'.*'$/.test(quotedPublic)) throw new Error('not quoted');
@@ -114,6 +114,7 @@ const called = {
   'automation-service': ['task-service', 'notification-service'],
   'integration-service': ['task-service'],
   'notification-service': ['identity-service'],
+  'document-service': ['task-service'],
 };
 const port = (name) => /^\d+$/.test(services[name].environment.PORT);
 const fail = (message) => {
@@ -134,7 +135,8 @@ for (const [name, issuers] of Object.entries(trusted)) {
 }
 for (const [name, targets] of Object.entries(called)) {
   const environment = services[name].environment;
-  if (environment.INTERNAL_TOKEN_ISSUER !== name) fail(`${name} issuer`);
+  // Document fixes its issuer in the application rather than accepting an environment variable.
+  if (name !== 'document-service' && environment.INTERNAL_TOKEN_ISSUER !== name) fail(`${name} issuer`);
   if (JSON.parse(environment.INTERNAL_TOKEN_PRIVATE_JWK).d === undefined) fail(`${name} private key`);
   for (const target of targets) {
     const variable = `${target.toUpperCase().replaceAll('-', '_')}_URL`;
@@ -145,6 +147,12 @@ for (const [name, targets] of Object.entries(called)) {
     (key) => key.endsWith('_SERVICE_URL') && !targets.includes(key.slice(0, -4).toLowerCase().replaceAll('_', '-')),
   );
   if (extra.length > 0) fail(`${name} also has ${extra}`);
+}
+const taskDocumentKey = JSON.parse(services['task-service'].environment.DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS);
+const documentPrivateKey = JSON.parse(services['document-service'].environment.INTERNAL_TOKEN_PRIVATE_JWK);
+if (taskDocumentKey.kty !== 'OKP' || taskDocumentKey.d !== undefined ||
+    taskDocumentKey.x !== documentPrivateKey.x || taskDocumentKey.kid !== documentPrivateKey.kid) {
+  fail('task Document public key');
 }
 for (const name of Object.keys(services)) {
   const environment = services[name].environment ?? {};
