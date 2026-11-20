@@ -61,6 +61,21 @@ notification EVENTS notification-service__inbox-task-access-requested evt.task.a
 notification EVENTS notification-service__inbox-task-access-approved evt.task.access-request-decided.v1 task organization
 notification EVENTS_RESTRICTED notification-service__request-code-email restricted.one-time-code.issued.v1 identity identity
 notification EVENTS_RESTRICTED notification-service__request-password-reset-email restricted.password-reset-link.issued.v1 identity organization
+realtime-gateway EVENTS realtime-gateway__relay-session-revoked evt.session.revoked.v1 identity notification
+realtime-gateway EVENTS realtime-gateway__relay-session-organization-changed evt.session.organization-changed.v1 identity notification
+realtime-gateway EVENTS realtime-gateway__relay-member-role-changed evt.member.role-changed.v1 organization notification
+realtime-gateway EVENTS realtime-gateway__relay-member-removed evt.member.removed.v1 organization notification
+realtime-gateway EVENTS realtime-gateway__relay-space-updated evt.space.updated.v1 task notification
+realtime-gateway EVENTS realtime-gateway__relay-space-access-changed evt.space.access-changed.v1 task notification
+realtime-gateway EVENTS realtime-gateway__relay-space-access-republished evt.space.access-republished.v1 task notification
+realtime-gateway EVENTS realtime-gateway__relay-space-deleted evt.space.deleted.v1 task notification
+realtime-gateway EVENTS realtime-gateway__relay-list-access-changed evt.list.access-changed.v1 task notification
+realtime-gateway EVENTS realtime-gateway__relay-list-deleted evt.list.deleted.v1 task notification
+realtime-gateway EVENTS realtime-gateway__relay-task-updated evt.task.updated.v1 task notification
+realtime-gateway EVENTS realtime-gateway__relay-task-status-changed evt.task.status-changed.v1 task notification
+realtime-gateway EVENTS realtime-gateway__relay-task-trashed evt.task.trashed.v1 task notification
+realtime-gateway EVENTS realtime-gateway__relay-task-purged evt.task.purged.v1 task notification
+realtime-gateway EVENTS realtime-gateway__relay-comment-created evt.comment.created.v1 task notification
 '
 # What `nats consumer next` prints of a delivery: the attempt, the consumer and stream sequences.
 readonly DELIVERY='tries: ([0-9]+) / cons seq: ([0-9]+) / str seq: ([0-9]+)'
