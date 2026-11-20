@@ -70,6 +70,9 @@ reads the secrets on a host. A second run changes nothing; to replace a pair, de
 and run it again. Without the keys, Compose warns that the variables are not set and the backends
 refuse to start, naming `INTERNAL_TOKEN_PRIVATE_JWK` or `INTERNAL_TOKEN_TRUSTED_ISSUERS`.
 
+Run the generator again on existing workstations to add the Notification pair. It keeps the
+existing issuer keys.
+
 ### Keys of staging and production
 
 An operator generates them and puts them in the secrets, each environment with its own:

@@ -308,6 +308,11 @@ mounted file changes. `NATS_SERVER_CONF_SHA256` in `compose/infra.yaml` is the h
 with the file (`sha256sum compose/nats/nats-server.conf`), and every environment restarts the
 container. `compose/tests/nats-permissions.sh` fails when they differ.
 
+Keep the grants and the authorization latch in place when rolling back a service image. If a
+broker configuration rollback is necessary, first roll back or stop the consumers that rely on
+its new grants. Observe the recorded Storage, Gateway and Task rollback floors before accepting
+anonymous files or reopening purge workers.
+
 ## Secrets
 
 `secrets.sops.env` of each environment holds `NATS_ADMIN_PASSWORD` and one `<NAME>_NATS_PASSWORD`
