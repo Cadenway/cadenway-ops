@@ -240,8 +240,9 @@ stream past its use.
 
 No backend can create, change, purge or delete a stream. The `nats-streams` container of
 `compose/infra.yaml` owns them: it runs `compose/nats/ensure-streams.sh` with the `admin` user,
-creates or updates the four streams at start, then checks every minute that they exist and
-recreates missing streams. It is healthy while all four exist. A changed limit reaches a
+provisions the streams at start and checks them every minute. It recreates the three ordinary
+event streams when missing. Its readiness also requires the recorded Realtime advisory stream
+identity to match. A changed limit reaches a
 stream that exists when the container starts again, which a new `ENSURE_STREAMS_SHA256` causes on
 every host (see [changing the permissions](#changing-the-permissions)); a lower age drops the
 older messages at once, and the retention and storage of a stream never change.
@@ -264,14 +265,17 @@ The supervisor records the authorization advisory stream's creation identity in
 containers. Once provisioned, a missing or replaced stream keeps the supervisor unhealthy and the
 supervisor does not automatically recreate or adopt it.
 
-After loss of the stream, either volume, or restoration to an earlier point, stop the Realtime
-replicas before replacing or reinitializing the stream. Reconcile Identity sessions, Organization
+Running Realtime replicas do not read the identity volume. A compatible out-of-band replacement
+could appear empty to those replicas before they are stopped. After loss of the stream, either
+volume, or restoration to an earlier point, pause GitOps and ensure its current rollout has
+stopped. Stop all Realtime replicas before replacing or reinitializing the stream. Reconcile Identity sessions, Organization
 memberships and Task visibility while admission is closed. An older backup of the same stream can
 have the original creation identity. If both volumes are lost, bootstrap cannot distinguish the
 loss from initial provisioning. In either case, keep Realtime stopped until reconciliation and
 verification of the invalidation backlog are complete. When the original stream cannot be
 restored, reset the persisted stream identity only while the replicas are stopped, then let the
-supervisor provision or adopt the repaired stream and verify its readiness before resuming.
+supervisor provision or adopt the repaired stream. Verify the supervisor, the invalidation
+backlog and authorization sources before restarting Realtime and restoring GitOps.
 
 When the stream retains a terminal advisory, record the observed message sequence and reconcile
 the authorities while admission is closed. Delete only the observed message by sequence once
