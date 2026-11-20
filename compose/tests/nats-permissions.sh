@@ -48,6 +48,11 @@ task EVENTS task-service__verify-intake-attachment evt.intake.attachment-verifie
 storage EVENTS storage-service__record-task-purge evt.task.purged.v1 task organization
 storage EVENTS storage-service__claim-intake-attachment evt.intake.attachment-claimed.v1 task organization
 storage EVENTS storage-service__release-intake-attachment evt.intake.attachment-released.v1 task organization
+storage EVENTS storage-service__apply-avatar-change evt.user.avatar-changed.v1 identity organization
+storage EVENTS storage-service__abandon-avatar-upload evt.user.avatar-upload-abandoned.v1 identity organization
+storage EVENTS storage-service__delete-avatar-owner evt.user.deleted.v1 identity task
+storage EVENTS storage-service__apply-organization-logo-change evt.organization.logo-changed.v1 organization identity
+storage EVENTS storage-service__abandon-organization-logo-upload evt.organization.logo-upload-abandoned.v1 organization identity
 notification EVENTS notification-service__request-invitation-email evt.invitation.issued.v1 organization organization
 notification EVENTS notification-service__request-password-changed-email evt.user.password-changed.v1 identity organization
 notification EVENTS notification-service__request-email-changed-email evt.user.email-changed.v1 identity organization
@@ -57,6 +62,7 @@ notification EVENTS notification-service__request-deletion-cancelled-email evt.u
 notification EVENTS notification-service__request-two-step-email evt.user.two-step-verification-changed.v1 identity organization
 notification EVENTS notification-service__inbox-task-delivery-authorized evt.task.notification-delivery-authorized.v1 task organization
 notification EVENTS notification-service__reminder-task-delivery-authorized evt.task.notification-delivery-authorized.v1 task organization
+notification EVENTS notification-service__activity-task-delivery-authorized evt.task.notification-delivery-authorized.v1 task organization
 notification EVENTS notification-service__inbox-task-assigned evt.task.assigned.v1 task organization
 notification EVENTS notification-service__inbox-task-status-changed evt.task.status-changed.v1 task organization
 notification EVENTS notification-service__inbox-comment-created evt.comment.created.v1 task organization

@@ -220,7 +220,8 @@ services:
       INTERNAL_TOKEN_AUDIENCE: identity-service
       INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
         {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
-        "realtime-gateway": [${REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+        "realtime-gateway": [${REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
+        "notification-service": [${NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS}]}
     build:
       context: ../../cadenway-identity-service
       secrets: [npmrc]
@@ -341,6 +342,9 @@ services:
       MIGRATION_DATABASE_URL: ${NOTIFICATION_SERVICE_MIGRATION_DATABASE_URL}
       NATS_USER: notification
       NATS_PASSWORD: ${NOTIFICATION_NATS_PASSWORD}
+      INTERNAL_TOKEN_ISSUER: notification-service
+      INTERNAL_TOKEN_PRIVATE_JWK: ${NOTIFICATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}
+      IDENTITY_SERVICE_URL: ${IDENTITY_SERVICE_URL}
       INTERNAL_TOKEN_AUDIENCE: notification-service
       INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
         {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
