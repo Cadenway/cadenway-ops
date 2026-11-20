@@ -74,7 +74,7 @@ services:
       # changes, not when a file it mounts does: changing this value with the file is what makes
       # every environment restart the broker with the new permissions (tests/nats-permissions.sh
       # checks that the two match).
-      NATS_SERVER_CONF_SHA256: 633922818848ed87ab196a48e989865879e31ceadb50af524c6d6a179c34a413
+      NATS_SERVER_CONF_SHA256: bdab1484f7555c3869999a08477517fc5354eb2f1102e9610712b70907e65938
       # Read by nats/nats-server.conf: one user per backend, and the user that owns the streams.
       NATS_ADMIN_PASSWORD: ${NATS_ADMIN_PASSWORD}
       IDENTITY_NATS_PASSWORD: ${IDENTITY_NATS_PASSWORD}
@@ -107,15 +107,15 @@ services:
   nats-streams:
     # Owner of the JetStream streams: the backends may not create one. It applies
     # nats/ensure-streams.sh at start, then stays to recreate a stream the broker lost; it is
-    # healthy while EVENTS, EVENTS_RESTRICTED and EVENTS_DLQ exist, which is what the services of
-    # the local stack and the GitOps agent wait for. Operators read the dead letters from it:
+    # healthy while the event streams and the Realtime authorization advisory latch exist. The
+    # local stack and the GitOps agent wait for it. Operators read the dead letters from it:
     # `docker compose exec nats-streams nats stream view EVENTS_DLQ`.
     image: natsio/nats-box:0.20.2-nonroot@sha256:d00bffed51ea1a29e58852698bde37020d306af55585882f88dbcf09dd86f5fe
     restart: unless-stopped
     entrypoint: ['/bin/sh', '/etc/nats/ensure-streams.sh']
     environment:
       # SHA-256 of nats/ensure-streams.sh, for the same reason as NATS_SERVER_CONF_SHA256.
-      ENSURE_STREAMS_SHA256: d2b4055705a0aa9536c5a3765d0a89ec25e678e3bb1f5626dd3fd922a75d621a
+      ENSURE_STREAMS_SHA256: 26483d347c3fda80d31ce83b98ed51b8ff153b9b88b21ac810017c39803c7827
       NATS_URL: ${NATS_URL}
       NATS_USER: admin
       NATS_PASSWORD: ${NATS_ADMIN_PASSWORD}

@@ -19,8 +19,12 @@ set -euo pipefail
 export MSYS_NO_PATHCONV=1
 
 cd "$(dirname "$0")/.."
-readonly PROJECT=cadenway-test-nats
+readonly PROJECT=${CADENWAY_NATS_TEST_PROJECT:-cadenway-test-nats}
 readonly REFUSED='Permissions Violation'
+if [[ ! $PROJECT =~ ^cadenway-test-nats(-[a-z0-9]+)?$ ]]; then
+  echo 'The test project must be cadenway-test-nats or use its validated suffix.' >&2
+  exit 1
+fi
 
 # The consumers nats/nats-server.conf grants, one per line: the user that owns it, its stream, its
 # name, its filter subject, the user that publishes that event, and another backend that tries to
@@ -86,11 +90,24 @@ readonly STREAM_INFO='^publish \$JS\.API\.(INFO|STREAM\.NAMES|STREAM\.INFO\.(EVE
 readonly CONSUMER_API='^publish \$JS\.(API\.CONSUMER\.(CREATE|INFO|MSG\.NEXT)|ACK)\.'
 readonly DEAD_LETTER_READ='^publish \$JS\.API\.STREAM\.MSG\.GET\.(EVENTS|EVENTS_RESTRICTED)$'
 readonly DEAD_LETTER_ADVISORY='^subscribe \$JS\.EVENT\.ADVISORY\.CONSUMER\.(MAX_DELIVERIES|MSG_TERMINATED)\.(EVENTS|EVENTS_RESTRICTED)\.>$'
+readonly REALTIME_ADVISORY_INFO='publish $JS.API.STREAM.INFO.REALTIME_AUTHORIZATION_ADVISORIES'
 
 compose() { docker compose -p "$PROJECT" --env-file .env.example -f infra.yaml "$@"; }
+# Invoked by the EXIT trap only after checking that the project is unused.
+# shellcheck disable=SC2329
 cleanup() { compose down --volumes --remove-orphans >/dev/null 2>&1 || true; }
+for resource in container network volume; do
+  if [[ $resource == container ]]; then
+    existing=$(docker container ls --all --quiet --filter "label=com.docker.compose.project=$PROJECT")
+  else
+    existing=$(docker "$resource" ls --quiet --filter "label=com.docker.compose.project=$PROJECT")
+  fi
+  if [[ -n $existing ]]; then
+    echo "The test project already owns a $resource; refusing to remove it." >&2
+    exit 1
+  fi
+done
 trap cleanup EXIT
-cleanup
 
 # Runs the `nats` command line as a backend, with its own inbox prefix as a backend connects.
 # Arguments: user (its local password is its name without hyphens, as compose/.env.example sets
@@ -193,6 +210,8 @@ for grant in "${GRANTS[@]}"; do
     if [[ $subject =~ ^\$JS\.API\.CONSUMER\.CREATE\.([^.]+)\.([^.]+)\.(.+)$ ]]; then
       CREATES+=("$user ${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]}")
     fi
+  elif [[ $user == realtime-gateway && "$right $subject" == "$REALTIME_ADVISORY_INFO" ]]; then
+    continue
   elif [[ $user == notification && ("$right $subject" =~ $DEAD_LETTER_READ ||
     "$right $subject" =~ $DEAD_LETTER_ADVISORY) ]]; then
     continue
@@ -232,6 +251,34 @@ check 'EVENTS_RESTRICTED on restricted.>, limits retention, one hour, 64 MiB' \
   '[[ $OUT == "restricted.> file limits 3600000000000 67108864" ]]'
 OUT=$(stream_field EVENTS_DLQ '[.config.subjects[0], .config.storage, .config.max_age] | join(" ")')
 check 'EVENTS_DLQ on dlq.>, thirty days' '[[ $OUT == "dlq.> file 2592000000000000" ]]'
+OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES \
+  '.config | [.storage, .retention, .discard, .max_msgs, .max_age, .max_bytes, .max_msg_size, .max_msgs_per_subject, (.allow_msg_ttl // false), (.subjects | length)] | join(" ")')
+check 'Realtime authorization latch retains one message with no age or size cap' \
+  '[[ $OUT == "file limits old 1 0 -1 -1 -1 false 26" ]]'
+OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES \
+  '.config.subjects | sort | .[]')
+EXPECTED=''
+for handler in relay-session-revoked relay-session-organization-changed relay-member-removed \
+  relay-member-role-changed relay-space-updated relay-space-access-changed \
+  relay-space-access-republished relay-space-deleted relay-list-access-changed \
+  relay-list-deleted relay-task-trashed relay-task-purged relay-task-updated; do
+  for advisory in MAX_DELIVERIES MSG_TERMINATED; do
+    EXPECTED+="\$JS.EVENT.ADVISORY.CONSUMER.$advisory.EVENTS.realtime-gateway__$handler"$'\n'
+  done
+done
+EXPECTED=$(printf '%s' "$EXPECTED" | sort)
+check 'Realtime latch captures only exact critical invalidation advisories' '[[ $OUT == "$EXPECTED" ]]'
+OUT=$(as realtime-gateway request "\$JS.API.STREAM.INFO.REALTIME_AUTHORIZATION_ADVISORIES" '{}')
+check 'Realtime can inspect the latch state' \
+  '[[ $OUT == *"\"name\":\"REALTIME_AUTHORIZATION_ADVISORIES\""* && $OUT != *"$REFUSED"* ]]'
+for user in identity organization task storage notification api-gateway; do
+  subject='$JS.API.STREAM.INFO.REALTIME_AUTHORIZATION_ADVISORIES'
+  OUT=$(as "$user" request "$subject" '{}')
+  check "$user cannot inspect the Realtime latch" '[[ $OUT == *"$REFUSED for Publish to \"$subject\""* ]]'
+done
+subject='$JS.API.STREAM.PURGE.REALTIME_AUTHORIZATION_ADVISORIES'
+OUT=$(as realtime-gateway request "$subject" '{}')
+check 'Realtime cannot clear the latch' '[[ $OUT == *"$REFUSED for Publish to \"$subject\""* ]]'
 
 echo '=== 4. a backend publishes its own subjects only'
 OUT=$(as task request evt.task.created.v1 '{"id":"CAD-482"}')
@@ -530,5 +577,45 @@ check 'nor delete it: an operator does' '[[ $OUT == *"$REFUSED for Publish to \"
 OUT=$(compose exec -T nats-streams nats consumer info EVENTS "$own" --json 2>&1 || true)
 check 'the consumer still filters its one event' \
   '[[ $OUT == *"\"filter_subject\": \"evt.member.joined.v1\""* ]]'
+
+echo '=== 14. failed Realtime invalidations open a persistent authorization latch'
+latch=REALTIME_AUTHORIZATION_ADVISORIES
+critical=realtime-gateway__relay-task-purged
+filter=evt.task.created.v1
+# The preceding permission checks created this durable. All of these resources belong to this
+# disposable project, and a fresh consumer allows two actual broker-generated advisories.
+compose exec -T nats-streams nats consumer rm EVENTS "$critical" --force >/dev/null 2>&1
+before=$(stream_field "$latch" '.state.last_seq')
+compose exec -T nats-streams nats consumer add EVENTS "$critical" --filter "$filter" \
+  --pull --ack explicit --deliver all --replay instant --max-deliver 1 --wait 1s --defaults \
+  >/dev/null 2>&1
+compose exec -T nats-streams nats consumer next EVENTS "$critical" --count 1 --no-ack \
+  >/dev/null 2>&1
+sleep 3
+OUT=$(stream_field "$latch" '[.state.messages, .state.last_seq] | join(" ")')
+check 'a native maximum-deliveries advisory opens the latch' \
+  '[[ $OUT == "1 $((before + 1))" ]]'
+OUT=$(compose exec -T nats-streams nats stream get "$latch" "$((before + 1))" --json 2>&1 || true)
+check 'the retained advisory identifies the failed durable' \
+  '[[ $OUT == *"MAX_DELIVERIES.EVENTS.$critical"* ]]'
+compose exec -T nats-streams nats consumer rm EVENTS "$critical" --force >/dev/null 2>&1
+compose exec -T nats-streams nats consumer add EVENTS "$critical" --filter "$filter" \
+  --pull --ack explicit --deliver all --replay instant --max-deliver 1 --wait 1s --defaults \
+  >/dev/null 2>&1
+compose exec -T nats-streams nats consumer next EVENTS "$critical" --count 1 --term \
+  >/dev/null 2>&1
+wait_for "$latch" '.state.last_seq' "$((before + 2))" >/dev/null
+OUT=$(stream_field "$latch" '[.state.messages, .state.last_seq] | join(" ")')
+check 'a native termination advisory replaces only the retained message' \
+  '[[ $OUT == "1 $((before + 2))" ]]'
+OUT=$(compose exec -T nats-streams nats stream get "$latch" "$((before + 2))" --json 2>&1 || true)
+check 'the replacement identifies the terminated durable' \
+  '[[ $OUT == *"MSG_TERMINATED.EVENTS.$critical"* ]]'
+compose restart nats-streams >/dev/null 2>&1
+OUT=$(wait_healthy)
+check 'the stream supervisor restarts successfully' '[[ $OUT == "nats-streams healthy" ]]'
+OUT=$(stream_field "$latch" '[.state.messages, .state.last_seq] | join(" ")')
+check 'the authorization latch survives its declaration being reapplied' \
+  '[[ $OUT == "1 $((before + 2))" ]]'
 
 exit "$FAILED"

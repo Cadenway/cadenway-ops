@@ -220,14 +220,19 @@ publishes and consumes the events a service lists in `restrictedEvents` on `rest
 File storage, oldest messages dropped first, duplicates of a `Nats-Msg-Id` refused for two minutes.
 The sizes are starting values.
 
+The file-backed `REALTIME_AUTHORIZATION_ADVISORIES` stream captures terminal JetStream advisories
+for the Realtime authorization consumers. It retains the newest advisory without expiration.
+Realtime can read the stream status and closes socket admission and existing transports when it
+cannot confirm that the stream is empty.
+
 A restricted event carries a single-use code valid ten minutes, or a link that expires as soon. One
 hour delivers it through a short outage of notification-service, and none stays readable in the
 stream past its use.
 
 No backend can create, change, purge or delete a stream. The `nats-streams` container of
 `compose/infra.yaml` owns them: it runs `compose/nats/ensure-streams.sh` with the `admin` user,
-creates or updates the three streams at start, then checks every minute that they exist and
-creates again one the broker lost. It is healthy while the three exist. A changed limit reaches a
+creates or updates the four streams at start, then checks every minute that they exist and
+recreates missing streams. It is healthy while all four exist. A changed limit reaches a
 stream that exists when the container starts again, which a new `ENSURE_STREAMS_SHA256` causes on
 every host (see [changing the permissions](#changing-the-permissions)); a lower age drops the
 older messages at once, and the retention and storage of a stream never change.
@@ -242,6 +247,17 @@ restricted row sent replaces its payload with a redacted envelope (`"$redacted":
 redacted row is never requeued or published again: a restricted event lost with the broker is not
 restored, its owner issues a new code or link. The payload before redaction stays in the
 write-ahead log, the dead row versions and the backups of PostgreSQL for as long as they keep it.
+
+### Recover Realtime authorization
+
+After loss of the authorization advisory stream or JetStream volume, keep the Realtime replicas
+stopped until Identity sessions, Organization memberships and Task visibility have been
+reconciled. Bootstrap can recreate an empty stream before that reconciliation has taken place.
+
+When the stream retains a terminal advisory, record the observed message sequence and reconcile
+the authorities while admission is closed. Delete only the observed message by sequence once
+reconciliation is complete. Recheck the stream and the invalidation consumer backlog before
+reopening admission. Repeat reconciliation if a newer advisory arrived during the operation.
 
 ## Dead letters
 
