@@ -39,6 +39,7 @@ organization EVENTS organization-service__remove-deleted-user evt.user.deleted.v
 task EVENTS task-service__project-member-joined evt.member.joined.v1 organization identity
 task EVENTS task-service__project-member-role-changed evt.member.role-changed.v1 organization notification
 task EVENTS task-service__project-member-removed evt.member.removed.v1 organization search
+storage EVENTS storage-service__record-task-purge evt.task.purged.v1 task organization
 notification EVENTS notification-service__request-invitation-email evt.invitation.issued.v1 organization organization
 notification EVENTS notification-service__request-password-changed-email evt.user.password-changed.v1 identity organization
 notification EVENTS notification-service__request-email-changed-email evt.user.email-changed.v1 identity organization

@@ -107,6 +107,8 @@ services:
     restart: unless-stopped
     command: ['/garage', 'server', '--single-node', '--default-bucket']
     environment:
+      # Garage's HTTP request logger includes the query string of presigned download URLs.
+      RUST_LOG: 'info,garage_api_common::generic_server=error'
       GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}
       GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
       GARAGE_DEFAULT_ACCESS_KEY: ${GARAGE_DEFAULT_ACCESS_KEY}
