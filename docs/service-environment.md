@@ -151,6 +151,13 @@ internal network, the same in every environment.
 browser follows in a signed URL. They differ on a workstation only (`http://garage:3900` and
 `http://s3.cadenway.localhost`).
 
+Before deploying an attachment-enabled Storage image, provision `STORAGE_UPLOAD_RECEIPT_KEYS`
+through the environment's encrypted configuration. Install the CORS policy for the application's
+exact origin on the files bucket. The Storage identity also needs the bucket-level `s3:ListBucket`
+permission for the `org/` prefix so reconciliation can find attachment writes that arrive after
+cleanup. Keep that grant scoped to the environment's files bucket and keep the existing object
+permissions scoped to its attachment keys.
+
 `compose/compose.local.yaml` repeats these entries for the local stack, which runs the definitions
 of the last release with images built from the sources: keep the two in step. It also gives each
 service `MIGRATION_DATABASE_URL`, from the placeholders of `compose/.env.example`, so that
@@ -169,6 +176,7 @@ Besides those of the [database](database.md#variables) and of the
 | `IDENTITY_PASSWORD_PEPPER`                                                                                                                                                                 | identity-service                 |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM`                                                                                                                        | notification-service             |
 | `STORAGE_S3_ENDPOINT`, `STORAGE_S3_PUBLIC_ENDPOINT`, `STORAGE_S3_REGION`, `STORAGE_S3_BUCKET`, `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`, `STORAGE_S3_FORCE_PATH_STYLE`   | storage-service                  |
+| `STORAGE_UPLOAD_RECEIPT_KEYS`                                                                                                                                                             | attachment-enabled storage-service |
 
 The public keys are not secret; they sit with the private ones so that an environment's keys are
 edited in one place. JSON values need no quoting in the file: the agent writes each value between
