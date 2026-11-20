@@ -169,14 +169,14 @@ workstation: the one exception to the rule above ([database](database.md)).
 Besides those of the [database](database.md#variables) and of the
 [broker](messaging.md#secrets), `secrets.sops.env` of each environment holds:
 
-| Variable                                                                                                                                                                                   | Used by                          |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------- |
-| `API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK` | the issuer named by the variable |
-| `API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS`, `REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS`, `AUTOMATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`, `INTEGRATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS` | the services that trust it       |
-| `IDENTITY_PASSWORD_PEPPER`                                                                                                                                                                 | identity-service                 |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM`                                                                                                                        | notification-service             |
-| `STORAGE_S3_ENDPOINT`, `STORAGE_S3_PUBLIC_ENDPOINT`, `STORAGE_S3_REGION`, `STORAGE_S3_BUCKET`, `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`, `STORAGE_S3_FORCE_PATH_STYLE`   | storage-service                  |
-| `STORAGE_UPLOAD_RECEIPT_KEYS`                                                                                                                                                             | attachment-enabled storage-service |
+| Variable                                                                                                                                                                                   | Used by                            |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
+| `API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK` | the issuer named by the variable   |
+| `API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS`, `REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS`, `AUTOMATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`, `INTEGRATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS` | the services that trust it         |
+| `IDENTITY_PASSWORD_PEPPER`                                                                                                                                                                 | identity-service                   |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM`                                                                                                                        | notification-service               |
+| `STORAGE_S3_ENDPOINT`, `STORAGE_S3_PUBLIC_ENDPOINT`, `STORAGE_S3_REGION`, `STORAGE_S3_BUCKET`, `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`, `STORAGE_S3_FORCE_PATH_STYLE`   | storage-service                    |
+| `STORAGE_UPLOAD_RECEIPT_KEYS`                                                                                                                                                              | attachment-enabled storage-service |
 
 The public keys are not secret; they sit with the private ones so that an environment's keys are
 edited in one place. JSON values need no quoting in the file: the agent writes each value between
