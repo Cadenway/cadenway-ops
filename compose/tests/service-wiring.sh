@@ -195,6 +195,10 @@ if (billing.BILLING_USAGE_ENABLED !== 'false' || billing.ORGANIZATION_SERVICE_UR
   fail('Billing is inactive by default');
 }
 const storage = services['storage-service'].environment;
+if (services['organization-service'].environment.ORGANIZATION_SEAT_ENTITLEMENT_EVENTS_ENABLED !== 'false' ||
+    storage.STORAGE_BILLING_ENTITLEMENTS_ENABLED !== 'false') {
+  fail('Billing entitlement projections are inactive by default');
+}
 if (storage.S3_ENDPOINT !== 'http://garage:3900') fail('storage endpoint');
 if (storage.S3_PUBLIC_ENDPOINT !== 'http://s3.cadenway.localhost') fail('storage public endpoint');
 if (storage.S3_BUCKET !== 'cadenway-local' || !storage.S3_ACCESS_KEY_ID.startsWith('GK')) fail('bucket');

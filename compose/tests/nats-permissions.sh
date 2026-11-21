@@ -40,6 +40,7 @@ organization EVENTS organization-service__project-user-profile-updated evt.user.
 organization EVENTS organization-service__project-user-email-changed evt.user.email-changed.v1 identity notification
 organization EVENTS organization-service__project-user-two-step evt.user.two-step-verification-changed.v1 identity notification
 organization EVENTS organization-service__remove-deleted-user evt.user.deleted.v1 identity task
+organization EVENTS organization-service__project-seat-entitlement evt.subscription.changed.v1 billing storage
 billing EVENTS billing-service__register-organization evt.organization.created.v1 organization task
 billing EVENTS billing-service__record-member-joined evt.member.joined.v1 organization task
 billing EVENTS billing-service__record-member-role-changed evt.member.role-changed.v1 organization task
@@ -59,6 +60,7 @@ storage EVENTS storage-service__abandon-avatar-upload evt.user.avatar-upload-aba
 storage EVENTS storage-service__delete-avatar-owner evt.user.deleted.v1 identity task
 storage EVENTS storage-service__apply-organization-logo-change evt.organization.logo-changed.v1 organization identity
 storage EVENTS storage-service__abandon-organization-logo-upload evt.organization.logo-upload-abandoned.v1 organization identity
+storage EVENTS storage-service__apply-storage-byte-entitlement evt.subscription.changed.v1 billing organization
 notification EVENTS notification-service__request-invitation-email evt.invitation.issued.v1 organization organization
 notification EVENTS notification-service__notify-quota-threshold evt.quota.threshold-reached.v1 billing task
 notification EVENTS notification-service__request-password-changed-email evt.user.password-changed.v1 identity organization
@@ -409,6 +411,13 @@ OUT=$(as search request evt.task.created.v1 '{}')
 check 'search publishes nothing' '[[ $OUT == *"$REFUSED for Publish"* ]]'
 OUT=$(as realtime-gateway request evt.task.created.v1 '{}')
 check 'the realtime gateway publishes nothing' '[[ $OUT == *"$REFUSED for Publish"* ]]'
+OUT=$(as billing request evt.subscription.changed.v1 '{}')
+check 'billing publishes subscription entitlements' '[[ $OUT == *"\"stream\":\"EVENTS\""* ]]'
+for user in identity organization task document storage notification automation integration \
+  search api-gateway realtime-gateway; do
+  OUT=$(as "$user" request evt.subscription.changed.v1 '{}')
+  check "$user cannot publish subscription entitlements" '[[ $OUT == *"$REFUSED for Publish"* ]]'
+done
 OUT=$(compose exec -T nats-streams nats --user task --password wrong rtt 2>&1 || true)
 check 'a wrong password is refused' '[[ $OUT == *"Authorization Violation"* ]]'
 OUT=$(compose exec -T -e NATS_USER= -e NATS_PASSWORD= nats-streams nats rtt 2>&1 || true)
