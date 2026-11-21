@@ -122,10 +122,24 @@ ansible-playbook ansible/playbooks/restore.yml --limit cadenway-prod \
   -e cadenway_restore_identity_file=~/.config/cadenway/backup.key
 ```
 
-It holds the agent's lock throughout (no deployment meanwhile), checks each dump before touching
-anything, then drops and recreates the database before restoring it, so tables added by later
-migrations do not survive next to an older migration journal. `ansible/roles/backup/tests/e2e.sh`
-covers backup and restore against a real PostgreSQL in CI.
+The restore holds the GitOps lock. It decrypts and restores the complete archive into a temporary
+database before stopping the running application and its workers. When the live database exists,
+its Drizzle migration history must match the archive. Use a backup compatible with the running
+application version. The restore then switches the database names in one transaction and verifies
+that the previously running containers become healthy. Containers already stopped stay stopped.
+When several databases are requested, each is restored and switched independently.
+
+After a successful switch, the former database remains under the reported
+`cw_restore_previous_…` name with connections disabled. It consumes disk space until an operator
+removes it after verification. If startup fails, the command attempts to return the former
+database to its original name and restart the previous set of containers. A candidate that
+served under the live name is retained under `cw_restore_failed_…` with connections disabled.
+Inspect it for any writes accepted before rollback. Investigate a reported rollback failure
+before restarting services manually.
+
+`ansible/roles/backup/tests/e2e.sh` covers backup and restore against PostgreSQL and a disposable
+S3 endpoint in CI. The backup covers database metadata for attachments. Restoring attachment
+contents also requires the corresponding versions of the objects in the application bucket.
 
 NATS JetStream streams, Meilisearch indexes and Traefik certificates are not backed up: the outbox
 replays events, search-service rebuilds its index, Let's Encrypt issues certificates again.

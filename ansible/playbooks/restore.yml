@@ -7,13 +7,12 @@
 #     -e cadenway_restore_identity_file=~/.config/cadenway/backup.key \
 #     -e '{"cadenway_restore_databases": ["task"]}'          (optional: all databases otherwise)
 #
-# The identity (backup private key) is copied to /run for the restore and removed afterwards.
+# Each restore copies the backup identity to its own private directory in /run.
 - name: Restore Cadenway databases
   hosts: cadenway
   become: true
   vars:
     cadenway_restore_databases: []
-    cadenway_restore_identity_path: /run/cadenway-restore-identity
   tasks:
     - name: Check the restore request
       ansible.builtin.assert:
@@ -28,12 +27,20 @@
           cadenway_restore_confirm, cadenway_restore_timestamp and cadenway_restore_identity_file.
         quiet: true
 
-    - name: Restore with the identity in /run
+    - name: Restore with a private identity directory in /run
+      when: not ansible_check_mode
       block:
+        - name: Create a directory for this restore's backup identity
+          ansible.builtin.tempfile:
+            path: /run
+            prefix: cadenway-restore-identity.
+            state: directory
+          register: cadenway_restore_identity_directory
+
         - name: Copy the backup identity to the host
           ansible.builtin.copy:
             src: '{{ cadenway_restore_identity_file }}'
-            dest: '{{ cadenway_restore_identity_path }}'
+            dest: '{{ cadenway_restore_identity_directory.path }}/identity'
             owner: root
             group: root
             mode: '0600'
@@ -47,10 +54,11 @@
               - /usr/local/bin/cadenway-restore
               - '{{ cadenway_restore_environment }}'
               - '{{ cadenway_restore_timestamp }}'
-              - '{{ cadenway_restore_identity_path }}'
+              - '{{ cadenway_restore_identity_directory.path }}/identity'
           changed_when: true
       always:
-        - name: Remove the backup identity from the host
+        - name: Remove this restore's backup identity directory
           ansible.builtin.file:
-            path: '{{ cadenway_restore_identity_path }}'
+            path: '{{ cadenway_restore_identity_directory.path }}'
             state: absent
+          when: cadenway_restore_identity_directory.path is defined
