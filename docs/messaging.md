@@ -297,15 +297,57 @@ message by its sequence and publishes a copy on `dlq.<consumer>.<subject>`.
 
 **The worker runs in notification-service, and only there.** Reading any message by its sequence
 includes the restricted ones, and notification is the only backend allowed to see them: any other
-owner would widen who can read a single-use code. Its user is the only one that may listen to the
-advisories, read a message of `EVENTS` or `EVENTS_RESTRICTED` by sequence, and publish on `dlq.>`.
-The worker is part of `@cadenway/nest-messaging`; no other backend enables it.
+owner would widen who can read a single-use code. Notification is the only service account on the
+event broker allowed to listen to the advisories, read a message of `EVENTS` or
+`EVENTS_RESTRICTED` by sequence, and publish on `dlq.>`. Its worker comes from
+`@cadenway/nest-messaging`.
 
 No backend consumes `EVENTS_DLQ`. An operator reads it from the `nats-streams` container:
 
 ```bash
 docker compose exec nats-streams nats stream view EVENTS_DLQ
 ```
+
+### Local durable advisory capture
+
+`compose/compose.advisories.local.yaml` adds a private NATS observer to the local infrastructure
+model. The leaf user can subscribe to `MAX_DELIVERIES` and `MSG_TERMINATED` for `EVENTS` and
+`EVENTS_RESTRICTED` only. The observer persists just these advisories in its own JetStream domain
+and volume. The leaf listener binds to a separate Docker network shared by the two brokers.
+The original three latches continue to receive the same advisory subjects on the event broker.
+The hosted Compose entry point omits this overlay.
+
+For an isolated broker project, set distinct local values for
+`NATS_ADVISORY_LEAF_PASSWORD`, `NATS_ADVISORY_ADMIN_PASSWORD` and
+`NATS_ADVISORY_READER_PASSWORD`. Use letters and digits, beginning with a letter. Run the command
+from `compose/` with a fresh local project name to start both provisioners and their brokers.
+
+```bash
+docker compose -p cadenway-local-advisories --env-file .env.example \
+  -f infra.yaml -f compose.advisories.local.yaml up -d --wait nats-streams nats-advisory-streams
+```
+
+When exercising the durable worker on that Docker network, use a second connection to
+`nats://nats-advisories:4222` with reader `notification`, the advisory reader password, and the
+`_INBOX.notification` prefix. Pull from `EVENTS_ADVISORIES` and
+`notification-dead-letter-advisories-v1` via the observer's local JetStream API. That user can
+inspect this consumer, pull and acknowledge only. The main connection still reads event payloads from
+the original streams and publishes to `EVENTS_DLQ`.
+
+The observer keeps unacknowledged advisories for up to seven days, 100,000 messages or 64 MiB.
+It discards new advisories at capacity. The provisioner checks coverage of all four subjects
+on the leaf connection, backlog below 90%, and the original stream and consumer identities.
+It logs a capture fault and removes its readiness marker when a check fails. Loss of the stream
+or consumer requires operator recovery after the first provisioning.
+
+The backlog survives an offline worker and an observer restart with its volume intact. Native
+advisories emitted before the leaf subscribes or while the observer is unreachable have no
+broker replay into the observer. Brief disconnects can occur between readiness checks. An advisory
+cannot restore the payload of an expired or deleted source message. Check both volumes and the
+reported outage when investigating a gap.
+
+With a local Docker context active, run `bash compose/tests/nats-advisories.sh` from the repository
+root for the disposable test.
 
 ## Rebuilds
 
