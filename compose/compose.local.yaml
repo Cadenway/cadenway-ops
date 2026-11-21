@@ -45,6 +45,30 @@ x-edge: &edge
   traefik.docker.network: ${COMPOSE_PROJECT_NAME}-edge-local
 
 services:
+  docker-api-proxy:
+    # Container inspection still exposes metadata and environment variables to Traefik.
+    image: nginx:1.30.6-alpine@sha256:583b7f2fce1cdb8da5ad5c39ebd3c33b98b87d493190e548bdee1fa8c619c311
+    restart: unless-stopped
+    entrypoint: ['nginx', '-g', 'daemon off;']
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/docker-api-proxy.conf:/etc/nginx/nginx.conf:ro
+    networks: [docker-api]
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:8080/healthz']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
   otel-collector:
     extends:
       file: ./otel-collector/compose.yaml
@@ -59,6 +83,7 @@ services:
     restart: unless-stopped
     command:
       - --providers.docker=true
+      - --providers.docker.endpoint=tcp://docker-api-proxy:8080
       - --providers.docker.exposedbydefault=false
       # The Docker socket lists the containers of every project on the host: without this
       # constraint two local stacks merge their routers and balance requests between them.
@@ -70,10 +95,12 @@ services:
       - --ping=true
     ports:
       - '127.0.0.1:${TRAEFIK_HTTP_PORT:-80}:80'
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - edge
+      - docker-api
+    depends_on:
+      docker-api-proxy:
+        condition: service_healthy
     healthcheck:
       test: ['CMD', 'traefik', 'healthcheck', '--ping']
       interval: 10s
@@ -486,6 +513,8 @@ secrets:
 # `cadenway-edge-local` for the default project, `<name>-edge-local` for `-p <name>`.
 # tests/local-isolation.sh checks it with the Traefik constraint above.
 networks:
+  docker-api:
+    internal: true
   edge: !override
     name: ${COMPOSE_PROJECT_NAME}-edge-local
 
