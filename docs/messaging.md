@@ -234,6 +234,13 @@ for the Realtime authorization consumers. It retains the newest advisory without
 Realtime can read the stream status and closes socket admission and existing transports when it
 cannot confirm that the stream is empty.
 
+The file-backed `SEARCH_REBUILD_ADVISORIES` stream captures `MAX_DELIVERIES` and `MSG_TERMINATED`
+for the 29 exact Search indexing durables. It holds one terminal advisory without expiration.
+The Search credential can read its status. Search checks the guard before and after sampling
+consumer progress and refuses candidate index promotion if the guard cannot certify an empty
+stream. Each source durable can pull, acknowledge and query its own state, and can subscribe
+only with the exact owner event filter in the ACL.
+
 A restricted event carries a single-use code valid ten minutes, or a link that expires as soon. One
 hour delivers it through a short outage of notification-service, and none stays readable in the
 stream past its use.
@@ -241,8 +248,8 @@ stream past its use.
 No backend can create, change, purge or delete a stream. The `nats-streams` container of
 `compose/infra.yaml` owns them: it runs `compose/nats/ensure-streams.sh` with the `admin` user,
 provisions the streams at start and checks them every minute. It recreates the three ordinary
-event streams when missing. Its readiness also requires the recorded Realtime advisory stream
-identity to match. A changed limit reaches a
+event streams when missing. Its readiness also requires the recorded Realtime and Search
+advisory stream identities to match. A changed limit reaches a
 stream that exists when the container starts again, which a new `ENSURE_STREAMS_SHA256` causes on
 every host (see [changing the permissions](#changing-the-permissions)); a lower age drops the
 older messages at once, and the retention and storage of a stream never change.
