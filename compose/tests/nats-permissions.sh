@@ -40,6 +40,12 @@ organization EVENTS organization-service__project-user-profile-updated evt.user.
 organization EVENTS organization-service__project-user-email-changed evt.user.email-changed.v1 identity notification
 organization EVENTS organization-service__project-user-two-step evt.user.two-step-verification-changed.v1 identity notification
 organization EVENTS organization-service__remove-deleted-user evt.user.deleted.v1 identity task
+billing EVENTS billing-service__register-organization evt.organization.created.v1 organization task
+billing EVENTS billing-service__record-member-joined evt.member.joined.v1 organization task
+billing EVENTS billing-service__record-member-role-changed evt.member.role-changed.v1 organization task
+billing EVENTS billing-service__record-member-removed evt.member.removed.v1 organization task
+billing EVENTS billing-service__record-file-uploaded evt.file.uploaded.v1 storage task
+billing EVENTS billing-service__record-file-deleted evt.file.deleted.v1 storage task
 task EVENTS task-service__project-member-joined evt.member.joined.v1 organization identity
 task EVENTS task-service__project-member-role-changed evt.member.role-changed.v1 organization notification
 task EVENTS task-service__project-member-removed evt.member.removed.v1 organization search
@@ -54,6 +60,7 @@ storage EVENTS storage-service__delete-avatar-owner evt.user.deleted.v1 identity
 storage EVENTS storage-service__apply-organization-logo-change evt.organization.logo-changed.v1 organization identity
 storage EVENTS storage-service__abandon-organization-logo-upload evt.organization.logo-upload-abandoned.v1 organization identity
 notification EVENTS notification-service__request-invitation-email evt.invitation.issued.v1 organization organization
+notification EVENTS notification-service__notify-quota-threshold evt.quota.threshold-reached.v1 billing task
 notification EVENTS notification-service__request-password-changed-email evt.user.password-changed.v1 identity organization
 notification EVENTS notification-service__request-email-changed-email evt.user.email-changed.v1 identity organization
 notification EVENTS notification-service__request-new-device-email evt.session.opened-on-new-device.v1 identity realtime-gateway
@@ -130,6 +137,7 @@ readonly DEAD_LETTER_READ='^publish \$JS\.API\.STREAM\.MSG\.GET\.(EVENTS|EVENTS_
 readonly DEAD_LETTER_ADVISORY='^subscribe \$JS\.EVENT\.ADVISORY\.CONSUMER\.(MAX_DELIVERIES|MSG_TERMINATED)\.(EVENTS|EVENTS_RESTRICTED)\.>$'
 readonly REALTIME_ADVISORY_INFO='publish $JS.API.STREAM.INFO.REALTIME_AUTHORIZATION_ADVISORIES'
 readonly SEARCH_ADVISORY_INFO='publish $JS.API.STREAM.INFO.SEARCH_REBUILD_ADVISORIES'
+readonly BILLING_ADVISORY_INFO='publish $JS.API.STREAM.INFO.BILLING_REBUILD_ADVISORIES'
 
 compose() { docker compose -p "$PROJECT" --env-file .env.example -f infra.yaml "$@"; }
 # Invoked by the EXIT trap only after checking that the project is unused.
@@ -253,6 +261,8 @@ for grant in "${GRANTS[@]}"; do
     continue
   elif [[ $user == search && "$right $subject" == "$SEARCH_ADVISORY_INFO" ]]; then
     continue
+  elif [[ $user == billing && "$right $subject" == "$BILLING_ADVISORY_INFO" ]]; then
+    continue
   elif [[ $user == notification && ("$right $subject" =~ $DEAD_LETTER_READ ||
     "$right $subject" =~ $DEAD_LETTER_ADVISORY) ]]; then
     continue
@@ -349,6 +359,32 @@ check 'Search cannot clear its latch' '[[ $OUT == *"$REFUSED for Publish to \"$s
 OUT=$(stream_field SEARCH_REBUILD_ADVISORIES \
   '.config | [(.allow_msg_schedules // false), (.allow_rollup_hdrs // false)] | join(" ")')
 check 'Search latch rejects schedules and rollup headers' '[[ $OUT == "false false" ]]'
+
+OUT=$(stream_field BILLING_REBUILD_ADVISORIES \
+  '.config | [.storage, .retention, .discard, .max_msgs, .max_age, .max_bytes, .max_msg_size, .max_msgs_per_subject, (.allow_msg_ttl // false), (.allow_msg_schedules // false), (.allow_rollup_hdrs // false), (.subjects | length)] | join(" ")')
+check 'Billing rebuild latch retains one message without expiry' \
+  '[[ $OUT == "file limits old 1 0 -1 -1 -1 false false false 12" ]]'
+OUT=$(stream_field BILLING_REBUILD_ADVISORIES '.config.subjects | sort | .[]')
+EXPECTED=''
+while read -r owner stream consumer filter publisher other; do
+  [[ $owner == billing ]] || continue
+  for advisory in MAX_DELIVERIES MSG_TERMINATED; do
+    EXPECTED+="\$JS.EVENT.ADVISORY.CONSUMER.$advisory.EVENTS.$consumer"$'\n'
+  done
+done <<<"$CONSUMERS"
+EXPECTED=$(printf '%s' "$EXPECTED" | sort)
+check 'Billing latch captures exactly the granted consumer advisories' '[[ $OUT == "$EXPECTED" ]]'
+OUT=$(as billing request "\$JS.API.STREAM.INFO.BILLING_REBUILD_ADVISORIES" '{}')
+check 'Billing can inspect its latch state' \
+  '[[ $OUT == *"\"name\":\"BILLING_REBUILD_ADVISORIES\""* && $OUT != *"$REFUSED"* ]]'
+for user in identity organization task storage notification api-gateway realtime-gateway search; do
+  subject='$JS.API.STREAM.INFO.BILLING_REBUILD_ADVISORIES'
+  OUT=$(as "$user" request "$subject" '{}')
+  check "$user cannot inspect the Billing latch" '[[ $OUT == *"$REFUSED for Publish to \"$subject\""* ]]'
+done
+subject='$JS.API.STREAM.PURGE.BILLING_REBUILD_ADVISORIES'
+OUT=$(as billing request "$subject" '{}')
+check 'Billing cannot clear its latch' '[[ $OUT == *"$REFUSED for Publish to \"$subject\""* ]]'
 
 echo '=== 4. a backend publishes its own subjects only'
 OUT=$(as task request evt.task.created.v1 '{"id":"CAD-482"}')
@@ -739,7 +775,39 @@ check 'the Search latch supervisor restarts successfully' '[[ $OUT == "nats-stre
 OUT=$(stream_field "$latch" '[.state.messages, .state.last_seq] | join(" ")')
 check 'the Search latch survives restart' '[[ $OUT == "1 $((before + 2))" ]]'
 
-echo '=== 16. loss or replacement of a provisioned latch requires recovery'
+echo '=== 16. Billing delivery failures open a persistent latch'
+latch=BILLING_REBUILD_ADVISORIES
+critical=billing-service__record-file-uploaded
+filter=evt.file.uploaded.v1
+OUT=$(compose exec -T nats-streams cat /home/nats/billing-rebuild-advisories.created)
+BILLING_EXPECTED=$(stream_field "$latch" '.created')
+check 'Billing latch identity is stored separately' '[[ -n $OUT && $OUT == "$BILLING_EXPECTED" ]]'
+compose exec -T nats-streams nats consumer rm EVENTS "$critical" --force >/dev/null 2>&1
+before=$(stream_field "$latch" '.state.last_seq')
+compose exec -T nats-streams nats consumer add EVENTS "$critical" --filter "$filter" \
+  --pull --ack explicit --deliver all --replay instant --max-deliver 1 --wait 1s --defaults \
+  >/dev/null 2>&1
+compose exec -T nats-streams nats consumer next EVENTS "$critical" --count 1 --no-ack \
+  >/dev/null 2>&1
+wait_for "$latch" '.state.last_seq' "$((before + 1))" >/dev/null
+OUT=$(compose exec -T nats-streams nats stream get "$latch" "$((before + 1))" --json 2>&1 || true)
+check 'a failed Billing delivery opens the latch' '[[ $OUT == *"MAX_DELIVERIES.EVENTS.$critical"* ]]'
+compose exec -T nats-streams nats consumer rm EVENTS "$critical" --force >/dev/null 2>&1
+compose exec -T nats-streams nats consumer add EVENTS "$critical" --filter "$filter" \
+  --pull --ack explicit --deliver all --replay instant --max-deliver 1 --wait 1s --defaults \
+  >/dev/null 2>&1
+compose exec -T nats-streams nats consumer next EVENTS "$critical" --count 1 --term \
+  >/dev/null 2>&1
+wait_for "$latch" '.state.last_seq' "$((before + 2))" >/dev/null
+OUT=$(compose exec -T nats-streams nats stream get "$latch" "$((before + 2))" --json 2>&1 || true)
+check 'a terminated Billing delivery replaces the retained message' '[[ $OUT == *"MSG_TERMINATED.EVENTS.$critical"* ]]'
+compose restart nats-streams >/dev/null 2>&1
+OUT=$(wait_healthy)
+check 'the Billing latch supervisor restarts successfully' '[[ $OUT == "nats-streams healthy" ]]'
+OUT=$(stream_field "$latch" '[.state.messages, .state.last_seq] | join(" ")')
+check 'the Billing latch survives restart' '[[ $OUT == "1 $((before + 2))" ]]'
+
+echo '=== 17. loss or replacement of a provisioned latch requires recovery'
 latch=REALTIME_AUTHORIZATION_ADVISORIES
 compose exec -T nats-streams nats stream rm "$latch" --force >/dev/null 2>&1
 compose restart nats-streams >/dev/null 2>&1

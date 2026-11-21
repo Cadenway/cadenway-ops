@@ -25,11 +25,13 @@ readonly CHECK_INTERVAL=60
 readonly RETRY_INTERVAL=5
 readonly LATCH_IDENTITY=/home/nats/realtime-authorization-advisories.created
 readonly SEARCH_LATCH_IDENTITY=/home/nats/search-rebuild-advisories.created
+readonly BILLING_LATCH_IDENTITY=/home/nats/billing-rebuild-advisories.created
 
 # The exact invalidation durables that can revoke a socket's authority. Status and comment
 # notifications do not change authority and do not open this latch.
 readonly AUTHORIZATION_HANDLERS='relay-session-revoked relay-session-organization-changed relay-member-removed relay-member-role-changed relay-space-updated relay-space-access-changed relay-space-access-republished relay-space-deleted relay-list-access-changed relay-list-deleted relay-task-trashed relay-task-purged relay-task-updated'
 readonly SEARCH_HANDLERS='index-task-created-v1 index-task-updated-v1 index-task-archived-v1 index-task-unarchived-v1 index-task-trashed-v1 index-task-restored-v1 index-task-purged-v1 index-task-watcher-changed-v1 index-list-created-v1 index-list-updated-v1 index-list-archived-v1 index-list-unarchived-v1 index-list-deleted-v1 index-list-restored-v1 index-list-access-changed-v1 index-space-created-v1 index-space-updated-v1 index-space-deleted-v1 index-space-restored-v1 index-space-access-changed-v1 index-space-access-republished-v1 index-comment-created-v1 index-comment-updated-v1 index-comment-deleted-v1 index-doc-created-v1 index-doc-updated-v1 index-doc-deleted-v1 index-file-uploaded-v1 index-file-deleted-v1'
+readonly BILLING_HANDLERS='register-organization record-member-joined record-member-role-changed record-member-removed record-file-uploaded record-file-deleted'
 
 # Verifies the broker still has the same provisioned latch, without changing it.
 realtime_latch_identity_matches() {
@@ -124,6 +126,51 @@ ensure_search_rebuild_advisories() {
     search_latch_identity_matches
 }
 
+# Preserve the Billing latch identity independently of the broker volume.
+billing_latch_identity_matches() {
+  [ -s "$BILLING_LATCH_IDENTITY" ] || return 1
+  expected=$(cat "$BILLING_LATCH_IDENTITY") || return 1
+  observed=$(nats stream info BILLING_REBUILD_ADVISORIES --json 2>/dev/null |
+    jq -er '.created | select(type == "string" and length > 0)') || return 1
+  [ "$observed" = "$expected" ]
+}
+
+ensure_billing_rebuild_advisories() {
+  subjects=''
+  for handler in $BILLING_HANDLERS; do
+    for advisory in MAX_DELIVERIES MSG_TERMINATED; do
+      subject="\$JS.EVENT.ADVISORY.CONSUMER.$advisory.EVENTS.billing-service__$handler"
+      subjects="${subjects:+$subjects,}$subject"
+    done
+  done
+  name=BILLING_REBUILD_ADVISORIES
+  if [ -e "$BILLING_LATCH_IDENTITY" ]; then
+    if ! billing_latch_identity_matches; then
+      echo 'nats-streams: unable to verify the provisioned Billing rebuild latch; check NATS and its recovery procedure.' >&2
+      return 1
+    fi
+  else
+    if ! nats stream info "$name" >/dev/null 2>&1; then
+      nats stream add "$name" --defaults --subjects "$subjects" \
+        --description 'Persistent latch for failed Billing usage deliveries.' \
+        --storage file --retention limits --discard old --replicas 1 \
+        --max-age 0s --max-bytes=-1 --max-msgs=1 --max-msgs-per-subject=-1 \
+        --max-msg-size=-1 >/dev/null || return 1
+    fi
+    created=$(nats stream info "$name" --json |
+      jq -er '.created | select(type == "string" and length > 0)') || return 1
+    printf '%s\n' "$created" >"$BILLING_LATCH_IDENTITY.tmp" || return 1
+    mv "$BILLING_LATCH_IDENTITY.tmp" "$BILLING_LATCH_IDENTITY" || return 1
+  fi
+  billing_latch_identity_matches || return 1
+  nats stream edit "$name" --force --subjects "$subjects" \
+    --max-age 0s --max-bytes=-1 --max-msgs=1 --max-msgs-per-subject=-1 \
+    --max-msg-size=-1 --discard old >/dev/null || return 1
+  nats stream info "$name" --json |
+    jq -e '.config | (.allow_msg_ttl // false) == false and (.allow_msg_schedules // false) == false and (.allow_rollup_hdrs // false) == false' >/dev/null &&
+    billing_latch_identity_matches
+}
+
 # Creates a stream, or updates it when it exists.
 # Arguments: name, subjects, maximum age, maximum size in bytes, description.
 # Returns the status of the `nats` command.
@@ -160,7 +207,8 @@ ensure_streams() {
     ensure_stream EVENTS_DLQ 'dlq.>' 30d 256MiB \
       'Messages a consumer gave up on, copied by the dead-letter worker.' &&
     ensure_realtime_authorization_advisories &&
-    ensure_search_rebuild_advisories
+    ensure_search_rebuild_advisories &&
+    ensure_billing_rebuild_advisories
 }
 
 streams_exist() {
@@ -168,7 +216,8 @@ streams_exist() {
     nats stream info EVENTS_RESTRICTED >/dev/null 2>&1 &&
     nats stream info EVENTS_DLQ >/dev/null 2>&1 &&
     realtime_latch_identity_matches &&
-    search_latch_identity_matches
+    search_latch_identity_matches &&
+    billing_latch_identity_matches
 }
 
 # `sleep` runs in the background so the shell, as process 1, answers the stop signal at once.
@@ -183,7 +232,7 @@ while :; do
   if [ -e "$READY" ] && streams_exist; then
     pause "$CHECK_INTERVAL"
   elif ensure_streams; then
-    echo 'nats-streams: event streams and the Realtime and Search advisory latches are in place.'
+    echo 'nats-streams: event streams and the Realtime, Search and Billing advisory latches are in place.'
     : >"$READY"
     pause "$CHECK_INTERVAL"
   else
