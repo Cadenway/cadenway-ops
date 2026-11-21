@@ -125,3 +125,17 @@ tools, collections, providers, or files as unavailable.
 - Stage only the files of your task; preserve other people's changes in the working tree.
 
 Keep credentials, private keys, decrypted environment files and Terraform state out of documentation and logs. Follow the hard limits in [AGENTS.md](../AGENTS.md); setup instructions do not authorize deployments or changes to real infrastructure.
+
+### Local telemetry
+
+The local stack starts an OpenTelemetry Collector on its internal network. Backend export is off
+by default. Before enabling it, each backend must use a released `@cadenway/nest-common` version
+that supports `CADENWAY_OTEL_REDACT_HTTP_QUERY_STRINGS`. Local Compose sets that option to `true`
+for every backend. Once that version is installed, set `OTEL_EXPORTER_OTLP_ENDPOINT` to
+`http://otel-collector:4318` in the local environment to export traces and metrics over OTLP/HTTP.
+
+The collector logs signal summaries for local diagnostics and does not retain telemetry. Its health
+check probes the collector's local health endpoint. The hosted environments do not use this collector.
+
+Run `bash compose/tests/otel-collector.sh` to build the collector in an isolated Compose project
+and verify that it receives and exports a trace and a metric. The test removes its project afterward.
