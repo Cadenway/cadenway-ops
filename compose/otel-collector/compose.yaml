@@ -1,0 +1,23 @@
+# Local collector shared by the development stack and its isolated integration test.
+services:
+  otel-collector:
+    build:
+      context: .
+    restart: unless-stopped
+    command: ['--config=/etc/otelcol/config.yaml']
+    volumes:
+      - ./config.yaml:/etc/otelcol/config.yaml:ro
+    networks:
+      - internal
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:13133/']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+networks:
+  internal:
