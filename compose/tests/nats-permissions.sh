@@ -288,7 +288,9 @@ for row in "${CREATES[@]}"; do
   read -r user stream consumer _ <<<"$row"
   for subject in "\$JS.API.CONSUMER.INFO.$stream.$consumer" \
     "\$JS.API.CONSUMER.MSG.NEXT.$stream.$consumer" "\$JS.ACK.$stream.$consumer.>"; do
-    printf '%s\n' "${CONSUMER_GRANTS[@]}" | grep -Fqx -- "$user $subject" || OUT+=" $user:$subject"
+    # Consume all grants so an early match cannot break the writer under pipefail.
+    printf '%s\n' "${CONSUMER_GRANTS[@]}" | grep -Fx -- "$user $subject" >/dev/null ||
+      OUT+=" $user:$subject"
   done
   [[ $consumer == "$user-service__"* || $consumer == "${user}__"* ]] || OUT+=" $user:$consumer"
 done
