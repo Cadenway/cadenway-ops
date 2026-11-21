@@ -81,6 +81,9 @@ notification EVENTS notification-service__inbox-task-access-requested evt.task.a
 notification EVENTS notification-service__inbox-task-access-approved evt.task.access-request-decided.v1 task organization
 notification EVENTS_RESTRICTED notification-service__request-code-email restricted.one-time-code.issued.v1 identity identity
 notification EVENTS_RESTRICTED notification-service__request-password-reset-email restricted.password-reset-link.issued.v1 identity organization
+automation EVENTS automation-service__run-task-created-rules evt.task.created.v1 task notification
+automation EVENTS automation-service__run-task-status-changed-rules evt.task.status-changed.v1 task notification
+integration EVENTS integration-service__purge-task-git-links evt.task.purged.v1 task notification
 search EVENTS search-service__index-task-created-v1 evt.task.created.v1 task notification
 search EVENTS search-service__index-task-updated-v1 evt.task.updated.v1 task notification
 search EVENTS search-service__index-task-archived-v1 evt.task.archived.v1 task notification
@@ -125,6 +128,11 @@ realtime-gateway EVENTS realtime-gateway__relay-task-status-changed evt.task.sta
 realtime-gateway EVENTS realtime-gateway__relay-task-trashed evt.task.trashed.v1 task notification
 realtime-gateway EVENTS realtime-gateway__relay-task-purged evt.task.purged.v1 task notification
 realtime-gateway EVENTS realtime-gateway__relay-comment-created evt.comment.created.v1 task notification
+realtime-gateway EVENTS realtime-gateway__relay-git-branch-created evt.git.branch-created.v1 integration notification
+realtime-gateway EVENTS realtime-gateway__relay-git-pr-opened evt.git.pr-opened.v1 integration notification
+realtime-gateway EVENTS realtime-gateway__relay-git-pr-merged evt.git.pr-merged.v1 integration notification
+realtime-gateway EVENTS realtime-gateway__relay-git-pr-closed evt.git.pr-closed.v1 integration notification
+realtime-gateway EVENTS realtime-gateway__relay-git-checks-completed evt.git.checks-completed.v1 integration notification
 '
 # What `nats consumer next` prints of a delivery: the attempt, the consumer and stream sequences.
 readonly DELIVERY='tries: ([0-9]+) / cons seq: ([0-9]+) / str seq: ([0-9]+)'
