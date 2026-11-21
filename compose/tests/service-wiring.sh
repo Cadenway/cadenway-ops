@@ -147,8 +147,10 @@ for (const [name, targets] of Object.entries(called)) {
     (key) => key.endsWith('_SERVICE_URL') && !targets.includes(key.slice(0, -4).toLowerCase().replaceAll('_', '-')),
   );
   if (name === 'notification-service') {
-    const index = extra.indexOf('ORGANIZATION_SERVICE_URL');
-    if (index >= 0 && !environment.ORGANIZATION_SERVICE_URL) extra.splice(index, 1);
+    for (const variable of ['ORGANIZATION_SERVICE_URL', 'TASK_SERVICE_URL']) {
+      const index = extra.indexOf(variable);
+      if (index >= 0 && !environment[variable]) extra.splice(index, 1);
+    }
   }
   if (extra.length > 0) fail(`${name} also has ${extra}`);
 }
@@ -157,6 +159,23 @@ const documentPrivateKey = JSON.parse(services['document-service'].environment.I
 if (taskDocumentKey.kty !== 'OKP' || taskDocumentKey.d !== undefined ||
     taskDocumentKey.x !== documentPrivateKey.x || taskDocumentKey.kid !== documentPrivateKey.kid) {
   fail('task Document public key');
+}
+const taskNotificationKey = JSON.parse(services['task-service'].environment.NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS);
+const notificationPrivateKey = JSON.parse(services['notification-service'].environment.INTERNAL_TOKEN_PRIVATE_JWK);
+if (taskNotificationKey.kty !== 'OKP' || taskNotificationKey.d !== undefined ||
+    taskNotificationKey.x !== notificationPrivateKey.x || taskNotificationKey.kid !== notificationPrivateKey.kid) {
+  fail('task Notification public key');
+}
+const automation = services['automation-service'].environment;
+const integration = services['integration-service'].environment;
+if (automation.AUTOMATION_TASK_TRIGGERS_ENABLED !== 'false' ||
+    automation.AUTOMATION_COMMENT_AND_NOTIFICATION_ACTIONS_ENABLED !== 'false' ||
+    automation.AUTOMATION_CURSOR_SIGNING_KEY ||
+    services['notification-service'].environment.TASK_SERVICE_URL ||
+    services['realtime-gateway'].environment.REALTIME_GIT_RELAYS_ENABLED !== 'false' ||
+    integration.GIT_LINK_EVENTS_ENABLED !== 'false' || integration.GIT_LINK_PURGE_ENABLED !== 'false' ||
+    integration.GIT_WEBHOOK_RECEIVERS !== '[]') {
+  fail('P6 actions and Git links are inactive by default');
 }
 for (const name of Object.keys(services)) {
   const environment = services[name].environment ?? {};
