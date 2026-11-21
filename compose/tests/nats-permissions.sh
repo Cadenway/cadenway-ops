@@ -74,6 +74,35 @@ notification EVENTS notification-service__inbox-task-access-requested evt.task.a
 notification EVENTS notification-service__inbox-task-access-approved evt.task.access-request-decided.v1 task organization
 notification EVENTS_RESTRICTED notification-service__request-code-email restricted.one-time-code.issued.v1 identity identity
 notification EVENTS_RESTRICTED notification-service__request-password-reset-email restricted.password-reset-link.issued.v1 identity organization
+search EVENTS search-service__index-task-created-v1 evt.task.created.v1 task notification
+search EVENTS search-service__index-task-updated-v1 evt.task.updated.v1 task notification
+search EVENTS search-service__index-task-archived-v1 evt.task.archived.v1 task notification
+search EVENTS search-service__index-task-unarchived-v1 evt.task.unarchived.v1 task notification
+search EVENTS search-service__index-task-trashed-v1 evt.task.trashed.v1 task notification
+search EVENTS search-service__index-task-restored-v1 evt.task.restored.v1 task notification
+search EVENTS search-service__index-task-purged-v1 evt.task.purged.v1 task notification
+search EVENTS search-service__index-task-watcher-changed-v1 evt.task.watcher-changed.v1 task notification
+search EVENTS search-service__index-list-created-v1 evt.list.created.v1 task notification
+search EVENTS search-service__index-list-updated-v1 evt.list.updated.v1 task notification
+search EVENTS search-service__index-list-archived-v1 evt.list.archived.v1 task notification
+search EVENTS search-service__index-list-unarchived-v1 evt.list.unarchived.v1 task notification
+search EVENTS search-service__index-list-deleted-v1 evt.list.deleted.v1 task notification
+search EVENTS search-service__index-list-restored-v1 evt.list.restored.v1 task notification
+search EVENTS search-service__index-list-access-changed-v1 evt.list.access-changed.v1 task notification
+search EVENTS search-service__index-space-created-v1 evt.space.created.v1 task notification
+search EVENTS search-service__index-space-updated-v1 evt.space.updated.v1 task notification
+search EVENTS search-service__index-space-deleted-v1 evt.space.deleted.v1 task notification
+search EVENTS search-service__index-space-restored-v1 evt.space.restored.v1 task notification
+search EVENTS search-service__index-space-access-changed-v1 evt.space.access-changed.v1 task notification
+search EVENTS search-service__index-space-access-republished-v1 evt.space.access-republished.v1 task notification
+search EVENTS search-service__index-comment-created-v1 evt.comment.created.v1 task notification
+search EVENTS search-service__index-comment-updated-v1 evt.comment.updated.v1 task notification
+search EVENTS search-service__index-comment-deleted-v1 evt.comment.deleted.v1 task notification
+search EVENTS search-service__index-doc-created-v1 evt.doc.created.v1 document notification
+search EVENTS search-service__index-doc-updated-v1 evt.doc.updated.v1 document notification
+search EVENTS search-service__index-doc-deleted-v1 evt.doc.deleted.v1 document notification
+search EVENTS search-service__index-file-uploaded-v1 evt.file.uploaded.v1 storage notification
+search EVENTS search-service__index-file-deleted-v1 evt.file.deleted.v1 storage notification
 realtime-gateway EVENTS realtime-gateway__relay-session-revoked evt.session.revoked.v1 identity notification
 realtime-gateway EVENTS realtime-gateway__relay-session-organization-changed evt.session.organization-changed.v1 identity notification
 realtime-gateway EVENTS realtime-gateway__relay-member-role-changed evt.member.role-changed.v1 organization notification
@@ -100,6 +129,7 @@ readonly CONSUMER_API='^publish \$JS\.(API\.CONSUMER\.(CREATE|INFO|MSG\.NEXT)|AC
 readonly DEAD_LETTER_READ='^publish \$JS\.API\.STREAM\.MSG\.GET\.(EVENTS|EVENTS_RESTRICTED)$'
 readonly DEAD_LETTER_ADVISORY='^subscribe \$JS\.EVENT\.ADVISORY\.CONSUMER\.(MAX_DELIVERIES|MSG_TERMINATED)\.(EVENTS|EVENTS_RESTRICTED)\.>$'
 readonly REALTIME_ADVISORY_INFO='publish $JS.API.STREAM.INFO.REALTIME_AUTHORIZATION_ADVISORIES'
+readonly SEARCH_ADVISORY_INFO='publish $JS.API.STREAM.INFO.SEARCH_REBUILD_ADVISORIES'
 
 compose() { docker compose -p "$PROJECT" --env-file .env.example -f infra.yaml "$@"; }
 # Invoked by the EXIT trap only after checking that the project is unused.
@@ -221,6 +251,8 @@ for grant in "${GRANTS[@]}"; do
     fi
   elif [[ $user == realtime-gateway && "$right $subject" == "$REALTIME_ADVISORY_INFO" ]]; then
     continue
+  elif [[ $user == search && "$right $subject" == "$SEARCH_ADVISORY_INFO" ]]; then
+    continue
   elif [[ $user == notification && ("$right $subject" =~ $DEAD_LETTER_READ ||
     "$right $subject" =~ $DEAD_LETTER_ADVISORY) ]]; then
     continue
@@ -288,6 +320,35 @@ done
 subject='$JS.API.STREAM.PURGE.REALTIME_AUTHORIZATION_ADVISORIES'
 OUT=$(as realtime-gateway request "$subject" '{}')
 check 'Realtime cannot clear the latch' '[[ $OUT == *"$REFUSED for Publish to \"$subject\""* ]]'
+
+OUT=$(stream_field SEARCH_REBUILD_ADVISORIES \
+  '.config | [.storage, .retention, .discard, .max_msgs, .max_age, .max_bytes, .max_msg_size, .max_msgs_per_subject, (.allow_msg_ttl // false), (.subjects | length)] | join(" ")')
+check 'Search rebuild latch retains one message without expiry' \
+  '[[ $OUT == "file limits old 1 0 -1 -1 -1 false 58" ]]'
+OUT=$(stream_field SEARCH_REBUILD_ADVISORIES '.config.subjects | sort | .[]')
+EXPECTED=''
+while read -r owner stream consumer filter publisher other; do
+  [[ $owner == search ]] || continue
+  for advisory in MAX_DELIVERIES MSG_TERMINATED; do
+    EXPECTED+="\$JS.EVENT.ADVISORY.CONSUMER.$advisory.EVENTS.$consumer"$'\n'
+  done
+done <<<"$CONSUMERS"
+EXPECTED=$(printf '%s' "$EXPECTED" | sort)
+check 'Search latch captures exactly the granted consumer advisories' '[[ $OUT == "$EXPECTED" ]]'
+OUT=$(as search request "\$JS.API.STREAM.INFO.SEARCH_REBUILD_ADVISORIES" '{}')
+check 'Search can inspect its latch state' \
+  '[[ $OUT == *"\"name\":\"SEARCH_REBUILD_ADVISORIES\""* && $OUT != *"$REFUSED"* ]]'
+for user in identity organization task storage notification api-gateway realtime-gateway; do
+  subject='$JS.API.STREAM.INFO.SEARCH_REBUILD_ADVISORIES'
+  OUT=$(as "$user" request "$subject" '{}')
+  check "$user cannot inspect the Search latch" '[[ $OUT == *"$REFUSED for Publish to \"$subject\""* ]]'
+done
+subject='$JS.API.STREAM.PURGE.SEARCH_REBUILD_ADVISORIES'
+OUT=$(as search request "$subject" '{}')
+check 'Search cannot clear its latch' '[[ $OUT == *"$REFUSED for Publish to \"$subject\""* ]]'
+OUT=$(stream_field SEARCH_REBUILD_ADVISORIES \
+  '.config | [(.allow_msg_schedules // false), (.allow_rollup_hdrs // false)] | join(" ")')
+check 'Search latch rejects schedules and rollup headers' '[[ $OUT == "false false" ]]'
 
 echo '=== 4. a backend publishes its own subjects only'
 OUT=$(as task request evt.task.created.v1 '{"id":"CAD-482"}')
@@ -442,6 +503,10 @@ OUT=$(wait_healthy)
 check 'a start with nothing to change is healthy too' '[[ $OUT == "nats-streams healthy" ]]'
 
 echo '=== 12. each granted consumer works for its owner, and for no other backend'
+# Previous sections publish task.created while checking access and dead-letter delivery. The new
+# Search durable replays that subject from the beginning, so clear this disposable stream before
+# computing the number of messages generated by this section.
+compose exec -T nats-streams nats stream purge EVENTS --force >/dev/null 2>&1
 # Each step uses the subject @cadenway/nest-messaging uses, sent as is, so a refusal names it. The
 # other backend acknowledges on the reply subject of a message the owner holds: had it the right,
 # the message would leave the owner. The rows are read before the loop, since `docker compose exec`
@@ -587,6 +652,16 @@ OUT=$(compose exec -T nats-streams nats consumer info EVENTS "$own" --json 2>&1 
 check 'the consumer still filters its one event' \
   '[[ $OUT == *"\"filter_subject\": \"evt.member.joined.v1\""* ]]'
 
+own=search-service__index-task-created-v1
+create="\$JS.API.CONSUMER.CREATE.EVENTS.$own.evt.task.updated.v1"
+OUT=$(as search request "$create" "$(consumer_config EVENTS "$own" evt.task.updated.v1)")
+check 'Search cannot bind a granted durable to another event' \
+  '[[ $OUT == *"$REFUSED for Publish to \"$create\""* ]]'
+create="\$JS.API.CONSUMER.CREATE.EVENTS.$own.evt.task.created.v1"
+OUT=$(as search request "$create" "$(consumer_config EVENTS "$own" 'evt.>')")
+check 'Search cannot widen the body filter of a granted durable' \
+  '[[ $OUT != *"$REFUSED"* && $OUT == *"\"err_code\":10131"* ]]'
+
 echo '=== 14. failed Realtime invalidations open a persistent authorization latch'
 latch=REALTIME_AUTHORIZATION_ADVISORIES
 critical=realtime-gateway__relay-task-purged
@@ -631,7 +706,41 @@ OUT=$(stream_field "$latch" '[.state.messages, .state.last_seq] | join(" ")')
 check 'the authorization latch survives its declaration being reapplied' \
   '[[ $OUT == "1 $((before + 2))" ]]'
 
-echo '=== 15. loss or replacement of a provisioned latch requires recovery'
+echo '=== 15. Search delivery failures open a persistent latch'
+latch=SEARCH_REBUILD_ADVISORIES
+critical=search-service__index-task-created-v1
+filter=evt.task.created.v1
+OUT=$(compose exec -T nats-streams cat /home/nats/search-rebuild-advisories.created)
+SEARCH_EXPECTED=$(stream_field "$latch" '.created')
+check 'Search latch identity is stored separately' '[[ -n $OUT && $OUT == "$SEARCH_EXPECTED" ]]'
+compose exec -T nats-streams nats consumer rm EVENTS "$critical" --force >/dev/null 2>&1
+before=$(stream_field "$latch" '.state.last_seq')
+compose exec -T nats-streams nats consumer add EVENTS "$critical" --filter "$filter" \
+  --pull --ack explicit --deliver all --replay instant --max-deliver 1 --wait 1s --defaults \
+  >/dev/null 2>&1
+compose exec -T nats-streams nats consumer next EVENTS "$critical" --count 1 --no-ack \
+  >/dev/null 2>&1
+wait_for "$latch" '.state.last_seq' "$((before + 1))" >/dev/null
+OUT=$(compose exec -T nats-streams nats stream get "$latch" "$((before + 1))" --json 2>&1 || true)
+check 'a failed Search delivery opens the latch' '[[ $OUT == *"MAX_DELIVERIES.EVENTS.$critical"* ]]'
+compose exec -T nats-streams nats consumer rm EVENTS "$critical" --force >/dev/null 2>&1
+compose exec -T nats-streams nats consumer add EVENTS "$critical" --filter "$filter" \
+  --pull --ack explicit --deliver all --replay instant --max-deliver 1 --wait 1s --defaults \
+  >/dev/null 2>&1
+compose exec -T nats-streams nats consumer next EVENTS "$critical" --count 1 --term \
+  >/dev/null 2>&1
+wait_for "$latch" '.state.last_seq' "$((before + 2))" >/dev/null
+OUT=$(compose exec -T nats-streams nats stream get "$latch" "$((before + 2))" --json 2>&1 || true)
+check 'a terminated Search delivery replaces the retained message' \
+  '[[ $OUT == *"MSG_TERMINATED.EVENTS.$critical"* ]]'
+compose restart nats-streams >/dev/null 2>&1
+OUT=$(wait_healthy)
+check 'the Search latch supervisor restarts successfully' '[[ $OUT == "nats-streams healthy" ]]'
+OUT=$(stream_field "$latch" '[.state.messages, .state.last_seq] | join(" ")')
+check 'the Search latch survives restart' '[[ $OUT == "1 $((before + 2))" ]]'
+
+echo '=== 16. loss or replacement of a provisioned latch requires recovery'
+latch=REALTIME_AUTHORIZATION_ADVISORIES
 compose exec -T nats-streams nats stream rm "$latch" --force >/dev/null 2>&1
 compose restart nats-streams >/dev/null 2>&1
 OUT=''
