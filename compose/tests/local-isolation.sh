@@ -91,28 +91,33 @@ for (const file of ['first', 'second', 'default', 'staging']) {
   print('served', served.map(([name]) => name).sort().join(' '));
   print('astray', astray.map(([name]) => name).sort().join(' '));
   if (file !== 'staging') {
-    const proxyMembers = Object.entries(config.services)
-      .filter(([, service]) => Object.hasOwn(service.networks ?? {}, 'docker-api'))
-      .map(([name]) => name)
-      .sort();
+    const membersOf = (network) =>
+      Object.entries(config.services)
+        .filter(([, service]) => Object.hasOwn(service.networks ?? {}, network))
+        .map(([name]) => name)
+        .sort()
+        .join(' ');
     const socket = '/var/run/docker.sock';
     print('discovery.isolated',
       option('endpoint') === 'tcp://docker-api-proxy:8080' &&
       config.networks['docker-api']?.internal === true &&
-      proxyMembers.join(' ') === 'docker-api-proxy traefik' &&
+      membersOf('docker-api') === 'docker-api-proxy traefik' &&
       !config.services.traefik.volumes?.some((volume) => volume.target === socket) &&
       config.services['docker-api-proxy'].volumes?.some((volume) => volume.target === socket),
+    );
+    const storage = config.services['storage-service'];
+    print('upload-transfer.isolated',
+      config.networks['upload-transfer']?.internal === true &&
+      membersOf('upload-transfer') === 'storage-service traefik' &&
+      Object.keys(storage.networks).sort().join(' ') === 'internal upload-transfer' &&
+      !storage.ports?.length,
     );
     print('redis-legacy.enabled', Object.hasOwn(config.services, 'redis'));
     for (const [network, gateway] of [
       ['redis-api', 'api-gateway'],
       ['redis-realtime', 'realtime-gateway'],
     ]) {
-      const members = Object.entries(config.services)
-        .filter(([, service]) => Object.hasOwn(service.networks ?? {}, network))
-        .map(([name]) => name)
-        .sort();
-      print(`${network}.members`, members.join(' '));
+      print(`${network}.members`, membersOf(network));
       print(`${network}.internal`, config.networks[network]?.internal === true);
       print(`${network}.url`, config.services[gateway]?.environment?.REDIS_URL);
     }
@@ -146,13 +151,16 @@ check 'the default one too' \
 check 'each one reaches the containers on the edge network of its project' \
   '[[ $(fact first.network) == "$FIRST-edge-local" &&
     $(fact second.network) == "$SECOND-edge-local" ]]'
-check 'and joins only edge and the private Docker API network' \
-  '[[ $(fact first.joins) == "$FIRST-edge-local ${FIRST}_docker-api" &&
-    $(fact second.joins) == "$SECOND-edge-local ${SECOND}_docker-api" &&
-    $(fact default.joins) == "cadenway-edge-local cadenway_docker-api" ]]'
+check 'and joins only edge, the private Docker API network, and the upload relay network' \
+  '[[ $(fact first.joins) == "$FIRST-edge-local ${FIRST}_docker-api ${FIRST}_upload-transfer" &&
+    $(fact second.joins) == "$SECOND-edge-local ${SECOND}_docker-api ${SECOND}_upload-transfer" &&
+    $(fact default.joins) == "cadenway-edge-local cadenway_docker-api cadenway_upload-transfer" ]]'
 check 'only the isolated discovery proxy mounts the Docker socket' \
   '[[ $(fact first.discovery.isolated) == true && $(fact second.discovery.isolated) == true &&
     $(fact default.discovery.isolated) == true ]]'
+check 'only Traefik and Storage join the private upload relay network, with no Storage port published' \
+  '[[ $(fact first.upload-transfer.isolated) == true && $(fact second.upload-transfer.isolated) == true &&
+    $(fact default.upload-transfer.isolated) == true ]]'
 
 echo '=== 3. every service Traefik serves is on that network'
 check 'a definition of staging and a local service are served' \

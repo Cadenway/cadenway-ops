@@ -1,7 +1,10 @@
 http:
   routers:
     local-storage-upload:
-      rule: 'Host(`{{ env "LOCAL_STORAGE_UPLOAD_HOST" }}`) && Path(`/internal/v1/upload-transfers`) && Method(`POST`)'
+      rule: >-
+        Host(`{{ env "LOCAL_STORAGE_UPLOAD_HOST" }}`) &&
+        Path(`/internal/v1/upload-transfers`) &&
+        Method(`POST`)
       entryPoints: [web]
       service: local-storage-upload
   services:
