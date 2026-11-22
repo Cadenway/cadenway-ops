@@ -11,4 +11,4 @@ http:
     local-storage-upload:
       loadBalancer:
         servers:
-          - url: http://storage-service:3015
+          - url: http://storage-service:3016

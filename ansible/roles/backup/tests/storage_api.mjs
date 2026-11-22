@@ -13,7 +13,7 @@ const intakeId = '018b6300-0000-7000-8000-000000000006';
 const taskPath = '/internal/v1/tasks/CAD-482/attachments';
 const objectOrigin = 'http://127.0.0.1:8333';
 const storageOrigin = 'http://127.0.0.1:3015';
-const transferUrl = `${storageOrigin}/internal/v1/upload-transfers`;
+const transferUrl = 'http://127.0.0.1:3016/internal/v1/upload-transfers';
 const original = Buffer.from('P8 Cadenway real Storage verification\nUTF-8 test: éclair.\n');
 const later = Buffer.from(
   'P8 later upload, left in object storage by the earlier database restore.\n',

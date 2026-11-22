@@ -82,7 +82,7 @@ docker run --pull never -d --name "$STORAGE" --network "$STORAGE_FIXTURE_NETWORK
   -e S3_ERASE_TRANSIENT_VERSIONS=true \
   -e "S3_ACCESS_KEY_ID=$STORAGE_RESTORE_S3_ACCESS_KEY_ID" \
   -e "S3_SECRET_ACCESS_KEY=$STORAGE_RESTORE_S3_SECRET_ACCESS_KEY" \
-  -e STORAGE_UPLOAD_TRANSFER_URL=http://127.0.0.1:3015/internal/v1/upload-transfers \
+  -e STORAGE_UPLOAD_TRANSFER_URL=http://127.0.0.1:3016/internal/v1/upload-transfers \
   -e "STORAGE_UPLOAD_RECEIPT_KEYS=$receipt_keyring" "$CADENWAY_E2E_STORAGE_IMAGE" >/dev/null
 unset receipt_keyring
 if ! poll healthy "$STORAGE"; then
