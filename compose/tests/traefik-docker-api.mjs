@@ -12,9 +12,7 @@ const volume = 'traefik-proxy-socket-' + suffix;
 const fixture = 'docker-api-fixture-' + suffix;
 const proxy = 'docker-api-proxy-' + suffix;
 const traefik = 'traefik-proxy-test-' + suffix;
-const config = fileURLToPath(new URL('../traefik/docker-api-proxy.conf', import.meta.url));
-const nginx =
-  'nginx:1.30.6-alpine@sha256:583b7f2fce1cdb8da5ad5c39ebd3c33b98b87d493190e548bdee1fa8c619c311';
+const proxyScript = fileURLToPath(new URL('../traefik/docker-api-proxy.mjs', import.meta.url));
 const node =
   'node:24.22.3-alpine3.24@sha256:98e4e60b35fd50143e1838da2957488c25aa3a3efbd48bb679923f77d6d3d873';
 const traefikImage =
@@ -93,21 +91,18 @@ try {
     '/tmp',
     '--cap-drop',
     'ALL',
-    '--cap-add',
-    'SETUID',
-    '--cap-add',
-    'SETGID',
     '--security-opt',
     'no-new-privileges:true',
     '-v',
     volume + ':/var/run',
     '-v',
-    config + ':/etc/nginx/nginx.conf:ro',
+    proxyScript + ':/app/docker-api-proxy.mjs:ro',
+    '-e',
+    'TRAEFIK_ALLOWED_NETWORKS=' + network,
     '--entrypoint',
-    'nginx',
-    nginx,
-    '-g',
-    'daemon off;',
+    'node',
+    node,
+    '/app/docker-api-proxy.mjs',
   );
   docker(
     'run',
