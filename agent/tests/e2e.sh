@@ -6,7 +6,9 @@
 # first container (removed), a concurrent run that leaves the running one alone, and the migrator
 # URL of a database given to the migration container only, never on a command line, with a commit
 # that misses it refused. Companion cases cover activation and scaling, failure isolation,
-# rollback to a definition with only the owner, and validation of process settings.
+# rollback to a definition with only the owner, and validation of process settings. Batch
+# cases cover readiness before discovery, failure after another candidate passed, and recovery
+# of a candidate left running by an interrupted agent.
 #
 #   docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/agent:/agent:ro" \
 #     docker:28.5.2-cli sh -c "apk add --no-cache bash >/dev/null && bash /agent/tests/e2e.sh"
@@ -69,6 +71,9 @@ services:
     command: ['sh', '-c', 'httpd -f -p 8080 -h /srv']
     environment:
       SECRET_VALUE: \${SECRET_VALUE}
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: 'cadenway-edge-\${ENVIRONMENT}'
     configs:
       - source: web-config
         target: /srv/config.txt
@@ -112,13 +117,17 @@ git -C $R init -q -b main && git -C $R add -A && git -C $R -c user.name=t -c use
 cat >/etc/cadenway/agent.env <<EOF
 CADENWAY_REPO_URL=$R
 CADENWAY_ENVIRONMENTS=test
-CADENWAY_HEALTH_TIMEOUT=20
+CADENWAY_HEALTH_TIMEOUT=60
 EOF
 echo 'ACME_EMAIL=unused@example.com' >/etc/cadenway/edge.env
 echo 'ENVIRONMENT=test' >/etc/cadenway/env/test.env
 
 commit() { git -C $R add -A && git -C $R -c user.name=t -c user.email=t@t commit -qm "$1"; }
-containers() { docker ps --filter label=com.docker.compose.project=cadenway-test --filter "label=com.docker.compose.service=$1" --format '{{.ID}} {{.Image}}'; }
+containers() {
+  docker ps --filter label=com.docker.compose.project=cadenway-test \
+    --filter label=com.docker.compose.oneoff=False --filter "label=com.docker.compose.service=$1" \
+    --format '{{.ID}} {{.Image}}'
+}
 web() { containers web-service; }
 head_is() { [[ $(cat "/var/lib/cadenway-agent/test/$1" 2>/dev/null) == $(git -C "$R" rev-parse HEAD) ]]; }
 run_agent() {
@@ -457,6 +466,139 @@ echo 'UNRECOGNIZED_SETTING=1' >>"$R/environments/test/processes.env"
 commit 'add an unsupported process setting'
 run_agent
 check 'unsupported setting refused before any replacement' 'head_is failed && [[ $(task_id) == "$TASK" && -z $(relay_ids) && $OUT == *"invalid process settings"* ]]'
+
+web_id() { web | cut -d' ' -f1; }
+other_id() { containers other-service | cut -d' ' -f1; }
+
+write_slow_web() {
+  write_web true "$1"
+  sed -i "s/test: \\['CMD', 'true'\\].*}/test: ['CMD', 'test', '-f', '\\/tmp\\/rollout-ready'], interval: 2s, retries: 2, start_period: 2m }/" \
+    "$S/web-service.yaml"
+}
+
+wait_for_web_candidate() {
+  local previous=$1 attempt candidate
+  for ((attempt = 0; attempt < 120; attempt++)); do
+    candidate=$(web_id | grep -vxF "$previous" || true)
+    if [[ -n $candidate ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+finish_background_agent() {
+  RESULT=0
+  wait "$AGENT_PID" || RESULT=$?
+  OUT=$(</tmp/cadenway-rollout-log)
+}
+
+echo '=== 23. an unready public candidate keeps its edge endpoint and withholds internal aliases'
+task_settings legacy 0
+write_slow_web fourth
+commit 'stage a candidate that waits for a readiness marker'
+PREVIOUS=$(web_id)
+PREVIOUS_IP=$(docker inspect --format '{{(index .NetworkSettings.Networks "cadenway-test_internal").IPAddress}}' "$PREVIOUS")
+cadenway-agent >/tmp/cadenway-rollout-log 2>&1 &
+AGENT_PID=$!
+CANDIDATE=$(wait_for_web_candidate "$PREVIOUS")
+check 'unready candidate keeps its edge endpoint and has no internal serving alias' \
+  'docker inspect --format "{{json .NetworkSettings.Networks}}" "$CANDIDATE" \
+    | jq -e '"'"'has("cadenway-edge-test") and (.["cadenway-test_internal"].Aliases // [] | length == 0)'"'"' >/dev/null'
+DB=$(containers db | cut -d' ' -f1)
+check 'internal DNS still returns only the previous address' \
+  '[[ $(docker exec "$DB" nslookup -type=a web-service | awk "/^Address: / && !/127\\.0\\.0\\.11/ {print \$2}") == "$PREVIOUS_IP" ]]'
+check 'the previous configuration is still served' \
+  '[[ $(docker exec "$DB" wget -qO- http://web-service:8080/config.txt) == third ]]'
+docker exec "$CANDIDATE" touch /tmp/rollout-ready
+finish_background_agent
+check 'ready candidate now serves through both networks' \
+  'head_is applied && [[ $(web_id) == "$CANDIDATE" ]] && \
+    docker inspect --format "{{json .NetworkSettings.Networks}}" "$CANDIDATE" \
+      | jq -e '"'"'length == 2 and all(.[]; .Aliases | index("web-service") != null)'"'"' >/dev/null'
+check 'the candidate serves the new configuration with the declared permissions' \
+  '[[ $(docker exec "$DB" wget -qO- http://web-service:8080/config.txt) == fourth ]] && \
+    [[ $(docker exec "$CANDIDATE" stat -c "%a %u %g" /srv/config.txt) == "444 0 0" ]]'
+
+echo '=== 24. a later failure rolls back the full application batch'
+PREVIOUS_WEB=$(web_id)
+PREVIOUS_OTHER=$(other_id)
+sed -i 's/^OTHER_SERVICE_VERSION=.*/OTHER_SERVICE_VERSION=1.36.1/' "$R/environments/test/versions.env"
+write_web false broken
+commit 'prepare other-service then fail web-service'
+run_agent
+check 'the earlier candidate was prepared before web failed' \
+  '[[ $OUT == *"Container cadenway-test-other-service-"*"Created"* && $OUT == *"web-service: the new container could not be prepared"* ]]'
+check 'both previous containers and the applied commit are retained' \
+  'head_is failed && [[ $(web_id) == "$PREVIOUS_WEB" && $(other_id) == "$PREVIOUS_OTHER" ]] && \
+    [[ $(git -C /opt/cadenway/envs/test rev-parse HEAD) == $(cat /var/lib/cadenway-agent/test/applied) ]]'
+check 'the earlier candidate was removed, including from stopped containers' \
+  '[[ $(docker ps -aq --filter label=com.docker.compose.project=cadenway-test \
+      --filter label=com.docker.compose.service=other-service) == "$PREVIOUS_OTHER" ]]'
+
+echo '=== 25. an interrupted readiness wait is recovered on the next tick'
+sed -i 's/^OTHER_SERVICE_VERSION=.*/OTHER_SERVICE_VERSION=1.37.0/' "$R/environments/test/versions.env"
+write_slow_web fifth
+commit 'prepare an interrupted rollout'
+cadenway-agent >/tmp/cadenway-rollout-log 2>&1 &
+AGENT_PID=$!
+CANDIDATE=$(wait_for_web_candidate "$PREVIOUS_WEB")
+kill -KILL "$AGENT_PID"
+finish_background_agent
+check 'the uncommitted candidate was left running' \
+  '[[ $RESULT == 137 && $(docker inspect --format "{{.State.Running}}" "$CANDIDATE") == true ]]'
+# The readiness sleep inherits the lock descriptor and lasts at most two seconds.
+flock /run/lock/cadenway-agent.lock true
+write_web true sixth
+commit 'resume from a healthy release'
+run_agent
+check 'the interrupted candidate and its journal are gone' \
+  'head_is applied && ! docker inspect "$CANDIDATE" >/dev/null 2>&1 && \
+    [[ $(web | wc -l) == 1 && ! -d /var/lib/cadenway-agent/test/rollout ]]'
+
+echo '=== 26. a failed dedicated companion brings the previous inline owner back'
+PREVIOUS_TASK=$(task_id)
+write_task "$TASK_REPLICAS" true false
+task_settings dedicated 1
+commit 'fail the first dedicated task relay'
+run_agent
+check 'the previous inline owner is restarted with the same container identity' \
+  'head_is failed && [[ $(task_id) == "$PREVIOUS_TASK" && -z $(relay_ids) ]] && \
+    [[ $(docker exec "$PREVIOUS_TASK" printenv TASK_SERVICE_OUTBOX_MODE) == legacy ]]'
+
+echo '=== 27. a failure after the applied marker only postpones cleanup'
+PREVIOUS_WEB=$(docker inspect --format '{{.Id}}' "$(web_id)")
+write_web true seventh
+write_task absent true true
+task_settings legacy 0
+commit 'apply a release and interrupt its cleanup'
+cat >/usr/local/sbin/docker <<EOF
+#!/bin/sh
+if [ "\$1" = rm ] && [ "\${2:-}" = "$PREVIOUS_WEB" ]; then exit 75; fi
+exec $REAL_DOCKER "\$@"
+EOF
+chmod +x /usr/local/sbin/docker
+run_agent
+rm -f /usr/local/sbin/docker
+APPLIED_WEB=$(web_id)
+check 'the new release serves while the retired original stays stopped' \
+  '[[ $RESULT != 0 && -n $APPLIED_WEB ]] && head_is applied && \
+    [[ $(docker inspect --format "{{.State.Running}}" "$PREVIOUS_WEB") == false ]]'
+run_agent
+check 'the next run removes only the stopped original and clears the journal' \
+  '[[ $RESULT == 0 && $(web_id) == "$APPLIED_WEB" ]] && \
+    ! docker inspect "$PREVIOUS_WEB" >/dev/null 2>&1 && \
+    [[ ! -d /var/lib/cadenway-agent/test/rollout && ! -f /var/lib/cadenway-agent/test/retrying ]]'
+
+echo '=== 28. a public candidate without readiness keeps the previous release'
+write_web true eighth
+sed -i '/^    healthcheck:/d' "$S/web-service.yaml"
+commit 'omit the healthcheck on a public service'
+run_agent
+check 'the public candidate is refused before it starts' \
+  'head_is failed && [[ $(web_id) == "$APPLIED_WEB" && $OUT == *"an exposed candidate needs its edge network and a healthcheck"* ]]'
 
 echo '=== cleanup'
 docker compose -p cadenway-test down -v --remove-orphans >/dev/null 2>&1 || true
