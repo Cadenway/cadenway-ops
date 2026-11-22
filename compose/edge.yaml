@@ -12,11 +12,37 @@
 name: cadenway-edge
 
 services:
+  docker-api-proxy:
+    # Container inspection still reveals metadata and environment variables. Restrict the
+    # transport to Traefik while allowing only the Docker reads its provider needs.
+    image: nginx:1.30.6-alpine@sha256:583b7f2fce1cdb8da5ad5c39ebd3c33b98b87d493190e548bdee1fa8c619c311
+    restart: unless-stopped
+    entrypoint: ['nginx', '-g', 'daemon off;']
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/docker-api-proxy.conf:/etc/nginx/nginx.conf:ro
+    networks: [docker-api]
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:8080/healthz']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
   traefik:
     image: traefik:v3.7.18@sha256:9c437ac4f09ce6f4980a8544902d3475fdf70a1a7c578729581d2535dfa7d635
     restart: unless-stopped
     command:
       - --providers.docker=true
+      - --providers.docker.endpoint=tcp://docker-api-proxy:8080
       # A container is served only when its definition carries `traefik.enable=true`.
       - --providers.docker.exposedbydefault=false
       - --entrypoints.web.address=:80
@@ -32,13 +58,15 @@ services:
       - '80:80'
       - '443:443'
     volumes:
-      # Read-only: Traefik only lists containers and their labels.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik-certificates:/letsencrypt
     # Each exposed container names its edge network in `traefik.docker.network`.
     networks:
       - edge-staging
       - edge-prod
+      - docker-api
+    depends_on:
+      docker-api-proxy:
+        condition: service_healthy
     healthcheck:
       test: ['CMD', 'traefik', 'healthcheck', '--ping']
       interval: 10s
@@ -50,6 +78,8 @@ services:
           memory: 128M
 
 networks:
+  docker-api:
+    internal: true
   edge-staging:
     name: cadenway-edge-staging
   edge-prod:
