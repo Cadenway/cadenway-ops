@@ -8,10 +8,12 @@ const keyId = 'p8-storage-fixture';
 const organization = '018b6300-0000-7000-8000-000000000001';
 const actor = '018b6300-0000-7000-8000-000000000002';
 const otherOrganization = '018b6300-0000-7000-8000-000000000003';
-const avatarId = '018b6300-0000-7000-8000-000000000004';
+const publicationId = '018b6300-0000-7000-8000-000000000005';
+const intakeId = '018b6300-0000-7000-8000-000000000006';
 const taskPath = '/internal/v1/tasks/CAD-482/attachments';
-const avatarPath = `/internal/v1/avatars/${avatarId}?ownerUserId=${actor}`;
 const objectOrigin = 'http://127.0.0.1:8333';
+const storageOrigin = 'http://127.0.0.1:3015';
+const transferUrl = `${storageOrigin}/internal/v1/upload-transfers`;
 const original = Buffer.from('P8 Cadenway real Storage verification\nUTF-8 test: éclair.\n');
 const later = Buffer.from(
   'P8 later upload, left in object storage by the earlier database restore.\n',
@@ -59,29 +61,35 @@ async function objectRequest(url, options = {}) {
 
 async function upload(capability, payload, name, contentType) {
   assert.equal(capability.method, 'POST');
+  assert.equal(capability.url, transferUrl);
+  assert.deepEqual(Object.keys(capability.fields), ['ticket']);
   const form = new FormData();
   for (const [key, value] of Object.entries(capability.fields)) form.append(key, value);
   form.append('file', new Blob([payload], { type: contentType }), name);
-  const result = await objectRequest(capability.url, { method: 'POST', body: form });
-  assert.ok(result.ok, `S3 multipart upload HTTP ${result.status}`);
+  return fetch(transferUrl, {
+    method: 'POST',
+    body: form,
+    redirect: 'error',
+    signal: AbortSignal.timeout(25_000),
+  });
 }
 
 function createStorageClient(signer) {
   return async (
     method,
     route,
-    { body, organizationId = organization, authenticated = true } = {},
+    { body, organizationId = organization, authenticated = true, system = false } = {},
   ) => {
     const headers = {};
     if (authenticated) {
       const token = await signer.sign('storage-service', {
-        actor: { type: 'user', id: actor },
+        actor: system ? { type: 'system', id: null } : { type: 'user', id: actor },
         organizationId,
       });
       headers.Authorization = `Bearer ${token}`;
     }
     if (body !== undefined) headers['Content-Type'] = 'application/json';
-    return fetch(`http://127.0.0.1:3015${route}`, {
+    return fetch(`${storageOrigin}${route}`, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -111,7 +119,16 @@ async function completeAttachment(storage, fileName, payload) {
     'reserve attachment',
   );
   const capability = await reservation.json();
-  await upload(capability, payload, fileName, contentType);
+  await expect(
+    await upload(capability, payload, fileName, contentType),
+    204,
+    'transfer attachment',
+  );
+  await expect(
+    await upload(capability, payload, fileName, contentType),
+    409,
+    'reject second attachment transfer',
+  );
 
   const completion = await expect(
     await storage('POST', `${taskPath}/${capability.id}/completion`),
@@ -128,9 +145,45 @@ async function completeAttachment(storage, fileName, payload) {
   };
 }
 
-async function avatarBytes(storage) {
+async function completeIntakeAttachment(storage) {
+  const path = `/internal/v1/intake-publications/${publicationId}/attachments`;
+  const body = {
+    attachmentId: intakeId,
+    expiresAt: new Date(Date.now() + 45_000).toISOString(),
+    fileName: 'p8-intake.txt',
+    contentType: 'text/plain',
+    sizeBytes: original.length,
+  };
+  const reservation = await expect(
+    await storage('POST', path, { body, system: true }),
+    201,
+    'reserve intake attachment',
+  );
+  const capability = await reservation.json();
+  await expect(
+    await upload(capability, original, body.fileName, body.contentType),
+    204,
+    'transfer intake',
+  );
+  await expect(
+    await upload(capability, original, body.fileName, body.contentType),
+    409,
+    'reject second intake transfer',
+  );
+  await expect(
+    await storage('POST', `${path}/${intakeId}/completion`, { system: true }),
+    200,
+    'complete intake attachment',
+  );
+}
+
+function avatarPath(avatarId) {
+  return `/internal/v1/avatars/${avatarId}?ownerUserId=${actor}`;
+}
+
+async function avatarBytes(storage, avatarId) {
   const image = await expect(
-    await storage('GET', avatarPath, { organizationId: null }),
+    await storage('GET', avatarPath(avatarId), { organizationId: null }),
     200,
     'read avatar',
   );
@@ -139,7 +192,7 @@ async function avatarBytes(storage) {
   return bytes(image);
 }
 
-async function prepareAvatar(storage) {
+async function prepareAvatar(storage, avatarId) {
   const contentType = 'image/png';
   const image = await sharp({
     create: { width: 256, height: 256, channels: 3, background: '#55449b' },
@@ -147,7 +200,7 @@ async function prepareAvatar(storage) {
     .png()
     .toBuffer();
   const mediaPath = `/internal/v1/profile-media-uploads/${avatarId}`;
-  const expiresAt = new Date(Math.floor(Date.now() / 1_000) * 1_000 + 120_000).toISOString();
+  const expiresAt = new Date(Math.floor(Date.now() / 1_000) * 1_000 + 45_000).toISOString();
   const reservation = await expect(
     await storage('POST', `${mediaPath}/transfer`, {
       organizationId: null,
@@ -156,7 +209,15 @@ async function prepareAvatar(storage) {
     200,
     'reserve avatar upload',
   );
-  await upload(await reservation.json(), image, 'p8-avatar.png', contentType);
+  const capability = await reservation.json();
+  const transfers = await Promise.all([
+    upload(capability, image, 'p8-avatar.png', contentType),
+    upload(capability, image, 'p8-avatar.png', contentType),
+  ]);
+  assert.deepEqual(
+    transfers.map(({ status }) => status).sort((a, b) => a - b),
+    [204, 409],
+  );
   const preparation = await expect(
     await storage('POST', `${mediaPath}/preparation`, {
       organizationId: null,
@@ -166,16 +227,15 @@ async function prepareAvatar(storage) {
     'prepare avatar derivative through Storage',
   );
   const { sizeBytes } = await preparation.json();
-  const png = await avatarBytes(storage);
+  const png = await avatarBytes(storage, avatarId);
   assert.equal(png.length, sizeBytes);
   assert.equal((await sharp(png).metadata()).format, 'png');
   return { avatarId, avatarSha256: sha256(png) };
 }
 
 async function verifyDownloads(storage, state) {
-  assert.equal(state.avatarId, avatarId);
   const attached = await attachmentBytes(storage, state.attachmentId);
-  const png = await avatarBytes(storage);
+  const png = await avatarBytes(storage, state.avatarId);
   assert.equal(sha256(attached), state.attachmentSha256);
   assert.deepEqual(attached, original);
   assert.equal(sha256(png), state.avatarSha256);
@@ -196,7 +256,7 @@ async function verifyDownloads(storage, state) {
 }
 
 async function run() {
-  const [mode, stateJson] = process.argv.slice(2);
+  const [mode, argument] = process.argv.slice(2);
   if (['keypair', 'public-key', 'receipt-keyring'].includes(mode)) {
     console.log(JSON.stringify(fixtureKeys(mode)));
     return;
@@ -208,7 +268,8 @@ async function run() {
   const storage = createStorageClient(signer);
   if (mode === 'upload') {
     const attachment = await completeAttachment(storage, 'p8-recovery.txt', original);
-    const avatar = await prepareAvatar(storage);
+    await completeIntakeAttachment(storage);
+    const avatar = await prepareAvatar(storage, argument);
     console.log(JSON.stringify({ ...attachment, ...avatar }));
     return;
   }
@@ -218,7 +279,7 @@ async function run() {
     );
     return;
   }
-  const state = JSON.parse(stateJson);
+  const state = JSON.parse(argument);
   if (mode === 'delete-attachment') {
     await expect(
       await storage('DELETE', `${taskPath}/${state.attachmentId}`),
@@ -232,7 +293,11 @@ async function run() {
     );
     console.log('PASS attachment deletion returns HTTP 204 and its download returns HTTP 404');
   } else if (mode === 'missing-avatar') {
-    await expect(await storage('GET', avatarPath, { organizationId: null }), 503, 'missing avatar');
+    await expect(
+      await storage('GET', avatarPath(state.avatarId), { organizationId: null }),
+      503,
+      'missing avatar',
+    );
     console.log('PASS avatar is unavailable while its bytes are hidden by the S3 delete marker');
   } else if (mode === 'verify') {
     await verifyDownloads(storage, state);

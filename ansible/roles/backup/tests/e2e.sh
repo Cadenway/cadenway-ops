@@ -8,6 +8,8 @@
 # CADENWAY_E2E_PREPARED=1 reuses installed dependencies and cached service images.
 # Set CADENWAY_E2E_STORAGE_IMAGE to a local image ID in a prepared, network-isolated runner
 # to select the real Storage API scenario. See docs/deployment.md for the invocation.
+# Set CADENWAY_E2E_TASK_IMAGE and CADENWAY_E2E_ORGANIZATION_IMAGE to run the membership scenario
+# with both production migrators and maintenance commands.
 # Run only inside a disposable container: this fixture writes its own /etc/cadenway configuration.
 set -euo pipefail
 
@@ -31,19 +33,29 @@ if [[ $# != 0 ]]; then
   exit 2
 fi
 
-if [[ -v CADENWAY_E2E_STORAGE_IMAGE ]]; then
-  if [[ ! $CADENWAY_E2E_STORAGE_IMAGE =~ ^sha256:[0-9a-f]{64}$ ]]; then
-    echo 'CADENWAY_E2E_STORAGE_IMAGE must be a complete local Docker image ID (sha256:…).' >&2
-    exit 2
-  fi
-  if ! docker image inspect "$CADENWAY_E2E_STORAGE_IMAGE" >/dev/null 2>&1; then
-    echo 'CADENWAY_E2E_STORAGE_IMAGE is not available in the local Docker engine.' >&2
-    exit 2
-  fi
+verify_runtime_fixture() {
+  local variable image
+  for variable in "$@"; do
+    image=${!variable-}
+    if [[ ! $image =~ ^sha256:[0-9a-f]{64}$ ]] || ! docker image inspect "$image" >/dev/null 2>&1; then
+      echo "$variable must refer to a complete image ID (sha256:…) in the local Docker engine." >&2
+      return 2
+    fi
+  done
   if [[ ${CADENWAY_E2E_PREPARED:-0} != 1 || $(docker inspect --format '{{.HostConfig.NetworkMode}}' "$HOSTNAME") != none ]]; then
-    echo 'The real Storage scenario requires a prepared runner with --network none.' >&2
+    echo 'Scenarios with service images require a prepared runner with --network none.' >&2
+    return 2
+  fi
+}
+
+if [[ -v CADENWAY_E2E_TASK_IMAGE || -v CADENWAY_E2E_ORGANIZATION_IMAGE ]]; then
+  if [[ -v CADENWAY_E2E_STORAGE_IMAGE ]]; then
+    echo 'Select either the membership scenario or the Storage API scenario.' >&2
     exit 2
   fi
+  verify_runtime_fixture CADENWAY_E2E_TASK_IMAGE CADENWAY_E2E_ORGANIZATION_IMAGE
+elif [[ -v CADENWAY_E2E_STORAGE_IMAGE ]]; then
+  verify_runtime_fixture CADENWAY_E2E_STORAGE_IMAGE
 fi
 
 pull_policy=()
@@ -66,9 +78,14 @@ TEST_DIR=$(mktemp -d /tmp/cw-backup-e2e.XXXXXXXXXX)
 suffix=${TEST_DIR##*.}
 readonly TEST_DIR
 readonly TEST_ENV="test-${suffix,,}"
+export CADENWAY_STATE_DIR="$TEST_DIR/agent-state"
+readonly RESTORE_JOURNAL="$CADENWAY_STATE_DIR/restore/$TEST_ENV.json"
 readonly PROJECT="cadenway-$TEST_ENV"
 readonly SERVER="$PROJECT-postgres" TASK="$PROJECT-task" RELAY="$PROJECT-relay"
 readonly STORAGE="$PROJECT-storage" FILES_S3="$PROJECT-files-s3" BROKER="$PROJECT-nats"
+readonly ORGANIZATION="$PROJECT-organization" MEMBERSHIP_NETWORK="$PROJECT-memberships"
+readonly MEMBERSHIP_FIXTURE="cadenway-membership-restore-fixture:$TEST_ENV"
+MEMBERSHIP_ORPHAN=''
 readonly BUCKET_DIR="/data/backups/$TEST_ENV"
 readonly BACKUP_KEY="$TEST_DIR/backup.key"
 readonly PG='postgres:18.6-alpine@sha256:9ba53c7d41ea093baf5c1ba635ba5434c4f979880527d49bb7d9237d3193085b'
@@ -81,11 +98,14 @@ mkdir -p /run/lock /etc/cadenway "$BUCKET_DIR"
 # shellcheck disable=SC2329
 cleanup() {
   local status=$? name remaining
-  local -a containers=("$FILES_S3" "$STORAGE" "$SERVER" "$TASK" "$RELAY" "$BROKER") filters=()
+  local -a containers=("$FILES_S3" "$STORAGE" "$SERVER" "$TASK" "$RELAY" "$BROKER" "$ORGANIZATION") filters=()
+  if [[ -n $MEMBERSHIP_ORPHAN ]]; then containers+=("$MEMBERSHIP_ORPHAN"); fi
   trap - EXIT
   trap '' INT TERM
   touch "$TEST_DIR/release-restore" || true
   command docker rm -fv "${containers[@]}" >/dev/null 2>&1 || true
+  command docker network rm "$MEMBERSHIP_NETWORK" >/dev/null 2>&1 || true
+  command docker image rm "$MEMBERSHIP_FIXTURE" >/dev/null 2>&1 || true
   for name in "${containers[@]}"; do filters+=(--filter "name=^/$name$"); done
   if ! remaining=$(command docker ps -a "${filters[@]}" --format '{{.Names}}'); then
     echo 'Could not verify backup fixture container cleanup.' >&2
@@ -172,11 +192,34 @@ EOF
     "STORAGE_S3_BUCKET=$STORAGE_S3_BUCKET" STORAGE_S3_FORCE_PATH_STYLE=true \
     "STORAGE_RESTORE_S3_ACCESS_KEY_ID=$STORAGE_RESTORE_S3_ACCESS_KEY_ID" \
     "STORAGE_RESTORE_S3_SECRET_ACCESS_KEY=$STORAGE_RESTORE_S3_SECRET_ACCESS_KEY" \
+    "TASK_SERVICE_DATABASE_URL=postgres://task_app@$SERVER/task" \
     ALERT_WEBHOOK_URL= |
     sops encrypt --age "$(age-keygen -y /etc/cadenway/age.key)" --input-type dotenv --output-type dotenv \
       --filename-override secrets.sops.env \
       >"$config_dir/secrets.sops.env"
 }
+
+start_membership_postgres() {
+  docker network create --label "com.docker.compose.project=$PROJECT" \
+    --label 'com.docker.compose.network=internal' "$MEMBERSHIP_NETWORK" >/dev/null
+  start_postgres "$MEMBERSHIP_NETWORK"
+}
+
+# Keep the exact service image and configuration used by the maintenance commands, with only
+# the container lifecycle running so the fixture does not require a broker or HTTP stack.
+start_membership_workload() {
+  local name=$1 service=$2 database_url=$3 image=$4
+  docker run -d --pull never --network "$MEMBERSHIP_NETWORK" --name "$name" \
+    --label "com.docker.compose.project=$PROJECT" --label "com.docker.compose.service=$service" \
+    --env "DATABASE_URL=$database_url" --health-cmd 'true' --health-interval 1s \
+    --entrypoint sh "$image" -c 'trap "exit 0" TERM INT; while :; do sleep 1 & wait "$!"; done'
+}
+
+if [[ -v CADENWAY_E2E_TASK_IMAGE ]]; then
+  # shellcheck source=ansible/roles/backup/tests/real_task_membership_e2e.sh
+  source /backup/tests/real_task_membership_e2e.sh
+  exit 0
+fi
 
 if [[ -v CADENWAY_E2E_STORAGE_IMAGE ]]; then
   # shellcheck source=ansible/roles/backup/tests/storage_e2e.sh
@@ -387,6 +430,23 @@ docker() {
         return 0
       fi
       ;;
+    interrupt-cutover:start)
+      if targets "$TEST_TASK" "$@"; then
+        remember_candidate || return
+        kill -KILL "$BASHPID"
+      fi
+      ;;
+    interrupt-stop:stop)
+      if targets "$TEST_RELAY" "$@"; then
+        command docker "$@" || return
+        kill -KILL "$BASHPID"
+      fi
+      ;;
+    interrupt-memberships:exec)
+      if targets --set=accept=false "$@"; then
+        kill -KILL "$BASHPID"
+      fi
+      ;;
     storage-start:start)
       if [[ ! -e $TEST_DIR/storage-start-failure ]] && targets "$TEST_STORAGE" "$@"; then
         touch "$TEST_DIR/storage-start-failure"
@@ -420,7 +480,16 @@ flock() {
     command flock "$@"
   fi
 }
-export -f docker targets remember_candidate is_candidate_switch poll flock
+# Interrupt only at the final committed journal removal, leaving its durable contents intact.
+# shellcheck disable=SC2329
+rm() {
+  if [[ ${TEST_RESTORE_FAULT:-} == interrupt-committed && $# == 2 && $2 == */restore/"$TEST_ENV".json ]]; then
+    kill -KILL "$BASHPID"
+  fi
+  command rm "$@"
+}
+export TEST_ENV
+export -f docker targets remember_candidate is_candidate_switch poll flock rm
 
 # Passed by name to check for the candidate recorded before rollback.
 # shellcheck disable=SC2329
@@ -433,6 +502,11 @@ parked_failed_candidate() {
 }
 
 echo '=== 4. failures in stop, commit, start and health preserve or recover the previous workloads'
+pending_rollout="$CADENWAY_STATE_DIR/$TEST_ENV/rollout"
+mkdir -p "$pending_rollout"
+reject_restore 'an outstanding GitOps rollout prevents a new restore' "$STAMP"
+check 'unfinished rollout is diagnosed' grep -Fq 'GitOps has an outstanding rollout' "$TEST_DIR/restore.log"
+rmdir -- "$pending_rollout"
 for fault in stop commit start health; do
   TEST_RESTORE_FAULT=$fault reject_restore "$fault failure reported" "$STAMP"
   check "$fault failure injected" test -e "$TEST_DIR/$fault-failure"
@@ -441,6 +515,39 @@ for fault in stop commit start health; do
     check "$fault candidate OID remains recoverable with connections disabled" parked_failed_candidate "$fault"
   fi
 done
+
+echo '=== durable recovery. an interrupted cutover is rolled back under the GitOps lock'
+TEST_RESTORE_FAULT=interrupt-cutover reject_restore 'interruption before health confirmation' "$STAMP"
+check 'interrupted cutover leaves the durable journal' jq -e '.phase == "pending"' "$RESTORE_JOURNAL"
+check 'recovery refuses to use a missing lock descriptor' fails cadenway-restore --recover-under-lock "$TEST_ENV"
+check 'failed lock check leaves the journal in place' test -f "$RESTORE_JOURNAL"
+# Match the GitOps invocation with its inherited file descriptor.
+# shellcheck disable=SC2329
+recover_under_lock() (
+  exec 9>/run/lock/cadenway-agent.lock
+  command flock -x 9
+  cadenway-restore --recover-under-lock "$TEST_ENV"
+)
+check 'recovery succeeds without a backup key or archive' recover_under_lock
+check_active_database
+check 'interrupted candidate remains recoverable with connections disabled' \
+  parked_failed_candidate interrupt-cutover
+check 'completed recovery clears the journal' test ! -e "$RESTORE_JOURNAL"
+check 'recovery can be called again' recover_under_lock
+
+echo '=== durable recovery. interruption while stopping workloads resumes the original database'
+TEST_RESTORE_FAULT=interrupt-stop reject_restore 'interruption with only a companion stopped' "$STAMP"
+check 'stopping workloads leaves a pending journal' jq -e '.phase == "pending"' "$RESTORE_JOURNAL"
+check 'no cutover preceded the interruption' test "$(database_id)" = "$LIVE_DATABASE"
+cp -- "$RESTORE_JOURNAL" "$TEST_DIR/original-journal"
+jq '.original_oid = "1"' "$TEST_DIR/original-journal" >"$RESTORE_JOURNAL"
+check 'recovery refuses an inconsistent database identity' fails recover_under_lock
+check 'recovery preserves the live database on identity mismatch' test "$(database_id)" = "$LIVE_DATABASE"
+check 'recovery preserves the journal for inspection' test -f "$RESTORE_JOURNAL"
+cp -- "$TEST_DIR/original-journal" "$RESTORE_JOURNAL"
+check 'recovery accepts the original workload state' recover_under_lock
+check_active_database
+check 'completed recovery clears the pre-cutover journal' test ! -e "$RESTORE_JOURNAL"
 
 echo '=== 5. an existing client blocks renaming without disconnect or database change'
 external_pid() {
@@ -490,6 +597,17 @@ check 'active database is the staged copy' test "$(database_id)" != "$LIVE_DATAB
 check 'previous database remains disabled' test "$(sql -c "SELECT datallowconn FROM pg_database WHERE oid = $LIVE_DATABASE")" = f
 check 'no staging database remains' test -z "$(candidate_databases)"
 check 'no temporary archives remain' test -z "$(temporary_archives)"
+
+echo '=== durable recovery. interruption after health confirmation keeps the new live database'
+confirmed_previous=$(database_id)
+TEST_RESTORE_FAULT=interrupt-committed reject_restore 'interruption before committed journal cleanup' "$STAMP"
+confirmed_new=$(database_id)
+check 'healthy cutover changed the database before the interruption' test "$confirmed_new" != "$confirmed_previous"
+check 'interruption leaves a committed journal' jq -e '.phase == "committed"' "$RESTORE_JOURNAL"
+check 'manual recovery accepts a previously confirmed restore' cadenway-restore --recover "$TEST_ENV"
+check 'committed recovery preserves the new database' test "$(database_id)" = "$confirmed_new"
+check 'committed recovery leaves the companions healthy' healthy "$RELAY"
+check 'committed recovery clears the journal' test ! -e "$RESTORE_JOURNAL"
 
 echo '=== 8. cold restore creates a database when no live database exists'
 docker stop "$TEST_RELAY" "$TEST_TASK" >/dev/null
@@ -646,5 +764,8 @@ check 'conflicting object diagnosed during preflight' grep -Fq 'Storage object p
 check 'conflict leaves the current object and all version IDs unchanged' test "$(storage_fixture history)" = "$history"
 check 'conflicting version never switches or stops Storage' test "$(storage_db_id):$(started_at "$STORAGE")" = "$live_storage:$storage_started"
 check_storage_ready
+
+# shellcheck source=ansible/roles/backup/tests/task_membership_e2e.sh
+source /backup/tests/task_membership_e2e.sh
 
 exit "$FAILED"

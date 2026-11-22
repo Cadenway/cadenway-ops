@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Restores service databases of one environment from a backup made by cadenway-backup.
 #
-#   cadenway-restore <env> <timestamp> <identity file> [database...]
+#   cadenway-restore [--rebuild-task-memberships] <env> <timestamp> <identity file> [database...]
+#   cadenway-restore --recover <env>
 #
 # Each archive is authenticated before any database is created or modified. A backup is restored
 # to a separate database while the old database still serves traffic.
@@ -14,26 +15,12 @@
 # inventories use a private working directory. No plaintext dump or object bytes are written there.
 set -euo pipefail
 
-[[ $# -ge 3 ]] || {
-  echo "usage: cadenway-restore <env> <timestamp> <identity file> [database...]" >&2
-  exit 2
-}
-readonly ENVIRONMENT=$1 STAMP=$2 IDENTITY=$3
-shift 3
-
-[[ $ENVIRONMENT =~ ^[a-z0-9][a-z0-9-]*$ && $STAMP =~ ^[0-9]{8}T[0-9]{6}Z$ && -f $IDENTITY && -r $IDENTITY ]] || {
-  echo "invalid environment, timestamp or backup identity path" >&2
-  exit 2
-}
-
-set -a
-# shellcheck source=/dev/null
-source /etc/cadenway/backup.env
-set +a
-export SOPS_AGE_KEY_FILE=/etc/cadenway/age.key
 readonly ALLOWED_SIGNERS=/etc/cadenway/backup-allowed-signers
 readonly SIGNING_NAMESPACE=cadenway-backup-manifest-v1
 readonly MAX_MANIFEST_SIZE=8192
+readonly LOCK_FILE=${CADENWAY_LOCK_FILE:-/run/lock/cadenway-agent.lock}
+readonly AGENT_STATE=${CADENWAY_STATE_DIR:-/var/lib/cadenway-agent}
+readonly RESTORE_STATE=$AGENT_STATE/restore
 
 secret() { sed -n "s/^$2=//p" <<<"$1" | tail -n 1; }
 
@@ -78,8 +65,19 @@ download_verified_archive() {
 }
 
 containers_of() {
-  docker ps -q --filter "label=com.docker.compose.project=cadenway-$ENVIRONMENT" \
+  docker ps --no-trunc -q --filter "label=com.docker.compose.project=cadenway-$ENVIRONMENT" \
     --filter "label=com.docker.compose.service=$1"
+}
+
+companion_of() {
+  case $1 in
+    task) printf '%s' task-service-relay ;;
+    notification) printf '%s' notification-service-worker ;;
+  esac
+}
+
+valid_database_name() {
+  [[ $1 =~ ^[a-z][a-z0-9_]{0,24}$ && $1 != postgres && $1 != template0 && $1 != template1 ]]
 }
 
 psql_as() {
@@ -92,6 +90,13 @@ psql_as() {
 database_oid() {
   psql_as "$1" postgres postgres --no-align --tuples-only --set=name="$2" <<'SQL'
 SELECT oid FROM pg_database WHERE datname = :'name';
+SQL
+}
+
+database_location() {
+  psql_as "$1" postgres postgres --no-align --tuples-only --set=name="$2" <<'SQL'
+SELECT oid::text || ':' || CASE WHEN datallowconn THEN 'open' ELSE 'closed' END
+FROM pg_database WHERE datname = :'name';
 SQL
 }
 
@@ -198,93 +203,285 @@ start_group() {
 # RENAME refuses a database with other sessions. A direct client still connected after
 # the known users have stopped aborts the entire transaction without renaming either database.
 switch_databases() {
-  psql_as "$1" postgres postgres --set=live="$2" --set=ready="$3" --set=parked="$4" --set=has_live="$5" <<'SQL'
+  psql_as "$1" postgres postgres --set=live="$2" --set=ready="$3" --set=parked="$4" \
+    --set=live_oid="$5" --set=ready_oid="$6" <<'SQL'
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '30s';
 SET LOCAL synchronous_commit = on;
+SELECT :'live_oid' <> '' AS has_live \gset
 \if :has_live
   ALTER DATABASE :"live" RENAME TO :"parked";
   ALTER DATABASE :"parked" WITH ALLOW_CONNECTIONS false;
 \endif
 ALTER DATABASE :"ready" RENAME TO :"live";
 ALTER DATABASE :"live" WITH ALLOW_CONNECTIONS true;
+-- Confirm the identities after acquiring the rename locks and before COMMIT.
+SELECT 1 / CASE WHEN (
+  (SELECT oid::text FROM pg_database WHERE datname = :'live') = :'ready_oid'
+  AND coalesce((SELECT oid::text FROM pg_database WHERE datname = :'parked'), '') = :'live_oid'
+) THEN 1 ELSE 0 END AS verified \gset
 COMMIT;
 SQL
 }
 
 withdraw_candidate() {
-  psql_as "$1" postgres postgres --set=live="$2" --set=candidate="$3" <<'SQL'
+  psql_as "$1" postgres postgres --set=live="$2" --set=candidate="$3" --set=candidate_oid="$4" <<'SQL'
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '30s';
 SET LOCAL synchronous_commit = on;
 ALTER DATABASE :"live" RENAME TO :"candidate";
 ALTER DATABASE :"candidate" WITH ALLOW_CONNECTIONS false;
+SELECT 1 / CASE WHEN (
+  (SELECT oid::text FROM pg_database WHERE datname = :'candidate') = :'candidate_oid'
+) THEN 1 ELSE 0 END AS verified \gset
 COMMIT;
 SQL
+}
+
+verify_group() {
+  local service=$1 id metadata running IFS=' '
+  shift
+  for id in "$@"; do
+    metadata=$(docker inspect --format '{{.Id}} {{index .Config.Labels "com.docker.compose.project"}} {{index .Config.Labels "com.docker.compose.service"}} {{with index .Config.Labels "com.docker.compose.oneoff"}}{{.}}{{end}}' "$id") || return 1
+    case $metadata in
+      "$id cadenway-$ENVIRONMENT $service " | "$id cadenway-$ENVIRONMENT $service false" | "$id cadenway-$ENVIRONMENT $service False") ;;
+      *) return 1 ;;
+    esac
+  done
+  [[ -n $service ]] || return 0
+  running=$(containers_of "$service") || return 1
+  while IFS= read -r id; do
+    [[ -z $id || " $* " == *" $id "* ]] || return 1
+  done <<<"$running"
+}
+
+membership_importer_name() {
+  printf 'cadenway-%s-restore-memberships-%s' "$ENVIRONMENT" "$1"
+}
+
+# A pending journal can outlive the importer client. Only remove the dedicated container
+# bearing this restore's labels before closing or discarding its candidate database.
+remove_membership_importer() {
+  local name id metadata
+  name=$(membership_importer_name "$1")
+  id=$(docker ps -a --no-trunc -q --filter "name=^/$name$") || return 1
+  [[ -n $id ]] || return 0
+  [[ $id =~ ^[0-9a-f]{64}$ ]] || return 1
+  metadata=$(docker inspect --format '{{.Id}} {{.Name}} {{index .Config.Labels "com.cadenway.restore.environment"}} {{index .Config.Labels "com.cadenway.restore.candidate"}}' "$id") ||
+    return 1
+  [[ $metadata == "$id /$name $ENVIRONMENT $1" ]] || return 1
+  docker rm -f "$id" >/dev/null
+}
+
+set_candidate_connections() {
+  psql_as "$1" postgres postgres --set=candidate="$2" --set=accept="$3" <<'SQL'
+\if :accept
+ALTER DATABASE :"candidate" WITH ALLOW_CONNECTIONS true;
+\else
+ALTER DATABASE :"candidate" WITH ALLOW_CONNECTIONS false;
+\endif
+SQL
+}
+
+# Only the application URL is passed to the exact Task image already on the host. The stream
+# contains membership data, so leave it on the pipe and suppress the importer's standard output.
+rebuild_task_memberships() {
+  local postgres=$1 candidate=$2 suffix=$3 source=$4 task=$5 image network name database_url
+  image=$(docker inspect --format '{{.Image}}' "$task") || return 1
+  [[ $image =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+  network=$(docker network ls --no-trunc -q --filter "label=com.docker.compose.project=cadenway-$ENVIRONMENT" \
+    --filter 'label=com.docker.compose.network=internal') || return 1
+  [[ $network =~ ^[0-9a-f]{64}$ ]] || return 1
+  if [[ $(docker inspect --format '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}' "$postgres") != "$network" ]]; then
+    return 1
+  fi
+  database_url=$(secret "$plain" TASK_SERVICE_DATABASE_URL) || return 1
+  [[ -n $database_url ]] || return 1
+
+  verify_group organization-service "$source" || return 1
+  name=$(membership_importer_name "$suffix")
+  set_candidate_connections "$postgres" "$candidate" true || return 1
+  if ! docker exec "$source" node --import @cadenway/nest-common/register \
+    dist/modules/organizations/infrastructure/adapters/membership-export/export-memberships.js |
+    DATABASE_URL="$database_url" docker run --pull never --rm --init --interactive --name "$name" --network "$network" \
+      --label "com.cadenway.restore.environment=$ENVIRONMENT" --label "com.cadenway.restore.candidate=$suffix" \
+      --cap-drop ALL --security-opt no-new-privileges --log-driver none --env DATABASE_URL \
+      --entrypoint node "$image" --import @cadenway/nest-common/register \
+      dist/infrastructure/maintenance/rebuild-memberships.js --database "$candidate" >/dev/null; then
+    return 1
+  fi
+  set_candidate_connections "$postgres" "$candidate" false
+}
+
+write_restore_journal() (
+  local journal=$1 temporary
+  umask 077
+  install -d -m 0700 "$RESTORE_STATE" || return 1
+  temporary=$(mktemp "$RESTORE_STATE/.journal.XXXXXXXX") || return 1
+  if ! printf '%s\n' "$journal" >"$temporary" || ! sync -f "$temporary" ||
+    ! mv -T -- "$temporary" "$RESTORE_JOURNAL"; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  sync -f "$RESTORE_STATE"
+)
+
+remove_restore_journal() {
+  rm -- "$RESTORE_JOURNAL" && sync -f "$RESTORE_STATE"
+}
+
+id_list_json() {
+  printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length > 0))'
+}
+
+validate_restore_journal() {
+  [[ -f $RESTORE_JOURNAL && ! -L $RESTORE_JOURNAL ]] &&
+    (($(wc -c <"$RESTORE_JOURNAL") <= 65536)) &&
+    jq -es --arg environment "$ENVIRONMENT" '
+      def id: type == "string" and test("^[0-9a-f]{64}$");
+      def oid: type == "string" and test("^[1-9][0-9]{0,9}$");
+      def ids: type == "array" and all(.[]; id);
+      length == 1 and (.[0] |
+        .version == 1 and .environment == $environment
+        and (.postgres | id)
+        and (.database | type == "string" and test("^[a-z][a-z0-9_]{0,24}$"))
+        and (.suffix | type == "string" and test("^[A-Za-z0-9]{8}$"))
+        and (.phase == "pending" or .phase == "committed")
+        and (.original_oid == "" or (.original_oid | oid))
+        and (.candidate_oid | oid) and .original_oid != .candidate_oid
+        and (.owners | ids) and (.companions | ids)
+        and (if has("rebuild_memberships") then
+          (.rebuild_memberships | type == "boolean") and
+          (if .rebuild_memberships then .database == "task" else true end)
+        else true end)
+        and (([.postgres] + .owners + .companions) as $all | ($all | length) == ($all | unique | length))
+      )
+    ' "$RESTORE_JOURNAL" >/dev/null
+}
+
+# Read catalog identities in one PostgreSQL statement so every decision describes one snapshot.
+read_restore_locations() {
+  psql_as "$1" postgres postgres --no-align --tuples-only \
+    --set=live="$2" --set=candidate="$3" --set=previous="$4" --set=failed="$5" <<'SQL'
+SELECT coalesce(string_agg(
+  format('%s=%s:%s', targets.label, pg_database.oid, CASE WHEN datallowconn THEN 'open' ELSE 'closed' END),
+  ' ' ORDER BY targets.position
+) FILTER (WHERE pg_database.oid IS NOT NULL), '')
+FROM (VALUES (1, 'live', :'live'), (2, 'candidate', :'candidate'),
+  (3, 'previous', :'previous'), (4, 'failed', :'failed')) AS targets(position, label, name)
+LEFT JOIN pg_database ON datname = targets.name;
+SQL
+}
+
+recover_restore() {
+  [[ -e $RESTORE_JOURNAL || -L $RESTORE_JOURNAL ]] || return 0
+  local postgres database suffix candidate previous failed original_oid candidate_oid phase
+  local original_layout restored_layout before_layout failed_layout locations group rebuild_memberships
+  local -a owners=() companions=()
+  validate_restore_journal || return 1
+  postgres=$(jq -er .postgres "$RESTORE_JOURNAL") || return 1
+  database=$(jq -er .database "$RESTORE_JOURNAL") || return 1
+  suffix=$(jq -er .suffix "$RESTORE_JOURNAL") || return 1
+  phase=$(jq -er .phase "$RESTORE_JOURNAL") || return 1
+  rebuild_memberships=$(jq -r '.rebuild_memberships // false' "$RESTORE_JOURNAL") || return 1
+  original_oid=$(jq -er .original_oid "$RESTORE_JOURNAL") || return 1
+  candidate_oid=$(jq -er .candidate_oid "$RESTORE_JOURNAL") || return 1
+  valid_database_name "$database" || return 1
+  group=$(jq -er '.owners | join("\n")' "$RESTORE_JOURNAL") || return 1
+  if [[ -n $group ]]; then mapfile -t owners <<<"$group"; fi
+  group=$(jq -er '.companions | join("\n")' "$RESTORE_JOURNAL") || return 1
+  if [[ -n $group ]]; then mapfile -t companions <<<"$group"; fi
+  verify_group postgres "$postgres" &&
+    verify_group "$database-service" "${owners[@]}" &&
+    verify_group "$(companion_of "$database")" "${companions[@]}" || return 1
+
+  candidate=cw_restore_candidate_${database}_${suffix}
+  previous=cw_restore_previous_${database}_${suffix}
+  failed=cw_restore_failed_${database}_${suffix}
+  if [[ $phase == pending && $rebuild_memberships == true ]]; then
+    remove_membership_importer "$suffix" || return 1
+  fi
+  locations=$(read_restore_locations "$postgres" "$database" "$candidate" "$previous" "$failed") || return 1
+  original_layout=''
+  restored_layout="live=$candidate_oid:open"
+  if [[ -n $original_oid ]]; then
+    original_layout="live=$original_oid:open"
+    restored_layout+=" previous=$original_oid:closed"
+  fi
+  before_layout="${original_layout:+$original_layout }candidate=$candidate_oid:closed"
+  failed_layout="${original_layout:+$original_layout }failed=$candidate_oid:closed"
+
+  if [[ $phase == committed ]]; then
+    [[ $locations == "$restored_layout" ]] || return 1
+    start_group "${owners[@]}" && start_group "${companions[@]}" || return 1
+  else
+    if [[ $rebuild_memberships == true && $locations == "${original_layout:+$original_layout }candidate=$candidate_oid:open" ]]; then
+      set_candidate_connections "$postgres" "$candidate" false || return 1
+      locations=$(read_restore_locations "$postgres" "$database" "$candidate" "$previous" "$failed") || return 1
+    fi
+    if [[ $locations == "$restored_layout" ]]; then
+      stop_group 60 "${companions[@]}" && stop_group 30 "${owners[@]}" || return 1
+      # COMMIT can succeed even if its client exits with an error. Verify by OID afterwards.
+      if [[ -n $original_oid ]]; then
+        switch_databases "$postgres" "$database" "$previous" "$failed" "$candidate_oid" "$original_oid" || true
+      else
+        withdraw_candidate "$postgres" "$database" "$failed" "$candidate_oid" || true
+      fi
+      locations=$(read_restore_locations "$postgres" "$database" "$candidate" "$previous" "$failed") || return 1
+      [[ $locations == "$failed_layout" ]] || return 1
+    fi
+    case $locations in
+      "$before_layout")
+        if ! psql_as "$postgres" postgres postgres --set=name="$candidate" <<'SQL'
+SET lock_timeout = '5s';
+SET statement_timeout = '30s';
+DROP DATABASE :"name";
+SQL
+        then
+          return 1
+        fi
+        ;;
+      "$failed_layout")
+        echo "$ENVIRONMENT: recovered prior name for $database and retained $failed for inspection" >&2
+        ;;
+      "$original_layout") ;;
+      *) return 1 ;;
+    esac
+    # A cold rollback restores an absent live database, with its associated workloads stopped.
+    if [[ -n $original_oid ]]; then
+      start_group "${owners[@]}" && start_group "${companions[@]}" || return 1
+    else
+      stop_group 60 "${companions[@]}" && stop_group 30 "${owners[@]}" || return 1
+    fi
+  fi
+  remove_restore_journal
 }
 
 # This subshell keeps the recovery state for one database separate from the next restore.
 restore_database() (
   local pg_container=$1 db_name=$2
-  local candidate_db=cw_restore_candidate_${db_name}_${WORK##*.}
-  local previous_db=cw_restore_previous_${db_name}_${WORK##*.}
-  local failed_db=cw_restore_failed_${db_name}_${WORK##*.}
-  local original_oid new_oid='' live_oid current_journal candidate_journal ids companion has_original=false
-  local object_manifest object_plan=''
-  local candidate_created=false service_stop_attempted=false cutover_attempted=false
+  local suffix=${WORK##*.}
+  local candidate_db=cw_restore_candidate_${db_name}_${suffix}
+  local previous_db=cw_restore_previous_${db_name}_${suffix}
+  local original_oid new_oid='' live_location current_journal candidate_journal ids companion
+  local object_manifest object_plan='' journal membership_source=''
+  local candidate_created=false journal_started=false
   local -a owners=() companions=()
   umask 077
 
   original_oid=$(database_oid "$pg_container" "$db_name") || return 1
-
-  resume_services() {
-    start_group "${owners[@]}" && start_group "${companions[@]}"
-  }
-
-  stop_services() {
-    stop_group 60 "${companions[@]}" && stop_group 30 "${owners[@]}"
-  }
-
-  # Called by the EXIT trap via finish_restore.
-  # shellcheck disable=SC2329
-  recover_services() {
-    local active_oid retained_oid failed_oid
-    if [[ $cutover_attempted == true ]]; then
-      # A failed client call can still mean COMMIT succeeded. Resolve using the OIDs
-      # before deciding which database to serve or discard.
-      active_oid=$(database_oid "$pg_container" "$db_name") || return 1
-      if [[ $active_oid == "$new_oid" ]]; then
-        if [[ $has_original == true ]]; then
-          retained_oid=$(database_oid "$pg_container" "$previous_db") || return 1
-          [[ $retained_oid == "$original_oid" ]] || return 1
-        fi
-        stop_services || return 1
-        if [[ $has_original == true ]]; then
-          switch_databases "$pg_container" "$db_name" "$previous_db" "$failed_db" true || true
-        else
-          withdraw_candidate "$pg_container" "$db_name" "$failed_db" || true
-        fi
-        active_oid=$(database_oid "$pg_container" "$db_name") || return 1
-        failed_oid=$(database_oid "$pg_container" "$failed_db") || return 1
-        [[ $active_oid == "$original_oid" && $failed_oid == "$new_oid" ]] || return 1
-        # The candidate could have served writes while its companion was starting.
-        echo "$ENVIRONMENT: previous database name recovered; inspect $failed_db for writes accepted during the cutover" >&2
-      fi
-      [[ $active_oid == "$original_oid" ]] || return 1
-    fi
-    resume_services
-  }
 
   # Called by the EXIT trap.
   # shellcheck disable=SC2329
   finish_restore() {
     local status=$1 discarded_oid
     ((status != 0)) || return 0
-    if [[ $service_stop_attempted == true ]] && ! recover_services; then
-      echo "$ENVIRONMENT: recovery of $db_name could not be verified; preserving databases for inspection" >&2
-      echo "$ENVIRONMENT: inspect $db_name, $previous_db, $candidate_db and $failed_db before resuming service" >&2
+    if [[ $journal_started == true && ( -e $RESTORE_JOURNAL || -L $RESTORE_JOURNAL ) ]]; then
+      if ! recover_restore; then
+        echo "$ENVIRONMENT: recovery of $db_name could not be verified; preserving the restore journal and databases" >&2
+      fi
       return "$status"
     fi
     if [[ $candidate_created == true ]]; then
@@ -331,7 +528,6 @@ SQL
 
   candidate_journal=$(migration_journal "$pg_container" "$candidate_db" "${db_name}_migrator") || return 1
   if [[ -n $original_oid ]]; then
-    has_original=true
     current_journal=$(migration_journal "$pg_container" "$db_name" "${db_name}_migrator") || return 1
     if [[ $current_journal != "$candidate_journal" ]]; then
       echo "$ENVIRONMENT: $db_name migration journal differs; align the application and backup before restoring" >&2
@@ -365,18 +561,41 @@ SQL
   ids=$(containers_of "$db_name-service") || return 1
   if [[ -n $ids ]]; then mapfile -t owners <<<"$ids"; fi
   # The GitOps agent's allowlisted companions share their owner's application database.
-  case $db_name in
-    task) companion=task-service-relay ;;
-    notification) companion=notification-service-worker ;;
-    *) companion='' ;;
-  esac
+  companion=$(companion_of "$db_name")
   if [[ -n $companion ]]; then
     ids=$(containers_of "$companion") || return 1
     if [[ -n $ids ]]; then mapfile -t companions <<<"$ids"; fi
   fi
 
-  service_stop_attempted=true
-  if ! stop_services; then
+  if ! verify_group postgres "$pg_container" ||
+    ! verify_group "$db_name-service" "${owners[@]}" ||
+    ! verify_group "$companion" "${companions[@]}"; then
+    echo "$ENVIRONMENT: could not verify the workloads using $db_name; keeping the original database" >&2
+    return 1
+  fi
+
+  if [[ $REBUILD_TASK_MEMBERSHIPS == true ]]; then
+    membership_source=$(containers_of organization-service) || return 1
+    if [[ ! $membership_source =~ ^[0-9a-f]{64}$ || ${#owners[@]} != 1 ]] ||
+      ! verify_group organization-service "$membership_source"; then
+      echo "$ENVIRONMENT: membership rebuild requires exactly one running Organization and Task container" >&2
+      return 1
+    fi
+  fi
+
+  journal=$(jq -en \
+    --arg environment "$ENVIRONMENT" --arg postgres "$pg_container" --arg database "$db_name" --arg suffix "$suffix" \
+    --arg original_oid "$original_oid" --arg candidate_oid "$new_oid" \
+    --argjson owners "$(id_list_json "${owners[@]}")" --argjson companions "$(id_list_json "${companions[@]}")" \
+    --argjson rebuild_memberships "$REBUILD_TASK_MEMBERSHIPS" \
+    '{version: 1, phase: "pending", $environment, $postgres, $database, $suffix, $original_oid, $candidate_oid, $owners, $companions, $rebuild_memberships}') ||
+    return 1
+  journal_started=true
+  if ! write_restore_journal "$journal" || ! validate_restore_journal; then
+    echo "$ENVIRONMENT: could not persist a durable restore journal for $db_name" >&2
+    return 1
+  fi
+  if ! stop_group 60 "${companions[@]}" || ! stop_group 30 "${owners[@]}"; then
     echo "$ENVIRONMENT: could not stop every user of $db_name; keeping the original database" >&2
     return 1
   fi
@@ -384,42 +603,45 @@ SQL
     echo "$ENVIRONMENT: Storage object recovery failed before cutover; keeping the original database" >&2
     return 1
   fi
-  cutover_attempted=true
-  if ! switch_databases "$pg_container" "$db_name" "$candidate_db" "$previous_db" "$has_original" ||
-    ! live_oid=$(database_oid "$pg_container" "$db_name") ||
-    [[ $live_oid != "$new_oid" ]]; then
+  if [[ -n $membership_source ]] &&
+    ! rebuild_task_memberships "$pg_container" "$candidate_db" "$suffix" "$membership_source" "${owners[0]}"; then
+    echo "$ENVIRONMENT: could not rebuild Task memberships before cutover; keeping the original database" >&2
+    return 1
+  fi
+  if ! switch_databases "$pg_container" "$db_name" "$candidate_db" "$previous_db" "$original_oid" "$new_oid" ||
+    ! live_location=$(database_location "$pg_container" "$db_name") ||
+    [[ $live_location != "$new_oid:open" ]]; then
     echo "$ENVIRONMENT: could not verify the cutover of $db_name" >&2
     return 1
   fi
-  if ! resume_services; then
+  if ! start_group "${owners[@]}" || ! start_group "${companions[@]}"; then
     echo "$ENVIRONMENT: restored $db_name did not start with healthy services; recovering the prior state" >&2
     return 1
   fi
-  if [[ $has_original == true ]]; then
+  if ! journal=$(jq -e '.phase = "committed"' "$RESTORE_JOURNAL") ||
+    ! write_restore_journal "$journal" || ! remove_restore_journal; then
+    echo "$ENVIRONMENT: could not complete the restore journal for $db_name" >&2
+    return 1
+  fi
+  if [[ -n $original_oid ]]; then
     echo "$ENVIRONMENT: $db_name restored from $STAMP; prior database retained as $previous_db" >&2
   else
     echo "$ENVIRONMENT: $db_name restored from $STAMP" >&2
   fi
 )
 
-main() {
+restore_environment() {
   local plain postgres database name bucket status=0 result
   local -a databases=("$@")
   (("${#databases[@]}")) || read -r -a databases <<<"$CADENWAY_BACKUP_DATABASES"
   for database in "${databases[@]}"; do
-    [[ $database =~ ^[a-z][a-z0-9_]{0,24}$ && $database != postgres && $database != template0 && $database != template1 ]] || {
+    valid_database_name "$database" || {
       echo "invalid service database name" >&2
       return 2
     }
   done
 
-  # Wait for a running deployment and prevent new rollouts until recovery is complete.
-  exec 9>/run/lock/cadenway-agent.lock
-  flock -w 900 9 || {
-    echo "the GitOps agent kept its lock for 15 minutes; try again" >&2
-    return 1
-  }
-  WORK=$(mktemp -d /var/lib/cadenway-restore.XXXXXXXX)
+  WORK=$(mktemp -d /var/lib/cadenway-restore.XXXXXXXX) || return 1
   readonly WORK
   trap 'rm -rf -- "$WORK"' EXIT
   trap 'exit 130' INT
@@ -451,12 +673,81 @@ main() {
     restore_database "$postgres" "$database" || result=$?
     rm -f -- "$WORK/$database.dump.age"
     if ((result >= 128)); then return "$result"; fi
+    if [[ -e $RESTORE_JOURNAL || -L $RESTORE_JOURNAL ]]; then return 1; fi
     if ((result != 0)); then
       echo "$ENVIRONMENT: restoring $database failed" >&2
       status=1
     fi
   done
   return "$status"
+}
+
+main() {
+  local mode=restore rebuild=false
+  case ${1-} in
+    --recover | --recover-under-lock)
+      mode=$1
+      shift
+      [[ $# == 1 ]] || return 2
+      ;;
+    --rebuild-task-memberships)
+      rebuild=true
+      shift
+      if (($# != 4)) || [[ $4 != task ]]; then
+        echo "usage: cadenway-restore --rebuild-task-memberships <env> <timestamp> <identity file> task" >&2
+        return 2
+      fi
+      ;;
+    *)
+      if (($# < 3)); then
+        echo "usage: cadenway-restore <env> <timestamp> <identity file> [database...] | --recover <env>" >&2
+        return 2
+      fi
+      ;;
+  esac
+  readonly REBUILD_TASK_MEMBERSHIPS=$rebuild
+  readonly ENVIRONMENT=$1
+  shift
+  if [[ ! $ENVIRONMENT =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "invalid environment" >&2
+    return 2
+  fi
+  readonly RESTORE_JOURNAL=$RESTORE_STATE/$ENVIRONMENT.json
+  if [[ $mode == restore ]]; then
+    readonly STAMP=$1 IDENTITY=$2
+    shift 2
+    if [[ ! $STAMP =~ ^[0-9]{8}T[0-9]{6}Z$ || ! -f $IDENTITY || ! -r $IDENTITY ]]; then
+      echo "invalid timestamp or backup identity path" >&2
+      return 2
+    fi
+  fi
+
+  if [[ $mode == --recover-under-lock ]]; then
+    # Accept only the inherited descriptor for the configured GitOps lock.
+    [[ /proc/$$/fd/9 -ef $LOCK_FILE ]] && flock -xn 9 || return 1
+  else
+    exec 9>"$LOCK_FILE"
+    flock -w 900 9 || {
+      echo "the GitOps agent kept its lock for 15 minutes; try again" >&2
+      return 1
+    }
+  fi
+  if ! recover_restore; then
+    echo "$ENVIRONMENT: outstanding restore could not be recovered; preserving $RESTORE_JOURNAL and databases" >&2
+    return 1
+  fi
+  [[ $mode == restore ]] || return 0
+  if [[ -e $AGENT_STATE/$ENVIRONMENT/rollout || -L $AGENT_STATE/$ENVIRONMENT/rollout ]]; then
+    echo "$ENVIRONMENT: GitOps has an outstanding rollout; recover it before restoring" >&2
+    return 1
+  fi
+
+  set -a
+  # shellcheck source=/dev/null
+  source /etc/cadenway/backup.env
+  set +a
+  export SOPS_AGE_KEY_FILE=/etc/cadenway/age.key
+  restore_environment "$@"
 }
 
 main "$@"

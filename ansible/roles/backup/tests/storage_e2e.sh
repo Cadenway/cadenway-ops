@@ -82,6 +82,7 @@ docker run --pull never -d --name "$STORAGE" --network "$STORAGE_FIXTURE_NETWORK
   -e S3_ERASE_TRANSIENT_VERSIONS=true \
   -e "S3_ACCESS_KEY_ID=$STORAGE_RESTORE_S3_ACCESS_KEY_ID" \
   -e "S3_SECRET_ACCESS_KEY=$STORAGE_RESTORE_S3_SECRET_ACCESS_KEY" \
+  -e STORAGE_UPLOAD_TRANSFER_URL=http://127.0.0.1:3015/internal/v1/upload-transfers \
   -e "STORAGE_UPLOAD_RECEIPT_KEYS=$receipt_keyring" "$CADENWAY_E2E_STORAGE_IMAGE" >/dev/null
 unset receipt_keyring
 if ! poll healthy "$STORAGE"; then
@@ -93,16 +94,27 @@ for container in "$HOSTNAME" "$SERVER" "$BROKER" "$FILES_S3" "$STORAGE"; do
 done
 echo 'PASS real Storage is healthy with no published ports'
 
-echo '=== Storage API 2. upload both files and back up the Storage database'
-state=$(storage_api upload)
+echo '=== Storage API 2. verify one-shot uploads and back up the Storage database'
+avatar_id=$(sql -c 'SELECT uuidv7()')
+state=$(storage_api upload "$avatar_id")
+avatar_staging_key=$(sql -d storage --set="id=$(jq -er .avatarId <<<"$state")" <<'SQL'
+SELECT 'profile-media/staging/' || object_id FROM profile_media_objects
+WHERE upload_id = :'id' AND role = 'staging';
+SQL
+)
+[[ $avatar_staging_key == profile-media/staging/* ]]
+storage_fixture history "$avatar_staging_key" | jq -e \
+  'map(select(.[1] == "Versions")) | length == 1' >/dev/null
 attachment_key=$(elected_attachment "$(jq -er .attachmentId <<<"$state")")
 avatar_key=$(sql -d storage --set="id=$(jq -er .avatarId <<<"$state")" <<'SQL'
 SELECT 'profile-media/candidate/' || candidate_id FROM profile_media_uploads WHERE upload_id = :'id' AND status = 'prepared';
 SQL
 )
 [[ $attachment_key == org/*/* && $avatar_key == profile-media/candidate/* ]]
+avatar_pin_history=$(storage_fixture history "attachment-restore-pins/$avatar_key")
+jq -e 'any(.[]; .[1] == "Versions")' <<<"$avatar_pin_history" >/dev/null
 storage_api verify "$state"
-echo 'PASS HTTP upload, multipart transfer, attachment completion and avatar preparation'
+echo 'PASS attachment, intake and avatar each accepted one transfer; concurrent avatar submissions created one S3 version'
 prepare_backups storage
 cadenway-backup
 stamp=$(storage_stamp)
@@ -143,3 +155,18 @@ storage_api verify "$state"
 [[ -z $(candidate_databases) && -z $(temporary_archives) ]]
 echo 'PASS replay preserved both HTTP downloads, the post-dump object and all their versions'
 echo 'PASS replay removed temporary restore data'
+
+echo '=== Storage API 6. transient avatar versions are collected'
+for _ in {1..60}; do
+  staging_history=$(storage_fixture history "$avatar_staging_key")
+  if [[ $staging_history == '[]' ]]; then break; fi
+  sleep 3
+done
+if [[ $staging_history != '[]' ]]; then
+  echo 'Storage did not collect the expired avatar staging history.' >&2
+  exit 1
+fi
+[[ $(storage_fixture history "$attachment_key" "$avatar_key") == "$recovered_history" ]]
+[[ $(storage_fixture history "attachment-restore-pins/$avatar_key") == "$avatar_pin_history" ]]
+storage_api verify "$state"
+echo 'PASS the sweeper removed all versions of staging while restored downloads stayed readable'
