@@ -67,6 +67,13 @@ Garage, the local object store: its S3 API answers on `http://s3.cadenway.localh
 placeholder key and bucket of `compose/.env.example`. Terraform applies through GitHub Actions.
 The Terraform and Ansible credentials are managed outside this repository.
 
+To exercise one-shot uploads locally, set `STORAGE_UPLOAD_TRANSFER_URL` to the example URL in
+`compose/.env.example` and use a Storage build with the one-shot migration applied. The local
+Traefik exposes only the multipart transfer path on the `upload` host. Downloads continue to use
+the Garage endpoint. Run one Storage replica in this mode. A restart invalidates outstanding
+transfer tickets. If the transfer result is uncertain, check completion first and request a
+fresh reservation when the existing transfer cannot be completed.
+
 ## Minimum checks by change
 
 Use the [checks by change in AGENTS.md](../AGENTS.md#commands-and-quality-gates) to select and report the smallest applicable verification.
