@@ -21,16 +21,20 @@
    changed (image, environment, definition, mounted config contents) or whose container is not
    healthy, runs its migrations in a one-off container (`node dist/migrate.js` when the image has
    it), to which it gives the migrator URL of its database ([database](database.md#variables)),
-   starts the new container beside the old one, waits up to 60 s for `healthy` and removes the old
-   one.
+   prepares new containers beside the previous ones and waits for readiness. Candidates receive their
+   internal service DNS aliases at promotion. The agent suspends obsolete containers and records the
+   applied commit before retiring them. Until then, the journal lets the agent remove candidates and
+   restore suspended containers, whose readiness it checks before clearing the journal. Database
+   migrations and infrastructure changes remain in place during application rollback. See
+   [Application releases](../agent/README.md#application-releases).
 5. The outcome of a commit, posted to `ALERT_WEBHOOK_URL`:
    - **applied**: with the duration;
    - **failed** when the desired state itself is wrong (unhealthy container, failed migration,
-     missing variable, secrets this host cannot decrypt): the old containers keep serving, the commit
-     is not retried, the next commit is;
+     missing variable, secrets this host cannot decrypt): recovery restores the previous application
+     release, and a new commit is required for another attempt;
    - **retrying** when the cause is transient (image not pullable yet, registry login, infrastructure
-     slow to start, edge network missing): tried again every minute, said once. Other services of the
-     environment still deploy.
+     slow to start, edge network missing): reported once. The agent recovers the application batch
+     and retries on the next tick.
 
 Nothing connects to a host to deploy: the host pulls with a read-only deploy key.
 
@@ -188,8 +192,8 @@ replays events, search-service rebuilds its index, Let's Encrypt issues certific
 
 - A change to `compose/infra.yaml` or `compose/edge.yaml` reaches every host at once, with a restart
   of the changed container (PostgreSQL included): merge such changes at a quiet time.
-- During a rollout the internal Docker DNS already resolves the service name to the new container
-  while it starts; Traefik only routes to healthy containers.
+- Public candidates keep their edge endpoint while starting. Traefik can route to each healthy
+  candidate before the application batch is committed.
 - The agent checks a failed commit once. To retry it unchanged, delete
   `/var/lib/cadenway-agent/<env>/failed` on the host.
 - A secret value cannot contain a single quote (`'`): env files carry values literally between

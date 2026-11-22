@@ -1,3 +1,30 @@
+# Application releases
+
+The agent creates candidates with the normal Compose configuration and withholds
+their internal service DNS aliases until readiness. They can still reach their
+internal dependencies. Public candidates keep their edge endpoint throughout
+startup. Traefik can publish each public candidate once it reports healthy while
+the previous containers are still available for batch rollback. A public candidate
+requires an explicit healthcheck and its environment's edge network configured
+as the Traefik network.
+
+Application candidates use dynamic bridge endpoints and consume inline configs
+or files mounted by Compose. Definitions with published ports, special endpoint
+settings, post-start hooks or unresolved environment-backed files fail before
+they can replace a running release.
+
+An environment releases application services as a batch. The agent keeps the last
+containers until the replacements have passed readiness, then promotes the candidates,
+stops the obsolete containers and records the applied commit. The journal under the
+agent state directory contains only the commit, fingerprints, container IDs and
+network names and aliases. Before the applied marker is replaced, the next run
+removes uncommitted candidates and restarts suspended containers. After that point,
+the next run finishes retiring obsolete containers.
+
+Database migrations and infrastructure changes apply separately from the application
+batch. Keep migrations compatible with the previously running binaries. Network
+promotion can refresh application connections while the previous containers are available.
+
 # Companion processes
 
 The GitOps agent recognizes `task-service-relay` for `task-service` and
@@ -25,11 +52,13 @@ a new service image.
 Install this version of the agent on the staging host before enabling companions. Ansible copies
 the executable to the host. Updating the GitOps repository alone updates the desired state.
 
-An enabled companion is reconciled after its owner applies successfully. Replica changes keep
+An enabled companion is reconciled after its owner is ready. Replica changes keep
 healthy matching containers. For an image or configuration change, the agent waits for healthy
 replacement candidates before removing previous replicas. Account for up to two additional
 containers during a replacement. A missing definition or zero replicas drains the companion before
-applying the owners. Companion containers get up to 60 seconds to stop after `SIGTERM`.
+starting an inline owner. When turning on dedicated processing, an old inline owner stops after its
+replacement is ready and before the new companion starts. These stopped containers are retained
+until the batch completes. Companion containers get up to 60 seconds to stop after `SIGTERM`.
 
 Use separate staging changes for cutover and rollback. Deploy the extended Task schema and stop
 the inline relay before enabling the companion. For a Task rollback, first set the companion to

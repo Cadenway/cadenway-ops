@@ -11,9 +11,9 @@
 #   2. validate (no missing variable), pull, bring the infrastructure services up (idempotent);
 #   3. for every deployable whose version is set and whose fingerprint changed or whose container is
 #      not healthy: run its migrations in a one-off container, to which the agent gives the migrator
-#      URL of its database, start the new container beside the old one, wait for `healthy`, then
-#      remove the old one. A failure keeps the old container;
-#      reconcile allowlisted companion replicas after their owners, with migrations on owners only;
+#      URL of its database, start the new container without serving aliases, wait for `healthy`;
+#      prepare companion replicas, then promote the healthy batch and retire obsolete containers.
+#      An interrupted batch is recovered from its local journal before applying another commit;
 #   4. record the commit as applied; or as failed when the desired state itself is wrong (never
 #      retried); or retry on the next tick when the failure is transient (registry, network), and
 #      notify once per commit.
@@ -169,12 +169,13 @@ database_deployables() {
     grep -xF -f <(basename -s .yaml "$ROOT/envs/$env/environments/$env/services"/*.yaml) || true
 }
 
-# Container ids of one service of the environment, oldest first. Only companions reconcile stopped
-# containers as well, so abandoned rollout candidates cannot accumulate across commits.
+# Container ids of one service of the environment, oldest first. Include stopped containers when
+# requested, including candidates created before the current run was interrupted.
 service_containers() {
   local -a states=()
   [[ ${3:-} != all ]] || states=(--all)
-  docker ps "${states[@]}" --filter "label=com.docker.compose.project=cadenway-$1" \
+  docker ps "${states[@]}" --no-trunc --filter "label=com.docker.compose.project=cadenway-$1" \
+    --filter 'label=com.docker.compose.oneoff=False' \
     --filter "label=com.docker.compose.service=$2" --format '{{.CreatedAt}}|{{.ID}}' |
     sort | cut -d'|' -f2
 }
@@ -233,36 +234,150 @@ migrate() {
     sh -c 'if [ -f dist/migrate.js ]; then exec node dist/migrate.js; fi'
 }
 
-# Starts the new container beside the old ones, then removes the old ones once it is healthy.
-# Compose keeps the old containers (`--no-recreate`) and adds one with the desired configuration;
-# Traefik only routes to healthy containers, the Docker DNS of the internal network to both.
-roll_out() {
-  local env=$1 service=$2 old new id
-  mapfile -t old < <(service_containers "$env" "$service")
-  env_compose "$env" up -d --no-deps --no-recreate \
-    --scale "$service=$((${#old[@]} + 1))" "$service" || return 1
-  mapfile -t new < <(comm -13 <(printf '%s\n' "${old[@]}" | sort) \
-    <(service_containers "$env" "$service" | sort))
-  if ((${#new[@]} == 0)) || ! wait_healthy no "${new[@]}"; then
-    log "$env/$service: the new container is not healthy; the old one keeps serving"
-    for id in "${new[@]}"; do docker rm -f "$id" >/dev/null || true; done
-    return 1
+new_since() {
+  local env=$1 service=$2 baseline=$3 inventory
+  inventory=$(service_containers "$env" "$service" all) || return 1
+  comm -13 <(sort "$baseline") <(printf '%s' "$inventory" | sort)
+}
+
+# Withhold internal serving aliases while keeping dependency connectivity. A public candidate
+# keeps its edge endpoint and relies on Traefik's health filter. Detaching that endpoint could
+# send Traefik to an unreachable fallback address once the candidate is healthy.
+isolate_candidate() {
+  local env=$1 id=$2 file=$3 networks network bindings exposure enabled allow_nonrunning routing_network healthcheck
+  local preserved_edge=''
+  local edge=cadenway-edge-$env
+  bindings=$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$id") || return 1
+  jq -e '(. // {} | length) == 0' <<<"$bindings" >/dev/null || return 1
+  networks=$(docker inspect --format '{{json .NetworkSettings.Networks}}' "$id") || return 1
+  exposure=$(docker inspect --format \
+    '{{index .Config.Labels "traefik.enable"}}|{{index .Config.Labels "traefik.docker.allownonrunning"}}|{{index .Config.Labels "traefik.docker.network"}}' \
+    "$id") || return 1
+  IFS='|' read -r enabled allow_nonrunning routing_network <<<"$exposure"
+  if [[ ${enabled,,} =~ ^(true|t|1)$ ]]; then
+    healthcheck=$(docker inspect --format '{{json .Config.Healthcheck}}' "$id") || return 1
+    if [[ $routing_network != "$edge" || ${allow_nonrunning,,} =~ ^(true|t|1)$ ]] ||
+      ! jq -e --arg edge "$edge" 'has($edge)' <<<"$networks" >/dev/null ||
+      ! jq -e '(.Test[0] == "CMD" or .Test[0] == "CMD-SHELL") and (.Test | length) > 1' \
+        <<<"$healthcheck" >/dev/null; then
+      log "$env: an exposed candidate needs its edge network and a healthcheck"
+      return 1
+    fi
+    preserved_edge=$edge
   fi
-  for id in "${old[@]}"; do
-    docker stop --time 30 "$id" >/dev/null && docker rm "$id" >/dev/null || return 1
+  # Reconnecting a dynamic bridge endpoint without extra options preserves its configuration.
+  jq -cer --arg preserved "$preserved_edge" '
+    to_entries
+    | map(select(.key != $preserved))
+    | if (length == 0 and $preserved == "") or any(.[];
+        ((.value.IPAMConfig // {}) | length) != 0 or
+        ((.value.Links // []) | length) != 0 or
+        ((.value.DriverOpts // {}) | length) != 0 or (.value.MacAddress // "") != "" or
+        (.value.GwPriority // 0) != 0)
+      then error("unsupported rollout network endpoint") else . end
+    | map({name: .key, aliases: (.value.Aliases // [])})' <<<"$networks" >"$file" || return 1
+  while IFS= read -r network; do
+    docker network disconnect "$network" "$id" || return 1
+    if [[ $network != "$edge" ]]; then
+      docker network connect "$network" "$id" || return 1
+    fi
+  done < <(jq -r '.[].name' "$file")
+}
+
+promote_candidate() {
+  local env=$1 id=$2 file=$3 endpoint network alias
+  local -a aliases=()
+  [[ -f $file.active ]] && return 0
+  while IFS= read -r endpoint; do
+    network=$(jq -r '.name' <<<"$endpoint") || return 1
+    aliases=()
+    while IFS= read -r alias; do
+      aliases+=(--alias "$alias")
+    done < <(jq -r '.aliases[]' <<<"$endpoint")
+    if [[ $network != "cadenway-edge-$env" ]]; then
+      docker network disconnect "$network" "$id" || return 1
+    fi
+    docker network connect "${aliases[@]}" "$network" "$id" || return 1
+  done < <(jq -c --arg edge "cadenway-edge-$env" 'sort_by(.name == $edge)[]' "$file")
+  touch "$file.active"
+}
+
+# Compose copies inline configs at start, rather than at create. Copy them into only the
+# candidates so a stopped previous container cannot be started or modified by Compose.
+# File-backed configs and secrets were already attached by the create operation.
+stage_inline_configs() (
+  local env=$1 service=$2 configs config scratch target path uid gid mode id
+  shift 2
+  configs=$(env_compose "$env" config --format json | jq -ce --arg name "$service" '
+    . as $model | .services[$name] as $service |
+    if (($service.post_start // []) | length) != 0 or
+      any($service.secrets[]?; $model.secrets[.source].environment != null) or
+      any($service.configs[]?; $model.configs[.source].environment != null)
+    then error("cannot stage Compose hooks or environment-backed files")
+    else [
+      $service.configs[]? as $mount | $model.configs[$mount.source].content as $content |
+      select($content != null and $content != "") |
+      {
+        target: ($mount.target // ("/" + $mount.source)),
+        content: $content,
+        uid: (($mount.uid // "0") | tonumber),
+        gid: (($mount.gid // "0") | tonumber),
+        mode: ($mount.mode // 292)
+      }
+    ] end') || return 1
+  [[ $configs != '[]' ]] || return 0
+  scratch=$(mktemp -d "$SECRETS_DIR/$env/rollout-config.XXXXXX") || return 1
+  trap 'rm -rf "$scratch"' EXIT
+  while IFS= read -r config; do
+    target=$(jq -r '.target' <<<"$config") || return 1
+    path=${target#/}
+    [[ -n $path && /$path/ != */../* && $path != /* ]] || return 1
+    uid=$(jq -r '.uid' <<<"$config") || return 1
+    gid=$(jq -r '.gid' <<<"$config") || return 1
+    mode=$(printf '%o' "$(jq -r '.mode' <<<"$config")") || return 1
+    mkdir -p "$scratch/$(dirname "$path")" || return 1
+    jq -j '.content' <<<"$config" >"$scratch/$path" || return 1
+    chown "$uid:$gid" "$scratch/$path" && chmod "$mode" "$scratch/$path" || return 1
+    for id in "$@"; do
+      tar -C "$scratch" -cf - -- "$path" | docker cp -a - "$id:/" || return 1
+    done
+  done < <(jq -c '.[]' <<<"$configs")
+)
+
+# Capture the baseline before Compose can create anything. Recovery finds even a stopped
+# candidate created before the process was interrupted and before its ID could be written.
+prepare_candidates() {
+  local env=$1 service=$2 count=$3 required=$4 inventory id pending code=0
+  local rollout=$STATE_DIR/$env/rollout
+  local -a before=() candidates=()
+  inventory=$(service_containers "$env" "$service" all) || return 1
+  mapfile -t before < <(printf '%s' "$inventory")
+  printf '%s' "$inventory" >"$rollout/baseline/.$service" &&
+    mv "$rollout/baseline/.$service" "$rollout/baseline/$service" || return 1
+  env_compose "$env" up --no-start --no-deps --no-recreate \
+    --scale "$service=$((${#before[@]} + count))" "$service" || code=$?
+  pending=$(new_since "$env" "$service" "$rollout/baseline/$service") || return 1
+  mapfile -t candidates < <(printf '%s' "$pending")
+  ((code == 0 && ${#candidates[@]} == count)) || return 1
+  for id in "${candidates[@]}"; do
+    isolate_candidate "$env" "$id" "$rollout/networks/$id" || return 1
   done
+  stage_inline_configs "$env" "$service" "${candidates[@]}" || return 1
+  docker start "${candidates[@]}" >/dev/null && wait_healthy "$required" "${candidates[@]}"
 }
 
 # Brings one deployable to its desired state. A no-op when its fingerprint is the one applied and
 # every container runs that configuration and is healthy. Returns 1 when the desired state fails
 # (migrations, health), TRANSIENT when its image cannot be pulled.
 apply_service() {
-  local env=$1 service=$2 record desired hash container
+  local env=$1 service=$2 record desired hash container inventory
+  local rollout=$STATE_DIR/$env/rollout
   local -a running
   record=$STATE_DIR/$env/services/$service
   desired=$(fingerprint "$env" "$service") || return 1
   hash=${desired%% *}
-  mapfile -t running < <(service_containers "$env" "$service")
+  inventory=$(service_containers "$env" "$service") || return 1
+  mapfile -t running < <(printf '%s' "$inventory")
   if ((${#running[@]})) && [[ $(read_state "$record") == "$desired" ]]; then
     local unchanged=true
     for container in "${running[@]}"; do
@@ -281,18 +396,13 @@ apply_service() {
     log "$env/$service: the migrations failed"
     return 1
   }
-  if ((${#running[@]} == 0)); then
-    if ! env_compose "$env" up -d --no-deps --wait --wait-timeout "$HEALTH_TIMEOUT" "$service"; then
-      # An unhealthy first container would later look applied: it goes.
-      env_compose "$env" rm --stop --force "$service" >/dev/null || true
-      log "$env/$service: the first container is not healthy"
-      return 1
-    fi
-  else
-    roll_out "$env" "$service" || return 1
-  fi
-  mkdir -p "${record%/*}"
-  printf '%s\n' "$desired" >"$record"
+  inventory=$(service_containers "$env" "$service" all) || return 1
+  printf '%s' "$inventory" >"$rollout/obsolete/$service" || return 1
+  prepare_candidates "$env" "$service" 1 no || {
+    log "$env/$service: the new container could not be prepared"
+    return 1
+  }
+  printf '%s\n' "$desired" >"$rollout/records/$service"
 }
 
 # A companion is an internal process, using its owner's image and application database. A missing
@@ -323,24 +433,21 @@ companion_replicas() {
       else $companion.deploy.replicas end'
 }
 
-# Stops only containers identified by this environment and companion's Compose labels. A longer
-# grace than for HTTP services lets Nest close the worker and settle an in-flight attempt.
-stop_companion() {
-  local id
-  for id in "$@"; do
-    docker stop --time 60 "$id" >/dev/null && docker rm "$id" >/dev/null || return 1
-  done
-}
-
 # Reconciles a companion after its owner applied. Keep healthy matching replicas on scale changes.
 # Start replacement candidates together and wait for all of them before touching older instances.
 apply_companion() {
-  local env=$1 service=$2 replicas=$3 inventory record desired hash id count code=0
-  local -a before=() kept=() obsolete=() new=()
+  local env=$1 service=$2 replicas=$3 inventory record desired hash id count
+  local rollout=$STATE_DIR/$env/rollout
+  local -a before=() kept=() obsolete=()
   inventory=$(service_containers "$env" "$service" all) || return 1
   mapfile -t before < <(printf '%s' "$inventory")
   if ((replicas == 0)); then
-    stop_companion "${before[@]}"
+    printf '%s' "$inventory" >"$rollout/obsolete/$service" || return 1
+    # The candidate owner may start inline work. Drain existing dedicated workers first,
+    # but retain their containers in case the rest of the application batch fails.
+    for id in "${before[@]}"; do
+      suspend_container "$rollout" "$id" 60 || return 1
+    done
     return
   fi
 
@@ -358,23 +465,141 @@ apply_companion() {
   done
 
   count=$((replicas - ${#kept[@]}))
+  printf '%s\n' "${obsolete[@]}" >"$rollout/obsolete/$service" || return 1
   if ((count > 0)); then
     env_compose "$env" pull --quiet "$service" || return "$TRANSIENT"
-    # Create without starting, so Compose cannot restart a stopped container from an older release.
-    env_compose "$env" up --no-start --no-deps --no-recreate \
-      --scale "$service=$((${#before[@]} + count))" "$service" || code=$?
-    inventory=$(service_containers "$env" "$service" all) || return 1
-    mapfile -t new < <(comm -13 <(printf '%s\n' "${before[@]}" | sort) <(printf '%s\n' "$inventory" | sort))
-    if ((code != 0 || ${#new[@]} != count)) || ! docker start "${new[@]}" >/dev/null ||
-      ! wait_healthy yes "${new[@]}"; then
-      log "$env/$service: companion candidates failed; retaining the earlier instances"
-      for id in "${new[@]}"; do docker rm -f "$id" >/dev/null || true; done
+    prepare_companion_owner "$env" "$service" || return 1
+    prepare_candidates "$env" "$service" "$count" yes || return 1
+  fi
+  printf '%s\n' "$desired" >"$rollout/records/$service"
+}
+
+# Journal only IDs of containers that this batch stops. A failed batch must not restart a
+# container that was already stopped before it began.
+suspend_container() {
+  local rollout=$1 id=$2 grace=$3 running
+  running=$(docker inspect --format '{{.State.Running}}' "$id") || return 1
+  [[ $running == true ]] || return 0
+  printf '%s\n' "$id" >>"$rollout/suspended" || return 1
+  docker stop --time "$grace" "$id" >/dev/null
+}
+
+promote_service() {
+  local env=$1 service=$2 candidates id
+  local rollout=$STATE_DIR/$env/rollout
+  local -a promoted=()
+  candidates=$(new_since "$env" "$service" "$rollout/baseline/$service") || return 1
+  mapfile -t promoted < <(printf '%s' "$candidates")
+  ((${#promoted[@]} > 0)) || return 1
+  for id in "${promoted[@]}"; do
+    promote_candidate "$env" "$id" "$rollout/networks/$id" || return 1
+  done
+  wait_healthy no "${promoted[@]}"
+}
+
+# When moving from inline to dedicated processing, stop the old inline owners before the
+# companion starts. Promote their healthy replacement first so the API remains available.
+# Inspect only the known process-mode flag, without returning any environment values.
+prepare_companion_owner() {
+  local env=$1 service=$2 owner=${COMPANION_OWNERS[$2]} mode=${COMPANION_OWNER_MODES[$2]}
+  local rollout=$STATE_DIR/$env/rollout
+  local id ids dedicated
+  [[ -f $rollout/obsolete/$owner ]] || return 0
+  ids=$(<"$rollout/obsolete/$owner") || return 1
+  for id in $ids; do
+    dedicated=$(docker inspect --format \
+      '{{range .Config.Env}}{{if eq . "'"$mode"'"}}yes{{end}}{{end}}' "$id") || return 1
+    if [[ $dedicated != yes ]]; then
+      promote_service "$env" "$owner" || return 1
+      suspend_container "$rollout" "$id" 30 || return 1
+    fi
+  done
+}
+
+begin_release() {
+  local rollout=$STATE_DIR/$1/rollout
+  mkdir -p "$rollout"/{baseline,networks,obsolete,records} &&
+    printf '%s\n' "$2" >"$rollout/commit"
+}
+
+rollback_release() {
+  local env=$1 applied=$2 rollout=$STATE_DIR/$1/rollout baseline candidates id
+  local -a previous=()
+  for baseline in "$rollout"/baseline/*; do
+    [[ -f $baseline ]] || continue
+    candidates=$(new_since "$env" "${baseline##*/}" "$baseline") || return 1
+    for id in $candidates; do
+      docker rm -f "$id" >/dev/null || return 1
+    done
+  done
+  if [[ -n $applied ]]; then
+    # Restore checked-in bind-mount sources before a previous container restarts.
+    checkout "$ROOT/envs/$env" "$applied" || return 1
+  fi
+  if [[ -f $rollout/suspended ]]; then
+    mapfile -t previous <"$rollout/suspended"
+    for id in "${previous[@]}"; do
+      docker start "$id" >/dev/null || return 1
+    done
+    if ! wait_healthy no "${previous[@]}"; then
+      log "$env: a restored container is not ready; retaining the rollback journal"
       return 1
     fi
   fi
-  stop_companion "${obsolete[@]}" || return 1
-  mkdir -p "${record%/*}"
-  printf '%s\n' "$desired" >"$record"
+}
+
+finish_release() {
+  local env=$1 state=$STATE_DIR/$1 rollout=$STATE_DIR/$1/rollout file id inventory
+  mkdir -p "$state/services" || return 1
+  for file in "$rollout"/records/*; do
+    [[ -f $file ]] || continue
+    cp "$file" "$state/services/${file##*/}" || return 1
+  done
+  for file in "$rollout"/obsolete/*; do
+    [[ -s $file ]] || continue
+    inventory=$(service_containers "$env" "${file##*/}" all) || return 1
+    for id in $inventory; do
+      if grep -Fxq "$id" "$file"; then
+        docker rm "$id" >/dev/null || return 1
+      fi
+    done
+  done
+  rm -f "$state/failed" "$state/retrying"
+}
+
+# The applied marker is the application's commit point. Before it, recover by removing
+# candidates and restoring suspended originals. After it, finish retirement idempotently.
+recover_release() {
+  local env=$1 state=$STATE_DIR/$1 rollout=$STATE_DIR/$1/rollout pending applied
+  rm -rf "$state/rollout-completed" || return 1
+  [[ -d $rollout ]] || return 0
+  pending=$(read_state "$rollout/commit")
+  applied=$(read_state "$state/applied")
+  if [[ -n $pending && $pending == "$applied" ]]; then
+    finish_release "$env" || return 1
+  else
+    rollback_release "$env" "$applied" || return 1
+  fi
+  # A crash during deletion must not leave a partial journal to interpret on the next tick.
+  mv "$rollout" "$state/rollout-completed" && rm -rf "$state/rollout-completed"
+}
+
+commit_release() {
+  local env=$1 commit=$2 state=$STATE_DIR/$1 rollout=$STATE_DIR/$1/rollout file id grace
+  for file in "$rollout"/baseline/*; do
+    [[ -f $file ]] || continue
+    promote_service "$env" "${file##*/}" || return 1
+  done
+  for file in "$rollout"/obsolete/*; do
+    [[ -s $file ]] || continue
+    grace=30
+    [[ ! -v COMPANION_OWNERS[${file##*/}] ]] || grace=60
+    for id in $(<"$file"); do
+      suspend_container "$rollout" "$id" "$grace" || return 1
+    done
+  done
+  printf '%s\n' "$commit" >"$state/applied.next" &&
+    mv -f "$state/applied.next" "$state/applied"
 }
 
 # Decrypts the environment's secrets into tmpfs, readable by root only. Values are written
@@ -437,6 +662,10 @@ apply_environment() {
   local -a deployables=() infrastructure=() changed=()
   local -A companion_targets=() owners_applied=()
   mkdir -p "$state"
+  if ! recover_release "$env"; then
+    log "$env: cannot recover the previous release; trying again on the next tick"
+    return "$TRANSIENT"
+  fi
   applied=$(read_state "$state/applied")
   failed=$(read_state "$state/failed")
   [[ $commit == "$applied" ]] && return 0
@@ -509,6 +738,10 @@ apply_environment() {
   fi
 
   if ((result == 0)); then
+    begin_release "$env" "$commit" || result=$TRANSIENT
+  fi
+
+  if ((result == 0)); then
     # Stop disabled companions first. A rollback may re-enable background processing in the owner.
     for service in "${!companion_targets[@]}"; do
       if [[ ${companion_targets[$service]} == 0 ]] && ! apply_companion "$env" "$service" 0; then
@@ -526,12 +759,17 @@ apply_environment() {
         owners_applied[$service]=1
         changed+=("$service")
       elif ((code == TRANSIENT)); then
-        ((result == 1)) || result=$TRANSIENT
+        result=$TRANSIENT
+        break
       else
         result=1
-        notify "cadenway $env: $service failed at ${commit:0:12}; the previous container keeps serving"
+        notify "cadenway $env: $service could not be prepared at ${commit:0:12}"
+        break
       fi
     done
+  fi
+
+  if ((result == 0)); then
     for service in "${!companion_targets[@]}"; do
       owner=${COMPANION_OWNERS[$service]}
       replicas=${companion_targets[$service]}
@@ -543,20 +781,32 @@ apply_environment() {
       if ((code == 0)); then
         changed+=("$service")
       elif ((code == TRANSIENT)); then
-        ((result == 1)) || result=$TRANSIENT
+        result=$TRANSIENT
+        break
       else
         result=1
-        notify "cadenway $env: $service failed at ${commit:0:12}; the previous containers keep serving"
+        notify "cadenway $env: $service could not be prepared at ${commit:0:12}"
+        break
       fi
     done
+  fi
+
+  if ((result == 0)) && ! commit_release "$env" "$commit"; then
+    result=$TRANSIENT
+    log "$env: cannot promote the release; trying again on the next tick"
+  fi
+  if ((result == 1)); then
+    printf '%s\n' "$commit" >"$state/failed" || result=$TRANSIENT
+  fi
+  if ! recover_release "$env"; then
+    log "$env: cannot finish release recovery; trying again on the next tick"
+    result=$TRANSIENT
   fi
 
   rm -rf "${SECRETS_DIR:?}/$env"
   unset DOCKER_CONFIG
   case $result in
     0)
-      printf '%s\n' "$commit" >"$state/applied"
-      rm -f "$state/failed" "$state/retrying"
       notify "cadenway $env: ${commit:0:12} applied in $((SECONDS - start)) s; checked ${changed[*]:-no deployable} ($(git -C "$worktree" log -1 --format=%s))"
       ;;
     "$TRANSIENT")
@@ -567,9 +817,8 @@ apply_environment() {
       fi
       ;;
     *)
-      printf '%s\n' "$commit" >"$state/failed"
       rm -f "$state/retrying"
-      # The worktree goes back to what runs, so a manual `docker compose` sees the applied state.
+      # Validation can fail before there was a release journal to restore the checkout.
       [[ -n $applied ]] && checkout "$worktree" "$applied"
       notify "cadenway $env: ${commit:0:12} FAILED after $((SECONDS - start)) s; not retried until a new commit"
       ;;
