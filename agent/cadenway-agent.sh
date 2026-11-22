@@ -285,8 +285,22 @@ migrate() {
   if [[ -n $url ]]; then
     forward=(-e MIGRATION_DATABASE_URL)
   fi
-  MIGRATION_DATABASE_URL=$url env_compose "$env" run --rm --no-deps -T "${forward[@]}" "$service" \
+  MIGRATION_DATABASE_URL=$url env_compose "$env" run --rm --no-deps --pull never -T "${forward[@]}" "$service" \
     sh -c 'if [ -f dist/migrate.js ]; then exec node dist/migrate.js; fi'
+}
+
+# Public routes belong to the approved Compose definitions. An image must not supply
+# additional routing labels, including to a one-off migration container.
+require_compose_owned_routing() {
+  local env=$1 service=$2 image labels
+  image=$(env_compose "$env" config --format json |
+    jq -er --arg name "$service" '.services[$name].image | strings | select(length > 0)') || return 1
+  labels=$(docker image inspect --format '{{json .Config.Labels}}' "$image") || return 1
+  if ! jq -e '(. // {}) | all(keys[]; (ascii_downcase | startswith("traefik.")) | not)' \
+    <<<"$labels" >/dev/null; then
+    log "$env/$service: routing labels must come from the approved Compose definition"
+    return 1
+  fi
 }
 
 new_since() {
@@ -409,7 +423,7 @@ prepare_candidates() {
   mapfile -t before < <(printf '%s' "$inventory")
   printf '%s' "$inventory" >"$rollout/baseline/.$service" &&
     mv "$rollout/baseline/.$service" "$rollout/baseline/$service" || return 1
-  env_compose "$env" up --no-start --no-deps --no-recreate \
+  env_compose "$env" up --no-start --no-deps --no-recreate --pull never \
     --scale "$service=$((${#before[@]} + count))" "$service" || code=$?
   pending=$(new_since "$env" "$service" "$rollout/baseline/$service") || return 1
   mapfile -t candidates < <(printf '%s' "$pending")
@@ -447,6 +461,7 @@ apply_service() {
     log "$env/$service: the image cannot be pulled"
     return "$TRANSIENT"
   }
+  require_compose_owned_routing "$env" "$service" || return 1
   migrate "$env" "$service" || {
     log "$env/$service: the migrations failed"
     return 1
@@ -523,6 +538,7 @@ apply_companion() {
   printf '%s\n' "${obsolete[@]}" >"$rollout/obsolete/$service" || return 1
   if ((count > 0)); then
     env_compose "$env" pull --quiet "$service" || return "$TRANSIENT"
+    require_compose_owned_routing "$env" "$service" || return 1
     prepare_companion_owner "$env" "$service" || return 1
     prepare_candidates "$env" "$service" "$count" yes || return 1
   fi

@@ -7,16 +7,12 @@
 1. A pull request merged on a service's `main` updates its release pull request (release-please).
 2. Merging the release pull request tags `vX.Y.Z`; the service's `release.yml` builds the image
    `ghcr.io/<org>/cadenway-<service>:X.Y.Z` (linux/amd64) and calls its `deploy.yml`.
-3. `deploy.yml` checks the service's `deploy/compose.yaml` (only the keys, image, networks and
-   Traefik rules a Cadenway service needs: no volume, no privilege, no other domain), then commits to
-   `cadenway-ops` `main` with the deploy app: the definition into
-   `environments/staging/services/` (which local development runs too) and the version into
-   `environments/staging/versions.env`. After a reviewer approves the
-   `production` environment of the service, it writes `environments/prod/services/` and
-   `environments/prod/versions.env`. Each environment runs its own copy: a staging release never
-   changes what production runs.
+3. Ops reviews the service definition and version for the target environment. Production uses a
+   distinct protected ref and the image tag and digest approved by Ops. See
+   [GitOps approval and service definitions](#gitops-approval-and-service-definitions).
 4. On each host, the GitOps agent (`agent/cadenway-agent.sh`, a systemd timer every minute) fetches
-   `main`, and for each environment it runs: decrypts the secrets into `/run`, refuses a commit that
+   the configured refs. For each approved environment it decrypts the secrets into `/run`,
+   refuses a commit that
    leaves a variable unset, brings the infrastructure up, then for each deployable whose fingerprint
    changed (image, environment, definition, mounted config contents) or whose container is not
    healthy, runs its migrations in a one-off container (`node dist/migrate.js` when the image has
@@ -38,9 +34,9 @@
 
 Nothing connects to a host to deploy: the host pulls with a read-only deploy key.
 
-Rollback: run the service's **Deploy** workflow by hand with the previous version. It writes the
-older definition and version through the same path, staging then production. A newer deploy replaces
-a production deploy still waiting for its approval.
+To roll back an applied release, create a new approved commit with the previous definition and
+image. Use the original approved digest for production. The new commit must descend from the
+applied commit so the agent can distinguish an authorized rollback from a ref rewind.
 
 ## Topologies
 
@@ -126,6 +122,16 @@ signer lists. Ansible installs the public keys and the Compose policy when it co
 The agent compiles included service definitions against its installed per-service policy before
 decryption. Update that policy through Ops review when a service needs a new variable, network,
 configuration or routing label. Service publishing credentials are not approval credentials.
+
+Keep all Traefik labels in the approved Compose files. The agent checks the pulled image before
+either migration or creation of a replacement. Both steps use the checked local image without a
+second pull. At bootstrap, replace or verify containers created before this check was active,
+including the previous containers that might be used for local rollback.
+
+When switching an existing stack to the separate Redis instances, verify both gateways are healthy
+with their dedicated stores, then stop the old shared Redis container if it is still present.
+Preserve its volume until the switch is confirmed. Counters and realtime markers in the old store
+are ephemeral and activity must be re-established against the new stores.
 
 ## Backups
 

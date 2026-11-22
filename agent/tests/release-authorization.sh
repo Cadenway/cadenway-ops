@@ -115,3 +115,28 @@ if output=$(run_agent 2>&1) || [[ $output != *'host and secret configuration als
 fi
 printf 'edge %s\nprod %s\n' "$later" "$later" | diff - "$trace"
 echo 'PASS the staging signer cannot approve co-hosted infrastructure'
+
+(
+  export CADENWAY_AGENT_CONFIG=/dev/null CADENWAY_REPO_URL=$source_repo
+  export CADENWAY_ENVIRONMENTS=staging
+  # shellcheck source=/dev/null
+  source "$agent"
+  # shellcheck disable=SC2329
+  env_compose() {
+    printf '%s\n' '{"services":{"gateway":{"image":"fixture:verified"}}}'
+  }
+  docker() {
+    [[ $1 == image && $2 == inspect && $5 == fixture:verified ]] || return 1
+    printf '%s\n' "$fixture_image_labels"
+  }
+  fixture_image_labels='null'
+  require_compose_owned_routing staging gateway
+  fixture_image_labels='{"org.opencontainers.image.title":"fixture"}'
+  require_compose_owned_routing staging gateway
+  fixture_image_labels='{"Traefik.enable":"true"}'
+  if require_compose_owned_routing staging gateway; then
+    echo 'image-owned routing metadata was accepted' >&2
+    exit 1
+  fi
+)
+echo 'PASS image-owned routing is refused before release activation'
