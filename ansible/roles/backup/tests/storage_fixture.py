@@ -2,12 +2,14 @@
 
 import json
 import os
+import subprocess
 import sys
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 BUCKET = os.environ["STORAGE_S3_BUCKET"]
 ATTACHMENT = os.environ["FIXTURE_ATTACHMENT_KEY"]
@@ -51,14 +53,88 @@ def ready():
     S3.list_buckets()
 
 
+def seed_attachment():
+    organization_prefix = ATTACHMENT.rsplit("/", 1)[0]
+    staging = f"{organization_prefix}/018b6300-0000-7000-8000-000000000010"
+    data = REFERENCED[ATTACHMENT]
+    content_type = "text/plain"
+    capability = S3.generate_presigned_post(
+        BUCKET,
+        staging,
+        Fields={"Content-Type": content_type},
+        Conditions=[
+            {"Content-Type": content_type},
+            ["content-length-range", 1, 25 * 1024 * 1024],
+        ],
+        ExpiresIn=60,
+    )
+    post = [
+        "curl",
+        "--silent",
+        "--max-time",
+        "20",
+        "--output",
+        "/dev/null",
+        "--write-out",
+        "%{http_code}",
+    ]
+    for name, value in capability["fields"].items():
+        post.extend(("--form-string", f"{name}={value}"))
+    upload = subprocess.run(
+        [
+            *post,
+            "--form",
+            f"file=@-;filename=attachment.txt;type={content_type}",
+            capability["url"],
+        ],
+        input=data,
+        capture_output=True,
+        check=False,
+    )
+    assert upload.returncode == 0 and upload.stdout == b"204", (
+        f"presigned attachment upload failed (curl {upload.returncode}, HTTP {upload.stdout.decode()})"
+    )
+
+    source = S3.head_object(Bucket=BUCKET, Key=staging)
+    copy_input = {
+        "Bucket": BUCKET,
+        "Key": ATTACHMENT,
+        "CopySource": {"Bucket": BUCKET, "Key": staging},
+        "CopySourceIfMatch": source["ETag"],
+    }
+    copy_model = S3.meta.service_model.operation_model("CopyObject")
+    if "IfNoneMatch" in copy_model.input_shape.members:
+        copy_input["IfNoneMatch"] = "*"
+    else:
+        # Older botocore models need the same header added before SigV4 signing.
+        def add_copy_precondition(request, **_):
+            request.headers["If-None-Match"] = "*"
+
+        S3.meta.events.register("before-sign.s3.CopyObject", add_copy_precondition)
+
+    copied = S3.copy_object(**copy_input)
+    candidate = S3.head_object(Bucket=BUCKET, Key=ATTACHMENT)
+    assert candidate["VersionId"] == copied["VersionId"]
+    assert candidate["ETag"] == copied["CopyObjectResult"]["ETag"]
+    assert download(ATTACHMENT) == data
+    try:
+        S3.copy_object(**copy_input)
+    except ClientError as error:
+        assert error.response["ResponseMetadata"]["HTTPStatusCode"] == 412
+    else:
+        raise AssertionError("conditional copy overwrote the existing attachment")
+
+
 def seed():
     S3.create_bucket(Bucket=BUCKET)
     S3.put_bucket_versioning(
         Bucket=BUCKET, VersioningConfiguration={"Status": "Enabled"}
     )
     assert S3.get_bucket_versioning(Bucket=BUCKET)["Status"] == "Enabled"
+    seed_attachment()
     for key, data in REFERENCED.items():
-        put(key, data)
+        if key != ATTACHMENT:
+            put(key, data)
 
 
 def delete_after_dump():

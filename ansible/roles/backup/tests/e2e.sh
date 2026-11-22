@@ -36,8 +36,8 @@ readonly STORAGE="$PROJECT-storage" FILES_S3="$PROJECT-files-s3"
 readonly BUCKET_DIR="/data/backups/$TEST_ENV"
 readonly BACKUP_KEY="$TEST_DIR/backup.key"
 readonly PG='postgres:18.6-alpine@sha256:9ba53c7d41ea093baf5c1ba635ba5434c4f979880527d49bb7d9237d3193085b'
-# SeaweedFS 4.45 supports conditional PutObject on keys hidden by delete markers.
-readonly SEAWEEDFS='chrislusf/seaweedfs@sha256:fc9f76fa993ad69966ffeb2f65d0318fcae39c6f8e20cf68ef7b3a5cb97769e5'
+# SeaweedFS 4.54 handles conditional copies after presigned POST and restores behind delete markers.
+readonly SEAWEEDFS='chrislusf/seaweedfs@sha256:4b42c212543a0acd4c0e675215ecdcaf62a186ef98def76c7e12701871222d15'
 export STORAGE_S3_ENDPOINT=http://127.0.0.1:8333 STORAGE_S3_REGION=us-east-1 STORAGE_S3_BUCKET=attachments
 export STORAGE_RESTORE_S3_ACCESS_KEY_ID=storage-fixture STORAGE_RESTORE_S3_SECRET_ACCESS_KEY=storage-fixture-only
 mkdir -p /run/lock /etc/cadenway "$BUCKET_DIR"
