@@ -518,8 +518,19 @@ check 'unready candidate keeps its edge endpoint and has no internal serving ali
   'docker inspect --format "{{json .NetworkSettings.Networks}}" "$CANDIDATE" \
     | jq -e '"'"'has("cadenway-edge-test") and (.["cadenway-test_internal"].Aliases // [] | length == 0)'"'"' >/dev/null'
 DB=$(containers db | cut -d' ' -f1)
+# BusyBox also prints the DNS server before the answer. Compare the set of answers and retain
+# the response for diagnostics if the candidate appears before its readiness marker.
+DNS_IPS=''
+if DNS_RESPONSE=$(docker exec "$DB" nslookup -type=a webapp 2>&1); then
+  DNS_IPS=$(awk '
+    /^Name:[[:space:]]/ { answer = 1; next }
+    answer && /^Address([[:space:]]+[0-9]+)?:[[:space:]]/ { print $NF }
+  ' <<<"$DNS_RESPONSE" | sort -u)
+fi
+OUT=$(printf '%s\nExpected DNS address: %s\nObserved DNS addresses: %s\n' \
+  "$DNS_RESPONSE" "$PREVIOUS_IP" "$DNS_IPS")
 check 'internal DNS still returns only the previous address' \
-  '[[ $(docker exec "$DB" nslookup -type=a webapp | awk "/^Address: / && !/127\\.0\\.0\\.11/ {print \$2}") == "$PREVIOUS_IP" ]]'
+  '[[ -n $PREVIOUS_IP && $DNS_IPS == "$PREVIOUS_IP" ]]'
 check 'the previous configuration is still served' \
   '[[ $(docker exec "$DB" wget -qO- http://webapp:8080/config.txt) == third ]]'
 docker exec "$CANDIDATE" touch /tmp/rollout-ready
