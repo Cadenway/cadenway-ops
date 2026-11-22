@@ -74,7 +74,7 @@ services:
       # changes, not when a file it mounts does: changing this value with the file is what makes
       # every environment restart the broker with the new permissions (tests/nats-permissions.sh
       # checks that the two match).
-      NATS_SERVER_CONF_SHA256: 6cc3fb5029e9e203a1fb78b2089457a61c1c07209ff6a450ddbcce1e513d2e81
+      NATS_SERVER_CONF_SHA256: 39cce647256dd15d51eea74e5bc66f0e05a936549aab047e4b4cab68eb073ab1
       # Read by nats/nats-server.conf: one user per backend, and the user that owns the streams.
       NATS_ADMIN_PASSWORD: ${NATS_ADMIN_PASSWORD}
       IDENTITY_NATS_PASSWORD: ${IDENTITY_NATS_PASSWORD}
@@ -107,20 +107,22 @@ services:
   nats-streams:
     # Owner of the JetStream streams: the backends may not create one. It applies
     # nats/ensure-streams.sh at start, then stays to recreate a stream the broker lost; it is
-    # healthy while EVENTS, EVENTS_RESTRICTED and EVENTS_DLQ exist, which is what the services of
-    # the local stack and the GitOps agent wait for. Operators read the dead letters from it:
+    # healthy while the event streams and the Realtime authorization advisory latch exist. The
+    # local stack and the GitOps agent wait for it. Operators read the dead letters from it:
     # `docker compose exec nats-streams nats stream view EVENTS_DLQ`.
     image: natsio/nats-box:0.20.2-nonroot@sha256:d00bffed51ea1a29e58852698bde37020d306af55585882f88dbcf09dd86f5fe
     restart: unless-stopped
     entrypoint: ['/bin/sh', '/etc/nats/ensure-streams.sh']
     environment:
       # SHA-256 of nats/ensure-streams.sh, for the same reason as NATS_SERVER_CONF_SHA256.
-      ENSURE_STREAMS_SHA256: d2b4055705a0aa9536c5a3765d0a89ec25e678e3bb1f5626dd3fd922a75d621a
+      ENSURE_STREAMS_SHA256: dbe45e31c0d70eef265249150d2ea3c2ff3a0987936065a5d688d73542bbbd7e
       NATS_URL: ${NATS_URL}
       NATS_USER: admin
       NATS_PASSWORD: ${NATS_ADMIN_PASSWORD}
     volumes:
       - ./nats/ensure-streams.sh:/etc/nats/ensure-streams.sh:ro
+      # Independent from nats-data so a broker volume replacement keeps the latch identity.
+      - nats-stream-state:/home/nats
     networks:
       - internal
     depends_on:
@@ -166,4 +168,5 @@ volumes:
   postgres-data:
   redis-data:
   nats-data:
+  nats-stream-state:
   meilisearch-data:

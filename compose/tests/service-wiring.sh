@@ -44,15 +44,15 @@ OUT=$(generate /work/.env) && OUT="succeeded: $OUT"
 check 'refuses a file that does not exist' '[[ $OUT == *"copy .env.example to .env first"* && $OUT != succeeded:* ]]'
 cp .env.example "$WORK/.env"
 OUT=$(generate /work/.env) || OUT="failed: $OUT"
-check 'writes the pairs' '[[ $OUT == *"wrote the key pairs of API_GATEWAY, REALTIME_GATEWAY, AUTOMATION_SERVICE, INTEGRATION_SERVICE"* ]]'
+check 'writes the pairs' '[[ $OUT == *"wrote the key pairs of API_GATEWAY, REALTIME_GATEWAY, AUTOMATION_SERVICE, INTEGRATION_SERVICE, NOTIFICATION_SERVICE, DOCUMENT_SERVICE, BILLING_SERVICE"* ]]'
 OUT=$(grep -c '_INTERNAL_TOKEN_\(PRIVATE_JWK\|PUBLIC_JWKS\)=' "$WORK/.env")
-check 'two variables per issuer' '[[ $OUT == 8 ]]'
+check 'two variables per issuer' '[[ $OUT == 14 ]]'
 BEFORE=$(sha256sum "$WORK/.env")
 OUT=$(generate /work/.env) || OUT="failed: $OUT"
 check 'a second run writes nothing' '[[ $OUT == *"nothing written"* && $(sha256sum "$WORK/.env") == "$BEFORE" ]]'
 OUT=$(generate --print) || OUT="failed: $OUT"
-check '--print prints eight unquoted lines' \
-  '[[ $(grep -c "^[A-Z_]*_INTERNAL_TOKEN_[A-Z_]*={\"kty\":\"OKP\"" <<<"$OUT") == 8 ]]'
+check '--print prints fourteen unquoted lines' \
+  '[[ $(grep -c "^[A-Z_]*_INTERNAL_TOKEN_[A-Z_]*={\"kty\":\"OKP\"" <<<"$OUT") == 14 ]]'
 check 'and leaves the file alone' '[[ $(sha256sum "$WORK/.env") == "$BEFORE" ]]'
 
 echo '=== 2. the keys sign and verify'
@@ -67,7 +67,7 @@ const variables = Object.fromEntries(
     .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
 );
 const message = Buffer.from('cadenway');
-for (const issuer of ['API_GATEWAY', 'REALTIME_GATEWAY', 'AUTOMATION_SERVICE', 'INTEGRATION_SERVICE']) {
+for (const issuer of ['API_GATEWAY', 'REALTIME_GATEWAY', 'AUTOMATION_SERVICE', 'INTEGRATION_SERVICE', 'NOTIFICATION_SERVICE', 'DOCUMENT_SERVICE', 'BILLING_SERVICE']) {
   const quotedPrivate = variables[`${issuer}_INTERNAL_TOKEN_PRIVATE_JWK`];
   const quotedPublic = variables[`${issuer}_INTERNAL_TOKEN_PUBLIC_JWKS`];
   if (!/^'.*'$/.test(quotedPrivate) || !/^'.*'$/.test(quotedPublic)) throw new Error('not quoted');
@@ -97,7 +97,7 @@ import { readFileSync } from 'node:fs';
 const { services } = JSON.parse(readFileSync('/work/config.json', 'utf8'));
 const gateway = ['api-gateway'];
 const trusted = {
-  'identity-service': ['api-gateway', 'realtime-gateway'],
+  'identity-service': ['api-gateway', 'realtime-gateway', 'notification-service'],
   'organization-service': gateway,
   'billing-service': gateway,
   'task-service': ['api-gateway', 'realtime-gateway', 'automation-service', 'integration-service'],
@@ -113,6 +113,8 @@ const called = {
   'realtime-gateway': ['identity-service', 'task-service'],
   'automation-service': ['task-service', 'notification-service'],
   'integration-service': ['task-service'],
+  'notification-service': ['identity-service'],
+  'document-service': ['task-service'],
 };
 const port = (name) => /^\d+$/.test(services[name].environment.PORT);
 const fail = (message) => {
@@ -133,7 +135,8 @@ for (const [name, issuers] of Object.entries(trusted)) {
 }
 for (const [name, targets] of Object.entries(called)) {
   const environment = services[name].environment;
-  if (environment.INTERNAL_TOKEN_ISSUER !== name) fail(`${name} issuer`);
+  // Document fixes its issuer in the application rather than accepting an environment variable.
+  if (name !== 'document-service' && environment.INTERNAL_TOKEN_ISSUER !== name) fail(`${name} issuer`);
   if (JSON.parse(environment.INTERNAL_TOKEN_PRIVATE_JWK).d === undefined) fail(`${name} private key`);
   for (const target of targets) {
     const variable = `${target.toUpperCase().replaceAll('-', '_')}_URL`;
@@ -143,13 +146,59 @@ for (const [name, targets] of Object.entries(called)) {
   const extra = Object.keys(environment).filter(
     (key) => key.endsWith('_SERVICE_URL') && !targets.includes(key.slice(0, -4).toLowerCase().replaceAll('_', '-')),
   );
+  if (name === 'notification-service') {
+    for (const variable of ['ORGANIZATION_SERVICE_URL', 'TASK_SERVICE_URL']) {
+      const index = extra.indexOf(variable);
+      if (index >= 0 && !environment[variable]) extra.splice(index, 1);
+    }
+  }
   if (extra.length > 0) fail(`${name} also has ${extra}`);
+}
+const taskDocumentKey = JSON.parse(services['task-service'].environment.DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS);
+const documentPrivateKey = JSON.parse(services['document-service'].environment.INTERNAL_TOKEN_PRIVATE_JWK);
+if (taskDocumentKey.kty !== 'OKP' || taskDocumentKey.d !== undefined ||
+    taskDocumentKey.x !== documentPrivateKey.x || taskDocumentKey.kid !== documentPrivateKey.kid) {
+  fail('task Document public key');
+}
+const taskNotificationKey = JSON.parse(services['task-service'].environment.NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS);
+const notificationPrivateKey = JSON.parse(services['notification-service'].environment.INTERNAL_TOKEN_PRIVATE_JWK);
+if (taskNotificationKey.kty !== 'OKP' || taskNotificationKey.d !== undefined ||
+    taskNotificationKey.x !== notificationPrivateKey.x || taskNotificationKey.kid !== notificationPrivateKey.kid) {
+  fail('task Notification public key');
+}
+const automation = services['automation-service'].environment;
+const integration = services['integration-service'].environment;
+if (automation.AUTOMATION_TASK_TRIGGERS_ENABLED !== 'false' ||
+    automation.AUTOMATION_COMMENT_AND_NOTIFICATION_ACTIONS_ENABLED !== 'false' ||
+    automation.AUTOMATION_CURSOR_SIGNING_KEY ||
+    services['notification-service'].environment.TASK_SERVICE_URL ||
+    services['realtime-gateway'].environment.REALTIME_GIT_RELAYS_ENABLED !== 'false' ||
+    integration.GIT_LINK_EVENTS_ENABLED !== 'false' || integration.GIT_LINK_PURGE_ENABLED !== 'false' ||
+    integration.GIT_WEBHOOK_RECEIVERS !== '[]') {
+  fail('P6 actions and Git links are inactive by default');
 }
 for (const name of Object.keys(services)) {
   const environment = services[name].environment ?? {};
-  if (!(name in called) && 'INTERNAL_TOKEN_PRIVATE_JWK' in environment) fail(`${name} has a private key`);
+  if (!(name in called) && name !== 'billing-service' && 'INTERNAL_TOKEN_PRIVATE_JWK' in environment) {
+    fail(`${name} has a private key`);
+  }
+}
+const billing = services['billing-service'].environment;
+const billingPrivateKey = JSON.parse(billing.INTERNAL_TOKEN_PRIVATE_JWK);
+for (const name of ['organization-service', 'storage-service']) {
+  const key = JSON.parse(services[name].environment.BILLING_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS);
+  if (key.kty !== 'OKP' || key.d !== undefined || key.x !== billingPrivateKey.x ||
+      key.kid !== billingPrivateKey.kid) fail(`${name} Billing public key`);
+}
+if (billing.BILLING_USAGE_ENABLED !== 'false' || billing.ORGANIZATION_SERVICE_URL ||
+    billing.STORAGE_SERVICE_URL || services['notification-service'].environment.ORGANIZATION_SERVICE_URL) {
+  fail('Billing is inactive by default');
 }
 const storage = services['storage-service'].environment;
+if (services['organization-service'].environment.ORGANIZATION_SEAT_ENTITLEMENT_EVENTS_ENABLED !== 'false' ||
+    storage.STORAGE_BILLING_ENTITLEMENTS_ENABLED !== 'false') {
+  fail('Billing entitlement projections are inactive by default');
+}
 if (storage.S3_ENDPOINT !== 'http://garage:3900') fail('storage endpoint');
 if (storage.S3_PUBLIC_ENDPOINT !== 'http://s3.cadenway.localhost') fail('storage public endpoint');
 if (storage.S3_BUCKET !== 'cadenway-local' || !storage.S3_ACCESS_KEY_ID.startsWith('GK')) fail('bucket');

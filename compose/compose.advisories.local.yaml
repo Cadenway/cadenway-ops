@@ -1,0 +1,75 @@
+# Optional local overlay for infra.yaml. The hosted Compose entry point never includes it.
+services:
+  nats:
+    command: ['--config', '/etc/nats/advisory-hub.local.conf']
+    environment:
+      NATS_ADVISORY_LEAF_PASSWORD: ${NATS_ADVISORY_LEAF_PASSWORD:?set a local leaf password}
+    volumes:
+      - ./nats/advisory-hub.local.conf:/etc/nats/advisory-hub.local.conf:ro
+    networks:
+      internal:
+      advisory_transport:
+        aliases:
+          - nats-advisory-hub
+
+  nats-advisories:
+    image: nats:2.15.2-alpine@sha256:afae2fdbe2e326c65e1246cb83b9d05d319188734f3bd577ac8072daae78a10f
+    restart: unless-stopped
+    command: ['--config', '/etc/nats/advisory-observer.local.conf']
+    environment:
+      NATS_ADVISORY_HUB_LEAF_URL: >-
+        nats://advisory-leaf:${NATS_ADVISORY_LEAF_PASSWORD}@nats-advisory-hub:7422
+      NATS_ADVISORY_ADMIN_PASSWORD: ${NATS_ADVISORY_ADMIN_PASSWORD:?set a local admin password}
+      NATS_ADVISORY_READER_PASSWORD: ${NATS_ADVISORY_READER_PASSWORD:?set a local reader password}
+    volumes:
+      - nats-advisory-data:/data
+      - ./nats/advisory-observer.local.conf:/etc/nats/advisory-observer.local.conf:ro
+    networks:
+      - internal
+      - advisory_transport
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8222/healthz?js-enabled-only=true']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+
+  nats-advisory-streams:
+    image: natsio/nats-box:0.20.2-nonroot@sha256:d00bffed51ea1a29e58852698bde37020d306af55585882f88dbcf09dd86f5fe
+    restart: unless-stopped
+    entrypoint: ['/bin/sh', '/etc/nats/ensure-advisories.sh']
+    environment:
+      NATS_URL: nats://nats-advisories:4222
+      NATS_USER: advisory-admin
+      NATS_PASSWORD: ${NATS_ADVISORY_ADMIN_PASSWORD:?set a local advisory admin password}
+    volumes:
+      - ./nats/ensure-advisories.sh:/etc/nats/ensure-advisories.sh:ro
+      - nats-advisory-state:/home/nats
+    networks:
+      - internal
+    depends_on:
+      nats-advisories:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'test', '-e', '/tmp/advisories-ready']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 32M
+
+volumes:
+  nats-advisory-data:
+  nats-advisory-state:
+
+networks:
+  internal:
+    internal: true
+  advisory_transport:
+    internal: true
