@@ -5,11 +5,12 @@
 #
 # A backup is restored to a separate database while the old database still serves traffic.
 # Only a fully restored candidate with a compatible migration journal can replace it.
+# Storage also requires the immutable object keys referenced by its restored metadata.
 # The old database is retained with connections disabled after a successful cutover.
 # With no database list, restore every backed-up database.
 #
-# The GitOps agent's lock covers preparation, cutover and recovery. Only encrypted dumps
-# are written to a private directory created by this invocation while holding that lock.
+# The GitOps agent's lock covers preparation, cutover and recovery. Encrypted dumps and object
+# inventories use a private working directory. No plaintext dump or object bytes are written there.
 set -euo pipefail
 
 [[ $# -ge 3 ]] || {
@@ -61,6 +62,57 @@ SELECT to_regclass('drizzle.__drizzle_migrations') IS NOT NULL AS has_journal \g
 \endif
 SQL
 }
+
+# List durable object references from the candidate while only the restore operator can connect.
+storage_object_manifest() {
+  psql_on "$1" "$2" --no-align --tuples-only <<'SQL'
+BEGIN READ ONLY;
+SELECT json_build_object('key', object_key, 'size', size_bytes)
+FROM (
+  SELECT attachment.elected_object_key AS object_key, attachment.size_bytes
+  FROM public.attachments AS attachment
+  WHERE attachment.status = 'ready' AND attachment.scan_status = 'verified'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.attachment_task_tombstones AS task
+      WHERE task.organization_id = attachment.organization_id
+        AND task.task_key = attachment.task_key
+        AND task.purged_at IS NOT NULL
+    )
+  UNION ALL
+  SELECT candidate_key, size_bytes
+  FROM public.intake_attachments
+  WHERE status = 'verified'
+  UNION ALL
+  SELECT 'profile-media/candidate/' || upload.candidate_id::text, upload.derivative_size_bytes
+  FROM public.profile_media_uploads AS upload
+  JOIN public.profile_media_owners AS owner USING (owner_kind, owner_id)
+  WHERE upload.status IN ('prepared', 'attached') AND NOT owner.deleted
+) AS objects;
+COMMIT;
+SQL
+}
+
+restore_storage_objects() (
+  local field setting value
+  unset RCLONE_CONFIG_BACKUP_{TYPE,PROVIDER,ENDPOINT,REGION,ACCESS_KEY_ID,SECRET_ACCESS_KEY}
+  unset RESTORE_OBJECT_S3_FORCE_PATH_STYLE
+  for field in ENDPOINT REGION BUCKET ACCESS_KEY_ID SECRET_ACCESS_KEY; do
+    case $field in
+      ACCESS_KEY_ID | SECRET_ACCESS_KEY) setting="STORAGE_RESTORE_S3_$field" ;;
+      *) setting="STORAGE_S3_$field" ;;
+    esac
+    value=$(secret "$plain" "$setting") || return 1
+    if [[ -z $value ]]; then
+      echo "$ENVIRONMENT: $setting is required to restore referenced Storage objects" >&2
+      return 1
+    fi
+    export "RESTORE_OBJECT_S3_$field=$value"
+  done
+  value=$(secret "$plain" STORAGE_S3_FORCE_PATH_STYLE) || return 1
+  if [[ -n $value ]]; then export RESTORE_OBJECT_S3_FORCE_PATH_STYLE="$value"; fi
+  /usr/bin/python3 /usr/local/lib/cadenway/cadenway-restore-objects.py "$@"
+)
 
 # Verify the stopped state explicitly because this function is called in conditionals.
 stop_group() {
@@ -131,8 +183,10 @@ restore_database() (
   local previous_db=cw_restore_previous_${db_name}_${WORK##*.}
   local failed_db=cw_restore_failed_${db_name}_${WORK##*.}
   local original_oid new_oid='' live_oid current_journal candidate_journal ids companion has_original=false
+  local object_manifest object_plan=''
   local candidate_created=false service_stop_attempted=false cutover_attempted=false
   local -a owners=() companions=()
+  umask 077
 
   original_oid=$(database_oid "$pg_container" "$db_name") || return 1
 
@@ -237,6 +291,20 @@ SQL
   else
     echo "$ENVIRONMENT: no existing $db_name database to compare; verifying the recovered service through health checks" >&2
   fi
+  if [[ $db_name == storage ]]; then
+    object_manifest=$(mktemp "$WORK/storage-objects.XXXXXXXX") || return 1
+    if ! storage_object_manifest "$pg_container" "$candidate_db" >"$object_manifest"; then
+      echo "$ENVIRONMENT: could not inventory Storage objects from the restored schema" >&2
+      return 1
+    fi
+    if [[ -s $object_manifest ]]; then
+      object_plan=$object_manifest.plan
+      if ! restore_storage_objects plan "$object_manifest" "$object_plan"; then
+        echo "$ENVIRONMENT: Storage object preflight failed; the live database was untouched" >&2
+        return 1
+      fi
+    fi
+  fi
   psql_on "$pg_container" postgres --set=candidate="$candidate_db" --set=app="${db_name}_app" <<'SQL' ||
 BEGIN;
 ALTER DATABASE :"candidate" WITH ALLOW_CONNECTIONS false;
@@ -261,6 +329,10 @@ SQL
   service_stop_attempted=true
   if ! stop_services; then
     echo "$ENVIRONMENT: could not stop every user of $db_name; keeping the original database" >&2
+    return 1
+  fi
+  if [[ -n $object_plan ]] && ! restore_storage_objects apply "$object_plan"; then
+    echo "$ENVIRONMENT: Storage object recovery failed before cutover; keeping the original database" >&2
     return 1
   fi
   cutover_attempted=true

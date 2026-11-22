@@ -137,9 +137,27 @@ served under the live name is retained under `cw_restore_failed_…` with connec
 Inspect it for any writes accepted before rollback. Investigate a reported rollback failure
 before restarting services manually.
 
-`ansible/roles/backup/tests/e2e.sh` covers backup and restore against PostgreSQL and a disposable
-S3 endpoint in CI. The backup covers database metadata for attachments. Restoring attachment
-contents also requires the corresponding versions of the objects in the application bucket.
+For the `storage` database, the restore inventories durable objects referenced by the candidate
+before stopping Storage. That includes elected attachments of tasks that have not been purged,
+verified Intake reservations and prepared or attached media of active profile owners. After
+stopping Storage, the restore conditionally recreates
+missing current objects from their exact historical versions before switching the PostgreSQL names.
+Each recreation adds a version and preserves the earlier versions and delete markers. Existing
+objects with matching history stay in place. Missing history, divergent versions or a conflicting
+concurrent write prevent promotion. Objects successfully recreated before a failed cutover remain
+available for a retry. Storage is offline while the restore checks the application bucket again
+and transfers missing objects. The outage grows with the number of references and bytes to recover.
+
+Keep S3 versioning enabled on the application bucket and retain noncurrent versions for the full
+retention period of the PostgreSQL dumps. Use a backend that supports versioned reads and
+`PutObject` with `If-None-Match: *` after a delete marker. The restore requires consistent
+object sizes and ETags across retained payload versions and checks the ETag after recreation.
+Storage recovery uses the application bucket and a [dedicated restore identity](service-environment.md#secrets).
+The encrypted dump protects database metadata, and the application bucket retains the object
+bytes separately.
+
+`ansible/roles/backup/tests/e2e.sh` covers PostgreSQL backup and restore with SOPS 3.13.3 and a
+disposable S3 endpoint. It exercises recovery of deleted objects on a versioned application bucket.
 
 NATS JetStream streams, Meilisearch indexes and Traefik certificates are not backed up: the outbox
 replays events, search-service rebuilds its index, Let's Encrypt issues certificates again.

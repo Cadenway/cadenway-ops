@@ -174,6 +174,15 @@ The public keys are not secret; they sit with the private ones so that an enviro
 edited in one place. JSON values need no quoting in the file: the agent writes each value between
 single quotes, and a JSON Web Key contains none.
 
+Storage object recovery uses `STORAGE_RESTORE_S3_ACCESS_KEY_ID` and
+`STORAGE_RESTORE_S3_SECRET_ACCESS_KEY` from the environment's SOPS document. Only
+`cadenway-restore` uses this identity. It uses the existing `STORAGE_S3_ENDPOINT`,
+`STORAGE_S3_REGION`, `STORAGE_S3_BUCKET` and optional `STORAGE_S3_FORCE_PATH_STYLE`.
+Grant bucket versioning and version listing
+(`s3:GetBucketVersioning`, `s3:ListBucketVersions`) and current and versioned reads plus
+conditional creation on the application object prefixes (`s3:GetObject`, `s3:GetObjectVersion`,
+`s3:PutObject`). Keep object and version deletion outside this identity's permissions.
+
 ## Checks
 
 `compose/tests/service-wiring.sh` generates keys in a temporary folder, checks that they sign and

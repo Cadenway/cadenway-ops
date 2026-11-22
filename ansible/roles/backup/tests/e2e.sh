@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercises PostgreSQL backup and guarded restoration against Docker and a local rclone S3 endpoint.
+# Exercises PostgreSQL and versioned Storage recovery against disposable S3 endpoints.
 #
 #   docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
 #     -v "$PWD/ansible/roles/backup:/backup:ro" docker:28.5.2-cli \
@@ -12,17 +12,19 @@ pull_policy=()
 if [[ ${CADENWAY_E2E_PREPARED:-0} == 1 ]]; then
   pull_policy=(--pull never)
 else
-  apk add --quiet --no-cache bash jq curl age rclone util-linux coreutils >/dev/null
+  apk add --quiet --no-cache bash jq curl age rclone util-linux coreutils python3 py3-boto3 >/dev/null
   curl -fsSL -o /usr/local/bin/sops https://github.com/getsops/sops/releases/download/v3.13.3/sops-v3.13.3.linux.amd64
   chmod +x /usr/local/bin/sops
 fi
 echo 'e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b  /usr/local/bin/sops' | sha256sum -c -
 export SOPS_DISABLE_VERSION_CHECK=1
 echo "Using $(/usr/local/bin/sops --version)"
+python3 -B /backup/tests/test_restore_objects.py
 for script in backup restore; do
   cp "/backup/files/cadenway-$script.sh" "/usr/local/bin/cadenway-$script"
   chmod +x "/usr/local/bin/cadenway-$script"
 done
+install -D -m 0644 /backup/files/cadenway-restore-objects.py /usr/local/lib/cadenway/cadenway-restore-objects.py
 
 TEST_DIR=$(mktemp -d /tmp/cw-backup-e2e.XXXXXXXXXX)
 suffix=${TEST_DIR##*.}
@@ -30,15 +32,20 @@ readonly TEST_DIR
 readonly TEST_ENV="test-${suffix,,}"
 readonly PROJECT="cadenway-$TEST_ENV"
 readonly SERVER="$PROJECT-postgres" TASK="$PROJECT-task" RELAY="$PROJECT-relay"
+readonly STORAGE="$PROJECT-storage" FILES_S3="$PROJECT-files-s3"
 readonly BUCKET_DIR="/data/backups/$TEST_ENV"
 readonly BACKUP_KEY="$TEST_DIR/backup.key"
 readonly PG='postgres:18.6-alpine@sha256:9ba53c7d41ea093baf5c1ba635ba5434c4f979880527d49bb7d9237d3193085b'
+# SeaweedFS 4.45 supports conditional PutObject on keys hidden by delete markers.
+readonly SEAWEEDFS='chrislusf/seaweedfs@sha256:fc9f76fa993ad69966ffeb2f65d0318fcae39c6f8e20cf68ef7b3a5cb97769e5'
+export STORAGE_S3_ENDPOINT=http://127.0.0.1:8333 STORAGE_S3_REGION=us-east-1 STORAGE_S3_BUCKET=attachments
+export STORAGE_RESTORE_S3_ACCESS_KEY_ID=storage-fixture STORAGE_RESTORE_S3_SECRET_ACCESS_KEY=storage-fixture-only
 mkdir -p /run/lock /etc/cadenway "$BUCKET_DIR"
 # Registered with trap below.
 # shellcheck disable=SC2329
 cleanup() {
   touch "$TEST_DIR/release-restore"
-  command docker rm -fv "$SERVER" "$TASK" "$RELAY" >/dev/null 2>&1 || true
+  command docker rm -fv "$FILES_S3" "$STORAGE" "$SERVER" "$TASK" "$RELAY" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -123,6 +130,10 @@ config_dir="/opt/cadenway/envs/$TEST_ENV/environments/$TEST_ENV"
 mkdir -p "$config_dir"
 printf '%s\n' BACKUP_S3_ENDPOINT=http://127.0.0.1:9000 BACKUP_S3_REGION=us-east-1 \
   BACKUP_S3_BUCKET=backups BACKUP_S3_ACCESS_KEY_ID=fixture BACKUP_S3_SECRET_ACCESS_KEY=fixture-only \
+  "STORAGE_S3_ENDPOINT=$STORAGE_S3_ENDPOINT" "STORAGE_S3_REGION=$STORAGE_S3_REGION" \
+  "STORAGE_S3_BUCKET=$STORAGE_S3_BUCKET" STORAGE_S3_FORCE_PATH_STYLE=true \
+  "STORAGE_RESTORE_S3_ACCESS_KEY_ID=$STORAGE_RESTORE_S3_ACCESS_KEY_ID" \
+  "STORAGE_RESTORE_S3_SECRET_ACCESS_KEY=$STORAGE_RESTORE_S3_SECRET_ACCESS_KEY" \
   ALERT_WEBHOOK_URL= |
   sops encrypt --age "$(age-keygen -y /etc/cadenway/age.key)" --input-type dotenv --output-type dotenv \
     --filename-override secrets.sops.env \
@@ -255,6 +266,12 @@ docker() {
         return 0
       fi
       ;;
+    storage-start:start)
+      if [[ ! -e $TEST_DIR/storage-start-failure ]] && targets "$TEST_STORAGE" "$@"; then
+        touch "$TEST_DIR/storage-start-failure"
+        return 75
+      fi
+      ;;
     commit:exec)
       if is_candidate_switch "$@"; then
         command docker "$@" || return
@@ -361,5 +378,166 @@ check 'cold restore makes application data readable' test "$(app -c 'SELECT titl
 check 'cold restore preserves full archive contents' test "$(payload_fingerprint)" = "$FINGERPRINT"
 check 'cold restore leaves no staging database' test -z "$(candidate_databases)"
 check 'cold restore leaves no temporary archive' test -z "$(temporary_archives)"
+
+# Keep the application bucket separate from the rclone bucket that stores encrypted database dumps.
+docker run -d "${pull_policy[@]}" --network "container:$HOSTNAME" --name "$FILES_S3" \
+  -e "AWS_ACCESS_KEY_ID=$STORAGE_RESTORE_S3_ACCESS_KEY_ID" \
+  -e "AWS_SECRET_ACCESS_KEY=$STORAGE_RESTORE_S3_SECRET_ACCESS_KEY" \
+  "$SEAWEEDFS" server -s3 -s3.port=8333 -ip.bind=127.0.0.1 -ip=127.0.0.1 >/dev/null
+TEST_STORAGE=$(start_workload "$STORAGE" storage-service)
+export TEST_STORAGE
+poll healthy "$STORAGE"
+
+readonly FIXTURE_ORGANIZATION=018b6300-0000-7000-8000-000000000000
+export FIXTURE_ATTACHMENT_KEY="org/$FIXTURE_ORGANIZATION/018b6300-0000-7000-8000-000000000001"
+export FIXTURE_INTAKE_KEY="org/$FIXTURE_ORGANIZATION/018b6300-0000-7000-8000-000000000002"
+export FIXTURE_PROFILE_ID=018b6300-0000-7000-8000-000000000003
+export FIXTURE_POST_DUMP_KEY="org/$FIXTURE_ORGANIZATION/018b6300-0000-7000-8000-000000000004"
+readonly MISSING_KEY="org/$FIXTURE_ORGANIZATION/018b6300-0000-7000-8000-000000000005"
+readonly PURGED_KEY="org/$FIXTURE_ORGANIZATION/018b6300-0000-7000-8000-000000000006"
+
+storage_fixture() { python3 /backup/tests/storage_fixture.py "$@"; }
+if ! poll storage_fixture ready 2>"$TEST_DIR/files-s3.log"; then
+  cat "$TEST_DIR/files-s3.log" >&2
+  exit 1
+fi
+storage_fixture seed
+
+sql <<'SQL'
+CREATE ROLE storage_migrator LOGIN;
+CREATE ROLE storage_app LOGIN;
+CREATE DATABASE storage OWNER storage_migrator;
+REVOKE ALL ON DATABASE storage FROM PUBLIC;
+GRANT CONNECT ON DATABASE storage TO storage_app;
+SQL
+sql -d storage --set=org="$FIXTURE_ORGANIZATION" --set=attachment="$FIXTURE_ATTACHMENT_KEY" \
+  --set=intake="$FIXTURE_INTAKE_KEY" --set=profile="$FIXTURE_PROFILE_ID" --set=purged="$PURGED_KEY" <<'SQL'
+SET ROLE storage_migrator;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO storage_app;
+CREATE SCHEMA drizzle;
+CREATE TABLE drizzle.__drizzle_migrations (id serial PRIMARY KEY, hash text NOT NULL, created_at bigint);
+INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ('storage-fixture-schema', 1);
+CREATE TABLE attachments (
+  id text PRIMARY KEY, status text NOT NULL, scan_status text NOT NULL,
+  elected_object_key text, size_bytes bigint NOT NULL, organization_id uuid NOT NULL, task_key text NOT NULL
+);
+CREATE TABLE attachment_task_tombstones (
+  organization_id uuid NOT NULL, task_key text NOT NULL, purged_at timestamptz,
+  PRIMARY KEY (organization_id, task_key)
+);
+CREATE TABLE intake_attachments (
+  id text PRIMARY KEY, status text NOT NULL, candidate_key text, size_bytes bigint NOT NULL
+);
+CREATE TABLE profile_media_owners (
+  owner_kind text NOT NULL, owner_id uuid NOT NULL, deleted boolean NOT NULL,
+  PRIMARY KEY (owner_kind, owner_id)
+);
+CREATE TABLE profile_media_uploads (
+  upload_id text PRIMARY KEY, status text NOT NULL, candidate_id uuid, derivative_size_bytes integer,
+  owner_kind text NOT NULL, owner_id uuid NOT NULL,
+  FOREIGN KEY (owner_kind, owner_id) REFERENCES profile_media_owners
+);
+INSERT INTO attachments VALUES
+  ('first', 'ready', 'verified', :'attachment', octet_length('original attachment'), :'org', 'CAD-1'),
+  ('staged', 'pending', 'pending', NULL, 15, :'org', 'CAD-2'),
+  ('purged', 'ready', 'verified', :'purged', 15, :'org', 'CAD-3');
+INSERT INTO attachment_task_tombstones VALUES (:'org', 'CAD-3', now());
+INSERT INTO attachment_task_tombstones VALUES (:'org', 'CAD-1', NULL);
+INSERT INTO intake_attachments VALUES ('intake', 'verified', :'intake', octet_length('original intake'));
+INSERT INTO profile_media_owners VALUES
+  ('avatar', '018b6300-0000-7000-8000-000000000007', false),
+  ('avatar', '018b6300-0000-7000-8000-000000000008', true);
+INSERT INTO profile_media_uploads VALUES
+  ('avatar', 'attached', :'profile', octet_length('original avatar'), 'avatar', '018b6300-0000-7000-8000-000000000007'),
+  ('deleted-owner', 'prepared', '018b6300-0000-7000-8000-000000000009', 15, 'avatar', '018b6300-0000-7000-8000-000000000008');
+SQL
+
+storage_stamp() {
+  basename "$(dirname "$(find "$BUCKET_DIR" -type f -name storage.dump.age | sort | tail -1)")"
+}
+storage_db_id() { sql -c "SELECT oid FROM pg_database WHERE datname = 'storage'"; }
+storage_app() { docker exec "$SERVER" psql -U storage_app -d storage -v ON_ERROR_STOP=1 -tAq -c "$1"; }
+storage_restore() { cadenway-restore "$TEST_ENV" "$1" "$BACKUP_KEY" storage; }
+check_storage_ready() {
+  check 'Storage service healthy' poll healthy "$STORAGE"
+  check 'Storage candidate cleaned up' test -z "$(candidate_databases)"
+  check 'Storage temporary archives cleaned up' test -z "$(temporary_archives)"
+}
+
+echo '=== 9. a Storage dump restores bytes hidden by S3 delete markers after backup'
+sed -i 's/^CADENWAY_BACKUP_DATABASES=.*/CADENWAY_BACKUP_DATABASES="storage"/' /etc/cadenway/backup.env
+cadenway-backup 2>"$TEST_DIR/storage-backup.log"
+STORAGE_STAMP=$(storage_stamp)
+storage_fixture delete-after-dump >"$TEST_DIR/deleted-versions.json"
+add_post_dump_row() {
+  sql -d storage --set=object="$FIXTURE_POST_DUMP_KEY" --set=org="$FIXTURE_ORGANIZATION" <<'SQL'
+INSERT INTO attachments
+VALUES ('after-dump', 'ready', 'verified', :'object', octet_length('uploaded after the dump'), :'org', 'CAD-4');
+SQL
+}
+add_post_dump_row
+sql -d storage -c "DELETE FROM attachments WHERE id = 'first'"
+STORAGE_BEFORE_RESTORE=$(storage_db_id)
+storage_restore "$STORAGE_STAMP"
+check 'recovered attachment points to the elected key' test \
+  "$(storage_app "SELECT elected_object_key FROM attachments WHERE id = 'first'")" = "$FIXTURE_ATTACHMENT_KEY"
+check 'verified intake reservation points to its candidate' test \
+  "$(storage_app "SELECT candidate_key FROM intake_attachments WHERE id = 'intake'")" = "$FIXTURE_INTAKE_KEY"
+check 'attached profile media points to its derivative' test \
+  "$(storage_app "SELECT candidate_id FROM profile_media_uploads WHERE upload_id = 'avatar'")" = "$FIXTURE_PROFILE_ID"
+check 'a purged task row does not require its former attachment' test \
+  "$(storage_app "SELECT elected_object_key FROM attachments WHERE id = 'purged'")" = "$PURGED_KEY"
+check 'a deleted profile owner does not require its former derivative' test \
+  "$(storage_app "SELECT status FROM profile_media_uploads WHERE upload_id = 'deleted-owner'")" = prepared
+check 'post-dump row is absent from recovered database' test -z "$(storage_app "SELECT id FROM attachments WHERE id = 'after-dump'")"
+check 'restored and post-dump bytes are downloadable and original versions remain' \
+  storage_fixture verify-restored <"$TEST_DIR/deleted-versions.json"
+check 'Storage switched to a restored database' test "$(storage_db_id)" != "$STORAGE_BEFORE_RESTORE"
+check_storage_ready
+
+echo '=== 10. repeating the restore preserves the S3 version history'
+history=$(storage_fixture history)
+storage_restore "$STORAGE_STAMP"
+check 'retry does not create or remove object versions' test "$(storage_fixture history)" = "$history"
+check_storage_ready
+
+echo '=== 11. rollback keeps the live Storage database and objects active'
+add_post_dump_row
+live_storage=$(storage_db_id)
+check 'Storage restart failure is reported' fails env TEST_RESTORE_FAULT=storage-start \
+  cadenway-restore "$TEST_ENV" "$STORAGE_STAMP" "$BACKUP_KEY" storage 2>"$TEST_DIR/storage-restore.log"
+check 'Storage restart failure injected' test -e "$TEST_DIR/storage-start-failure"
+check 'post-rollback Storage database has its original OID' test "$(storage_db_id)" = "$live_storage"
+check 'post-rollback Storage database still contains the new attachment' test \
+  "$(storage_app "SELECT elected_object_key FROM attachments WHERE id = 'after-dump'")" = "$FIXTURE_POST_DUMP_KEY"
+check 'rollback does not create or remove object versions' test "$(storage_fixture history)" = "$history"
+check 'all live objects remain downloadable after rollback' \
+  storage_fixture verify-restored <"$TEST_DIR/deleted-versions.json"
+check_storage_ready
+
+echo '=== 12. missing or conflicting S3 versions prevent cutover'
+sql -d storage --set=object="$MISSING_KEY" --set=org="$FIXTURE_ORGANIZATION" <<'SQL'
+INSERT INTO attachments VALUES ('never-uploaded', 'ready', 'verified', :'object', 15, :'org', 'CAD-5');
+SQL
+# Backup names have second granularity. Keep the original fixture available for the conflict case.
+sleep 1
+cadenway-backup 2>"$TEST_DIR/storage-backup.log"
+MISSING_STAMP=$(storage_stamp)
+check 'missing-object snapshot differs from the valid snapshot' test "$MISSING_STAMP" != "$STORAGE_STAMP"
+sql -d storage -c "DELETE FROM attachments WHERE id = 'never-uploaded'"
+storage_started=$(started_at "$STORAGE")
+check 'snapshot with no retained version is rejected' fails storage_restore "$MISSING_STAMP" 2>"$TEST_DIR/storage-restore.log"
+check 'missing object diagnosed during preflight' grep -Fq 'Storage object preflight failed' "$TEST_DIR/storage-restore.log"
+check 'missing version does not modify the application bucket' test "$(storage_fixture history)" = "$history"
+check 'missing version never switches or stops Storage' test "$(storage_db_id):$(started_at "$STORAGE")" = "$live_storage:$storage_started"
+check_storage_ready
+
+storage_fixture conflict
+history=$(storage_fixture history)
+check 'snapshot with conflicting object bytes is rejected' fails storage_restore "$STORAGE_STAMP" 2>"$TEST_DIR/storage-restore.log"
+check 'conflicting object diagnosed during preflight' grep -Fq 'Storage object preflight failed' "$TEST_DIR/storage-restore.log"
+check 'conflict leaves the current object and all version IDs unchanged' test "$(storage_fixture history)" = "$history"
+check 'conflicting version never switches or stops Storage' test "$(storage_db_id):$(started_at "$STORAGE")" = "$live_storage:$storage_started"
+check_storage_ready
 
 exit "$FAILED"

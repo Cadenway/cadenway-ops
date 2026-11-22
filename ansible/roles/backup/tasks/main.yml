@@ -5,9 +5,11 @@
     fail_msg: Set cadenway_backup_age_recipient to the public age key the dumps are encrypted to.
     quiet: true
 
-- name: Install rclone
+- name: Install backup and object recovery clients
   ansible.builtin.apt:
-    name: rclone
+    name:
+      - rclone
+      - python3-boto3
     state: present
 
 - name: Write the backup configuration
@@ -29,6 +31,22 @@
   loop:
     - { src: cadenway-backup.sh, dest: cadenway-backup }
     - { src: cadenway-restore.sh, dest: cadenway-restore }
+
+- name: Create the restore helper directory
+  ansible.builtin.file:
+    path: /usr/local/lib/cadenway
+    owner: root
+    group: root
+    mode: '0755'
+    state: directory
+
+- name: Install the storage object restore helper
+  ansible.builtin.copy:
+    src: cadenway-restore-objects.py
+    dest: /usr/local/lib/cadenway/cadenway-restore-objects.py
+    owner: root
+    group: root
+    mode: '0644'
 
 - name: Install the backup units
   ansible.builtin.template:
