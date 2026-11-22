@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GitOps agent of a Cadenway host: applies what cadenway-ops `main` describes, one run per timer tick.
+# GitOps agent of a Cadenway host: applies approved Ops releases, one run per timer tick.
 #
 # Pull-only: the host fetches the repository with a read-only deploy key; nothing reaches the VPS from
 # outside. One host runs one or several environments (CADENWAY_ENVIRONMENTS), each as the Compose
@@ -7,8 +7,8 @@
 # Traefik of the cadenway-edge project.
 #
 # For each environment, on a new commit:
-#   1. check out the commit in the environment's worktree and decrypt its secrets into /run (tmpfs);
-#   2. validate (no missing variable), pull, bring the infrastructure services up (idempotent);
+#   1. check out the commit, validate its service definitions, decrypt its secrets into /run (tmpfs);
+#   2. check for missing settings, pull and bring infrastructure services up (idempotent);
 #   3. for every deployable whose version is set and whose fingerprint changed or whose container is
 #      not healthy: run its migrations in a one-off container, to which the agent gives the migrator
 #      URL of its database, start the new container without serving aliases, wait for `healthy`;
@@ -32,14 +32,19 @@ fi
 
 : "${CADENWAY_REPO_URL:?CADENWAY_REPO_URL is required}"
 readonly BRANCH=${CADENWAY_BRANCH:-main}
+readonly PRODUCTION_BRANCH=${CADENWAY_PRODUCTION_BRANCH:-production}
 readonly ENVIRONMENTS=${CADENWAY_ENVIRONMENTS:?CADENWAY_ENVIRONMENTS is required}
 readonly ROOT=${CADENWAY_ROOT:-/opt/cadenway}
 readonly SETTINGS_DIR=${CADENWAY_SETTINGS_DIR:-/etc/cadenway}
+readonly RELEASE_SIGNERS=${CADENWAY_RELEASE_SIGNERS:-$SETTINGS_DIR/release-signers}
+readonly PRODUCTION_SIGNERS=${CADENWAY_PRODUCTION_SIGNERS:-$SETTINGS_DIR/production-signers}
 readonly STATE_DIR=${CADENWAY_STATE_DIR:-/var/lib/cadenway-agent}
 readonly SECRETS_DIR=${CADENWAY_SECRETS_DIR:-/run/cadenway}
 readonly HEALTH_TIMEOUT=${CADENWAY_HEALTH_TIMEOUT:-60}
 readonly LOCK_FILE=${CADENWAY_LOCK_FILE:-/run/lock/cadenway-agent.lock}
 readonly MIRROR=$ROOT/ops.git
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+readonly SCRIPT_DIR
 # Exit status of a failure worth retrying on the next tick (sysexits EX_TEMPFAIL).
 readonly TRANSIENT=75
 # Companions are defined in their owner's Compose file and share its release and database.
@@ -70,12 +75,47 @@ notify() {
     log "notify: the webhook did not accept the message"
 }
 
-# Keeps a bare mirror of the repository up to date with the branch.
+# Keeps a bare mirror of only the configured release refs.
 fetch() {
+  local branch
+  local -a refspecs=()
+  for branch in "$@"; do
+    git check-ref-format "refs/heads/$branch" || return 1
+    refspecs+=("+refs/heads/$branch:refs/heads/$branch")
+  done
   if [[ ! -d $MIRROR ]]; then
-    git clone --quiet --bare "$CADENWAY_REPO_URL" "$MIRROR" || return 1
+    git init --quiet --bare "$MIRROR" &&
+      git -C "$MIRROR" remote add origin "$CADENWAY_REPO_URL" || return 1
   fi
-  git -C "$MIRROR" fetch --quiet --prune origin "+refs/heads/$BRANCH:refs/heads/$BRANCH"
+  git -C "$MIRROR" fetch --quiet --no-tags --prune origin "${refspecs[@]}"
+}
+
+# The public trust store lives on the host. Verify before worktree checkout or any Compose apply.
+# OpenPGP/X.509 signatures cannot substitute for the separately authorized Ops SSH signer.
+authorized_commit() {
+  local commit=$1 signers=$2 applied=$3
+  [[ $signers == /* && -s $signers && -f $signers && ! -L $signers ]] || return 1
+  git -C "$MIRROR" \
+    -c gpg.minTrustLevel=fully \
+    -c gpg.ssh.allowedSignersFile="$signers" \
+    -c gpg.openpgp.program=/bin/false \
+    -c gpg.x509.program=/bin/false \
+    verify-commit "$commit" >/dev/null 2>&1 || return 1
+  descends_from "$commit" "$applied"
+}
+
+descends_from() {
+  local commit=$1 applied=$2
+  [[ -z $applied ]] || git -C "$MIRROR" merge-base --is-ancestor "$applied" "$commit"
+}
+
+# An approval for staging alone may change its app manifests and versions. Infrastructure, SOPS
+# sources and process settings on a shared daemon also need the production approval.
+has_approved_host_inputs() {
+  local release=$1 production=$2 env=$3
+  git -C "$MIRROR" diff --quiet --no-ext-diff --no-textconv "$production" "$release" -- \
+    compose "environments/$env" ":(exclude)environments/$env/services" \
+    ":(exclude)environments/$env/versions.env"
 }
 
 # Checks out a commit, detached, in a stable worktree: Compose sees the same paths on every run.
@@ -111,7 +151,7 @@ apply_edge() {
   printf '%s\n' "$commit" >"$STATE_DIR/edge/applied"
 }
 
-# Runs docker compose for one environment with its definitions, settings, versions and secrets.
+# Runs Compose for one environment using only the service documents staged by the installed policy.
 env_compose() {
   local env=$1
   shift
@@ -119,7 +159,7 @@ env_compose() {
   local process_file=$worktree/environments/$env/processes.env
   local -a process_settings=()
   [[ ! -f $process_file ]] || process_settings=(--env-file "$process_file")
-  CADENWAY_SERVICES=../environments/$env/services \
+  CADENWAY_SERVICES=$SECRETS_DIR/$env/definitions \
     docker compose -p "cadenway-$env" --project-directory "$worktree/compose" \
     -f "$worktree/compose/compose.yaml" \
     --env-file "$SETTINGS_DIR/env/$env.env" \
@@ -127,6 +167,21 @@ env_compose() {
     --env-file "$SECRETS_DIR/$env/secrets.env" \
     "${process_settings[@]}" \
     "$@"
+}
+
+# Constrain the service manifests before Compose can load files or use the environment's secrets.
+# The canonical copies contain only the same raw literals and authorized references as the source.
+stage_service_definitions() {
+  local env=$1 base=$ROOT/envs/$1/environments
+  local scratch=${SECRETS_DIR:?}/$env
+  local -a policy_options=()
+  [[ $env != prod ]] || policy_options=(--require-digest)
+  [[ $env =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ! -L $base && ! -L $base/$env ]] || return 1
+  # The release lock also covers this scratch directory. A killed process cannot run its
+  # exit trap, so the next tick discards the previous candidate's files before staging.
+  rm -rf -- "$scratch" && install -d -m 0700 "$scratch" || return 1
+  python3 -I "$SCRIPT_DIR/compose-policy.py" "${policy_options[@]}" "$base/$env/services" \
+    "$base/$env/versions.env" "$scratch/definitions"
 }
 
 # Replica counts and owner modes are desired Git state, independent of image releases. Keep the
@@ -683,7 +738,10 @@ apply_environment() {
     log "$env: ${commit:0:12} cannot be checked out; trying again on the next tick"
     return "$TRANSIENT"
   fi
-  if ! valid_process_settings "$env"; then
+  if ! stage_service_definitions "$env"; then
+    result=1
+    log "$env: service definitions refused by the installed Compose policy"
+  elif ! valid_process_settings "$env"; then
     result=1
     log "$env: invalid process settings in processes.env"
   elif ! decrypt_secrets "$env"; then
@@ -695,8 +753,9 @@ apply_environment() {
     if [[ -n $missing ]]; then
       result=1
       notify "cadenway $env: ${commit:0:12} misses $(tr '\n' ' ' <<<"$missing")"
-    elif ! env_compose "$env" config -q; then
+    elif ! env_compose "$env" config -q >/dev/null 2>&1; then
       result=1
+      log "$env: the Compose configuration is invalid"
     elif ! login_registry "$env"; then
       result=$TRANSIENT
       log "$env: the GHCR login failed"
@@ -827,7 +886,8 @@ apply_environment() {
 }
 
 main() {
-  local commit env status=0
+  local commit environment_commit edge_commit env status=0 production_commit=''
+  local -a branches=("$BRANCH") environments=()
   exec 9>"$LOCK_FILE"
   flock -n 9 || {
     log 'another run is in progress'
@@ -836,19 +896,63 @@ main() {
   # Only the run holding the lock cleans up: decrypted secrets never outlive it.
   trap 'rm -rf "${SECRETS_DIR:?}"/*' EXIT
   mkdir -p "$ROOT/envs" "$STATE_DIR"
-  if ! fetch; then
-    log "cannot fetch $BRANCH from $CADENWAY_REPO_URL: check the deploy key and the network"
-    exit 1
+
+  read -r -a environments <<<"$ENVIRONMENTS"
+  for env in "${environments[@]}"; do
+    if [[ $env == prod ]]; then
+      if [[ $BRANCH == "$PRODUCTION_BRANCH" ]]; then
+        log "production requires a separate protected Ops ref"
+        return 1
+      fi
+      branches+=("$PRODUCTION_BRANCH")
+      break
+    fi
+  done
+  if ! fetch "${branches[@]}"; then
+    log "cannot fetch the configured release refs: check the deploy key and the network"
+    return 1
   fi
   commit=$(git -C "$MIRROR" rev-parse "refs/heads/$BRANCH")
-  apply_edge "$commit" || {
-    log "edge: ${commit:0:12} failed; environments without their edge network wait"
+  edge_commit=$commit
+  if ((${#branches[@]} > 1)); then
+    production_commit=$(git -C "$MIRROR" rev-parse "refs/heads/$PRODUCTION_BRANCH")
+    if ! authorized_commit "$production_commit" "$PRODUCTION_SIGNERS" \
+      "$(read_state "$STATE_DIR/prod/applied")" ||
+      ! descends_from "$production_commit" "$(read_state "$STATE_DIR/edge/applied")"; then
+      log "production: the release is unsigned by Ops or would rewind an applied ref"
+      return 1
+    fi
+    if authorized_commit "$production_commit" "$RELEASE_SIGNERS" ''; then
+      log "production: its approval key also authorizes non-production releases"
+      return 1
+    fi
+    edge_commit=$production_commit
+  fi
+  apply_edge "$edge_commit" || {
+    log "edge: ${edge_commit:0:12} failed; environments without their edge network wait"
     status=1
   }
-  for env in $ENVIRONMENTS; do
-    apply_environment "$env" "$commit" || status=1
+  for env in "${environments[@]}"; do
+    environment_commit=$commit
+    if [[ $env == prod ]]; then
+      environment_commit=$production_commit
+    elif [[ -n $production_commit ]] &&
+      { ! authorized_commit "$commit" "$RELEASE_SIGNERS" "$(read_state "$STATE_DIR/$env/applied")" ||
+        authorized_commit "$commit" "$PRODUCTION_SIGNERS" ''; }; then
+      log "$env: a release sharing the production daemon needs its own Ops approval"
+      status=1
+      continue
+    elif [[ -n $production_commit ]] &&
+      ! has_approved_host_inputs "$commit" "$production_commit" "$env"; then
+      log "$env: host and secret configuration also require production approval on a shared daemon"
+      status=1
+      continue
+    fi
+    apply_environment "$env" "$environment_commit" || status=1
   done
   return "$status"
 }
 
-main "$@"
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi

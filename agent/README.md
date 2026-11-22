@@ -1,5 +1,39 @@
 # Application releases
 
+## Approved deployment inputs
+
+On a production host, the agent reads `CADENWAY_PRODUCTION_BRANCH` (default `production`)
+for production and the shared edge. It verifies the selected commit with the SSH public
+allowed-signers file at `CADENWAY_PRODUCTION_SIGNERS` (default
+`/etc/cadenway/production-signers`), before checking it out. Keep that branch separate from
+`CADENWAY_BRANCH` and restrict both applied refs to Ops-controlled updates. The application
+release identities may propose changes. The host accepts production only after a separate
+Ops authorization, so approval includes the exact Git tree. Bootstrap the production branch
+from the last applied production and edge history. Roll back with a new approved commit
+that restores the earlier versions and definitions.
+
+Each released production app uses `tag@sha256:<digest>` in
+`environments/prod/versions.env`. Ops verifies and records the digest of the approved artifact
+before signing the production commit. The agent refuses an unpinned tag and writes the
+approved image reference into the canonical service definition before Compose loads
+environment variables. Bootstrap the signed branch with pins for all deployed apps. Tracking
+new digests and signing the commit happen outside the host.
+
+A non-production environment sharing the daemon with production needs a distinct signature
+from `CADENWAY_RELEASE_SIGNERS` (default `/etc/cadenway/release-signers`). Its Compose
+infrastructure, encrypted secrets and process settings must match the production-approved
+tree. The non-production authorization can update its own service definitions and image tags.
+
+The agent validates service manifests using its installed `compose-policy.py` before
+decrypting the environment. The policy grants each service explicit interpolation variables
+and permits only declared app resources, inline configs, and assigned network and ingress
+settings. It stages canonical copies in `/run` for Compose. A new service environment
+variable, Redis network or ingress setting requires the corresponding Ops policy update.
+The [deployment guide](../docs/deployment.md) describes the repository protections and
+promotion procedure.
+
+## Readiness and batch recovery
+
 The agent creates candidates with the normal Compose configuration and withholds
 their internal service DNS aliases until readiness. They can still reach their
 internal dependencies. Public candidates keep their edge endpoint throughout
@@ -8,10 +42,9 @@ the previous containers are still available for batch rollback. A public candida
 requires an explicit healthcheck and its environment's edge network configured
 as the Traefik network.
 
-Application candidates use dynamic bridge endpoints and consume inline configs
-or files mounted by Compose. Definitions with published ports, special endpoint
-settings, post-start hooks or unresolved environment-backed files fail before
-they can replace a running release.
+Application candidates use dynamic bridge endpoints and consume inline configs.
+Definitions with published ports, special endpoint settings, post-start hooks
+or host-backed files fail before they can replace a running release.
 
 An environment releases application services as a batch. The agent keeps the last
 containers until the replacements have passed readiness, then promotes the candidates,

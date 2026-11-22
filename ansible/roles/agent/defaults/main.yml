@@ -7,6 +7,10 @@ cadenway_environment_settings: {}
 # Repository and branch the agent applies; reached over SSH with the host's read-only deploy key.
 cadenway_repo_url: ''
 cadenway_repo_branch: main
+cadenway_production_branch: production
+# OpenSSH allowed_signers lines. Use distinct public keys for each trusted approval role.
+cadenway_production_signers: []
+cadenway_release_signers: []
 cadenway_ghcr_owner: ''
 cadenway_acme_email: ''
 # Seconds a new container gets to become healthy before the old one is kept.

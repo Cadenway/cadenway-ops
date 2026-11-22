@@ -12,6 +12,16 @@
       entry for each of them, cadenway_repo_url and cadenway_acme_email.
     quiet: true
 
+- name: Check the approved production and shared-host release authorities
+  ansible.builtin.assert:
+    that:
+      - cadenway_repo_branch != cadenway_production_branch
+      - cadenway_production_signers | length > 0
+      - cadenway_environments | length == 1 or cadenway_release_signers | length > 0
+    fail_msg: Configure the protected production ref and the host-pinned public approval keys.
+    quiet: true
+  when: "'prod' in cadenway_environments"
+
 # The images are built for linux/amd64 only (release.yml of each service).
 - name: Check the host architecture
   ansible.builtin.assert:
@@ -21,9 +31,9 @@
       The Cadenway images are built for amd64; this host is {{ ansible_facts['architecture'] }}.
     quiet: true
 
-- name: Install age, which generates the host key
+- name: Install the GitOps policy parser and age
   ansible.builtin.apt:
-    name: age
+    name: [age, python3-yaml]
     state: present
 
 - name: Install SOPS
@@ -137,6 +147,29 @@
     owner: root
     group: root
     mode: '0755'
+
+- name: Install the Compose policy beside the agent script
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../../agent/compose-policy.py'
+    dest: /usr/local/bin/compose-policy.py
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Pin the public GitOps approval keys on the host
+  ansible.builtin.copy:
+    content: "{{ item.signers | join('\n') }}\n"
+    dest: '/etc/cadenway/{{ item.name }}'
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - { name: production-signers, signers: '{{ cadenway_production_signers }}' }
+    - { name: release-signers, signers: '{{ cadenway_release_signers }}' }
+  loop_control:
+    label: '{{ item.name }}'
+  when: not cadenway_preview_first_run
+  notify: Reconcile the deployments
 
 - name: Install the agent units
   ansible.builtin.copy:

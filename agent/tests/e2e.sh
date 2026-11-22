@@ -19,12 +19,15 @@
 # The assertions are strings evaluated by `check`, so they expand late on purpose.
 # shellcheck disable=SC2016,SC2034,SC2329
 set -euo pipefail
-apk add --quiet --no-cache bash git jq curl age util-linux coreutils >/dev/null
+apk add --quiet --no-cache bash git jq curl age util-linux coreutils py3-yaml openssh-keygen >/dev/null
+python3 /agent/tests/compose-policy.py
+bash /agent/tests/release-authorization.sh
 curl -fsSL -o /usr/local/bin/sops https://github.com/getsops/sops/releases/download/v3.13.3/sops-v3.13.3.linux.amd64
 echo "e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b  /usr/local/bin/sops" | sha256sum -c - >/dev/null
 chmod +x /usr/local/bin/sops
 mkdir -p /run/lock /etc/cadenway/env /src
 cp /agent/cadenway-agent.sh /usr/local/bin/cadenway-agent && chmod +x /usr/local/bin/cadenway-agent
+cp /agent/compose-policy.py /usr/local/bin/compose-policy.py
 
 age-keygen -o /etc/cadenway/age.key 2>/dev/null
 RECIPIENT=$(age-keygen -y /etc/cadenway/age.key)
@@ -70,10 +73,10 @@ services:
     image: busybox:\${WEB_SERVICE_VERSION}
     command: ['sh', '-c', 'httpd -f -p 8080 -h /srv']
     environment:
-      SECRET_VALUE: \${SECRET_VALUE}
+      SECRET_VALUE: \${WEB_SERVICE_DATABASE_URL}
     labels:
       traefik.enable: 'true'
-      traefik.docker.network: 'cadenway-edge-\${ENVIRONMENT}'
+      traefik.docker.network: 'cadenway-edge-\${ENVIRONMENT:-local}'
     configs:
       - source: web-config
         target: /srv/config.txt
@@ -84,7 +87,7 @@ configs:
     content: '$2'
 networks:
   edge:
-    name: cadenway-edge-\${ENVIRONMENT}
+    name: cadenway-edge-\${ENVIRONMENT:-local}
     external: true
   internal: {}
 EOF
@@ -111,7 +114,7 @@ secrets() {
   rm /tmp/plain.env
 }
 versions 1.36.1 ''
-secrets 'SECRET_VALUE=first'
+secrets 'WEB_SERVICE_DATABASE_URL=first'
 git -C $R init -q -b main && git -C $R add -A && git -C $R -c user.name=t -c user.email=t@t commit -qm init
 
 cat >/etc/cadenway/agent.env <<EOF
@@ -176,7 +179,7 @@ check 'skipped' '[[ $OUT == *"failed before"* ]]'
 
 echo '=== 6. fix, and a rotated secret with a dollar sign'
 write_web true first
-secrets 'SECRET_VALUE=pa$word$HOME'
+secrets 'WEB_SERVICE_DATABASE_URL=pa$word$HOME'
 commit 'fix and rotate'
 run_agent
 check 'secret kept literally' '[[ $(docker exec "$(web | cut -d" " -f1)" printenv SECRET_VALUE) == "pa\$word\$HOME" ]]'
@@ -194,13 +197,13 @@ check 'new content served' '[[ $(docker exec "$(web | cut -d" " -f1)" cat /srv/c
 echo '=== 8. missing secret: refused before anything changes'
 BEFORE=$(web | cut -d" " -f1)
 secrets 'OTHER=1'
-commit 'drop SECRET_VALUE'
+commit 'drop WEB_SERVICE_DATABASE_URL'
 run_agent
 check 'commit failed' 'head_is failed'
-check 'names the variable' '[[ $OUT == *"misses SECRET_VALUE"* ]]'
+check 'names the variable' '[[ $OUT == *"misses WEB_SERVICE_DATABASE_URL"* ]]'
 check 'web untouched' '[[ $(web | cut -d" " -f1) == "$BEFORE" ]]'
-secrets 'SECRET_VALUE=pa$word$HOME'
-commit 'restore SECRET_VALUE'
+secrets 'WEB_SERVICE_DATABASE_URL=pa$word$HOME'
+commit 'restore WEB_SERVICE_DATABASE_URL'
 run_agent
 check 'restored' 'head_is applied'
 
@@ -273,7 +276,7 @@ EOF
 readonly MIGRATOR_URL='postgres://data_migrator:mi$grat0r@db:5432/data'
 MIGRATED="migrated with $(printf %s "$MIGRATOR_URL" | sha256sum | cut -c1-64)"
 data_secrets() {
-  secrets 'SECRET_VALUE=pa$word$HOME' 'DATA_SERVICE_DATABASE_URL=postgres://data_app:app@db:5432/data' "$@"
+  secrets 'WEB_SERVICE_DATABASE_URL=pa$word$HOME' 'DATA_SERVICE_DATABASE_URL=postgres://data_app:app@db:5432/data' "$@"
 }
 data() { containers data-service; }
 data_id() { data | cut -d" " -f1; }
@@ -599,6 +602,14 @@ commit 'omit the healthcheck on a public service'
 run_agent
 check 'the public candidate is refused before it starts' \
   'head_is failed && [[ $(web_id) == "$APPLIED_WEB" && $OUT == *"an exposed candidate needs its edge network and a healthcheck"* ]]'
+
+echo '=== 29. another service variable in a config is refused before rollout'
+PREVIOUS=$(web | cut -d' ' -f1)
+write_web true '${DATA_SERVICE_DATABASE_URL}'
+commit 'request a disallowed config reference'
+run_agent
+check 'service scope violation failed the commit without replacing the previous container' \
+  'head_is failed && [[ $(web | cut -d" " -f1) == "$PREVIOUS" && $OUT == *"outside the service grant"* ]]'
 
 echo '=== cleanup'
 docker compose -p cadenway-test down -v --remove-orphans >/dev/null 2>&1 || true

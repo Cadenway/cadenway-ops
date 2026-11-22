@@ -95,18 +95,37 @@ agent apply the current commit again at once.
 `ansible/tests/run.sh` runs these four steps (fresh preview, apply, idempotent apply, preview) against
 a throwaway Ubuntu 24.04 container in CI.
 
-## GitHub settings the workflows rely on
+## GitOps approval and service definitions
 
 | Where                                 | Setting                                                                                                   |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | Organization variables                | `CADENWAY_DEPLOY_APP_CLIENT_ID`                                                                           |
 | Each service repository, environments | `release`, `staging`, `production`, each limited to the `main` branch; required reviewers on `production` |
 | The same three environments           | the environment secret `CADENWAY_DEPLOY_APP_PRIVATE_KEY`; never an organization or repository secret      |
-| `cadenway-ops` `main` rules           | the deploy app may push (bypass), everyone else goes through a pull request                               |
+| `cadenway-ops` release refs          | protect the staging and production refs independently and remove the deploy App from their bypass lists |
 | GHCR packages                         | public, or `GHCR_PULL_USER` and `GHCR_PULL_TOKEN` in the environment's secrets                            |
 
-Limited to `main`, the environments keep the app key out of any workflow run from a pull request
-branch: the key writes the desired state of every host.
+Service release workflows publish images and submit their proposed Compose definition and version
+to Ops for review. The legacy workflow copies that push directly to the Ops default branch must
+use a proposal branch or have their changes applied by an Ops maintainer before enabling this setup.
+The service App's installation must not hold either approval signing key.
+
+On a production host the agent fetches a separate protected ref, configured by
+`cadenway_production_branch` (default `production`). Ops promotion signs the final commit with
+the independent SSH signing key whose public allowed-signers line is provisioned through
+`cadenway_production_signers`. That commit must descend from the previously applied production
+and edge heads. Apply a rollback through a newly approved commit containing the intended older
+definitions. Bootstrap the production ref ahead of enabling this agent on an existing host.
+
+For a daemon shared with staging, pin the separate staging approval keys in
+`cadenway_release_signers`. The signed production commit also approves infrastructure and host
+configuration used by staging, including the SOPS source. Staging approval alone changes only the
+service definitions and image versions of that environment. Use disjoint public keys in the two
+signer lists. Ansible installs the public keys and the Compose policy when it configures the host.
+
+The agent compiles included service definitions against its installed per-service policy before
+decryption. Update that policy through Ops review when a service needs a new variable, network,
+configuration or routing label. Service publishing credentials are not approval credentials.
 
 ## Backups
 

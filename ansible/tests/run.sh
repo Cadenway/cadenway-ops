@@ -41,6 +41,8 @@ cp -r /src /repo && cd /repo
 ansible-galaxy collection install -r ansible/requirements.yml >/dev/null
 install -d -m 0700 /root/.ssh && cp /keys/id_ed25519 /keys/id_ed25519.pub /root/.ssh/
 chmod 600 /root/.ssh/id_ed25519
+ssh-keygen -q -t ed25519 -N '' -f /tmp/cw-staging-approval
+ssh-keygen -q -t ed25519 -N '' -f /tmp/cw-production-approval
 cat >ansible/inventory/hosts.yml <<HOSTS
 cadenway:
   hosts:
@@ -53,6 +55,8 @@ cadenway_admin_ssh_keys: ['$(cat /root/.ssh/id_ed25519.pub)']
 cadenway_repo_url: git@github.com:example/cadenway-ops.git
 cadenway_ghcr_owner: example
 cadenway_acme_email: ops@example.com
+cadenway_release_signers: ['staging $(cut -d ' ' -f 1,2 /tmp/cw-staging-approval.pub)']
+cadenway_production_signers: ['production $(cut -d ' ' -f 1,2 /tmp/cw-production-approval.pub)']
 cadenway_backup_age_recipient: age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq
 cadenway_backup_signing_public_keys: ['$(cut -d ' ' -f 1,2 /root/.ssh/id_ed25519.pub)']
 ansible_ssh_common_args: -o StrictHostKeyChecking=accept-new
