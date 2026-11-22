@@ -1,8 +1,8 @@
 # Shared infrastructure of one environment: PostgreSQL, Redis, NATS JetStream with its streams, and
 # Meilisearch.
 #
-# Nothing here publishes a port: everything stays on `internal`. Traefik lives in edge.yaml,
-# once per host, so several environments can share a VPS.
+# Nothing here publishes a port. Shared infrastructure stays on `internal`, while the gateway
+# Redis stores use dedicated networks. Traefik lives in edge.yaml, once per host.
 # Images are pinned by tag and digest; Renovate updates both together.
 # Memory limits are starting values: adjust them once the VPS size is known.
 services:
@@ -48,13 +48,32 @@ services:
         limits:
           memory: 512M
 
-  redis:
+  # Dedicated stores keep each gateway's rate limits and realtime authority private from the
+  # shared application network and from the other gateway.
+  redis-api:
     image: redis:8.10.3-alpine@sha256:7958cfbb9d152f87dadfbc89f1b0b15938f0b81ff8982feb327476f4911935c3
     restart: unless-stopped
     volumes:
-      - redis-data:/data
+      - redis-api-data:/data
     networks:
-      - internal
+      - redis-api
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  redis-realtime:
+    image: redis:8.10.3-alpine@sha256:7958cfbb9d152f87dadfbc89f1b0b15938f0b81ff8982feb327476f4911935c3
+    restart: unless-stopped
+    volumes:
+      - redis-realtime-data:/data
+    networks:
+      - redis-realtime
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 10s
@@ -163,10 +182,15 @@ services:
 # Declared identically by every service definition this stack includes.
 networks:
   internal: {}
+  redis-api:
+    internal: true
+  redis-realtime:
+    internal: true
 
 volumes:
   postgres-data:
-  redis-data:
+  redis-api-data:
+  redis-realtime-data:
   nats-data:
   nats-stream-state:
   meilisearch-data:

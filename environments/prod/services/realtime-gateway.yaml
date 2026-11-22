@@ -10,11 +10,12 @@ services:
     restart: unless-stopped
     environment:
       PORT: '3001'
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: redis://redis-realtime:6379
       NATS_URL: ${NATS_URL}
     networks:
       - edge
       - internal
+      - redis-realtime
     # The environment in the router, service and network names keeps two stacks apart on one shared
     # Traefik.
     labels:
@@ -41,3 +42,5 @@ networks:
     name: cadenway-edge-${ENVIRONMENT:-local}
     external: true
   internal: {}
+  redis-realtime:
+    internal: true

@@ -35,10 +35,6 @@ x-data: &data
   nats-streams:
     condition: service_healthy
 
-x-redis: &redis
-  redis:
-    condition: service_healthy
-
 # The exposed services of the staging definitions point Traefik at `cadenway-edge-<env>`; locally
 # their edge network is the one of the project (`networks` at the end of this file).
 x-edge: &edge
@@ -193,6 +189,7 @@ services:
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       CADENWAY_OTEL_REDACT_HTTP_QUERY_STRINGS: 'true'
+      REDIS_URL: redis://redis-api:6379
       ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN},${PUBLIC_SCHEME:-https}://${DOMAIN}
       INTERNAL_TOKEN_ISSUER: api-gateway
       INTERNAL_TOKEN_PRIVATE_JWK: ${API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}
@@ -210,6 +207,8 @@ services:
       INTEGRATION_SERVICE_URL: ${INTEGRATION_SERVICE_URL}
       SEARCH_SERVICE_URL: ${SEARCH_SERVICE_URL}
     labels: *edge
+    networks:
+      - redis-api
     build:
       context: ../../cadenway-api-gateway
       secrets: [npmrc]
@@ -217,22 +216,28 @@ services:
       watch:
         - action: rebuild
           path: ../../cadenway-api-gateway/src
-    depends_on: *redis
+    depends_on:
+      redis-api:
+        condition: service_healthy
 
   realtime-gateway:
     profiles: [full]
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       CADENWAY_OTEL_REDACT_HTTP_QUERY_STRINGS: 'true'
+      REDIS_URL: redis://redis-realtime:6379
       ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}
       INTERNAL_TOKEN_ISSUER: realtime-gateway
       INTERNAL_TOKEN_PRIVATE_JWK: ${REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}
       NATS_USER: realtime-gateway
       NATS_PASSWORD: ${REALTIME_GATEWAY_NATS_PASSWORD}
       IDENTITY_SERVICE_URL: ${IDENTITY_SERVICE_URL}
+      ORGANIZATION_SERVICE_URL: ${ORGANIZATION_SERVICE_URL}
       TASK_SERVICE_URL: ${TASK_SERVICE_URL}
       REALTIME_GIT_RELAYS_ENABLED: ${REALTIME_GIT_RELAYS_ENABLED:-false}
     labels: *edge
+    networks:
+      - redis-realtime
     build:
       context: ../../cadenway-realtime-gateway
       secrets: [npmrc]
@@ -241,7 +246,8 @@ services:
         - action: rebuild
           path: ../../cadenway-realtime-gateway/src
     depends_on:
-      <<: *redis
+      redis-realtime:
+        condition: service_healthy
       nats-streams:
         condition: service_healthy
 
@@ -257,6 +263,9 @@ services:
       NATS_USER: identity
       NATS_PASSWORD: ${IDENTITY_NATS_PASSWORD}
       INTERNAL_TOKEN_AUDIENCE: identity-service
+      ORGANIZATION_SERVICE_URL: ${ORGANIZATION_SERVICE_URL}
+      IDENTITY_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK: ${IDENTITY_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK:-}
+      ORGANIZATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: ${ORGANIZATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS:-}
       INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
         {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
         "realtime-gateway": [${REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
@@ -279,8 +288,13 @@ services:
       NATS_USER: organization
       NATS_PASSWORD: ${ORGANIZATION_NATS_PASSWORD}
       INTERNAL_TOKEN_AUDIENCE: organization-service
+      IDENTITY_SERVICE_URL: ${IDENTITY_SERVICE_URL}
+      ORGANIZATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK: ${ORGANIZATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK:-}
       INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
         {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+      IDENTITY_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: ${IDENTITY_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS:-}
+      TASK_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: ${TASK_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS:-}
+      REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS: ${REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS:-}
       BILLING_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: ${BILLING_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS:-}
       NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: ${NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS:-}
       BILLING_AUTHORITY_CURSOR_SECRET: ${ORGANIZATION_BILLING_AUTHORITY_CURSOR_SECRET:-}
@@ -328,6 +342,8 @@ services:
       NATS_USER: task
       NATS_PASSWORD: ${TASK_NATS_PASSWORD}
       INTERNAL_TOKEN_AUDIENCE: task-service
+      ORGANIZATION_SERVICE_URL: ${ORGANIZATION_SERVICE_URL}
+      TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK: ${TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK:-}
       INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
         {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
         "realtime-gateway": [${REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
@@ -387,6 +403,7 @@ services:
       S3_ACCESS_KEY_ID: ${STORAGE_S3_ACCESS_KEY_ID}
       S3_SECRET_ACCESS_KEY: ${STORAGE_S3_SECRET_ACCESS_KEY}
       S3_FORCE_PATH_STYLE: ${STORAGE_S3_FORCE_PATH_STYLE}
+      S3_ERASE_TRANSIENT_VERSIONS: ${STORAGE_S3_ERASE_TRANSIENT_VERSIONS:-false}
       STORAGE_UPLOAD_RECEIPT_KEYS: ${STORAGE_UPLOAD_RECEIPT_KEYS:-}
     build:
       context: ../../cadenway-storage-service

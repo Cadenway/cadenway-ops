@@ -90,6 +90,21 @@ for (const file of ['first', 'second', 'default', 'staging']) {
   print('joins', joins.map((key) => config.networks[key].name).sort().join(' '));
   print('served', served.map(([name]) => name).sort().join(' '));
   print('astray', astray.map(([name]) => name).sort().join(' '));
+  if (file !== 'staging') {
+    print('redis-legacy.enabled', Object.hasOwn(config.services, 'redis'));
+    for (const [network, gateway] of [
+      ['redis-api', 'api-gateway'],
+      ['redis-realtime', 'realtime-gateway'],
+    ]) {
+      const members = Object.entries(config.services)
+        .filter(([, service]) => Object.hasOwn(service.networks ?? {}, network))
+        .map(([name]) => name)
+        .sort();
+      print(`${network}.members`, members.join(' '));
+      print(`${network}.internal`, config.networks[network]?.internal === true);
+      print(`${network}.url`, config.services[gateway]?.environment?.REDIS_URL);
+    }
+  }
 }
 JS
 fact() { sed -n "s/^$1=//p" "$WORK/facts"; }
@@ -134,6 +149,20 @@ check 'staging joins the external cadenway-edge-staging' \
   '[[ $(fact staging.edge) == cadenway-edge-staging && $(fact staging.external) == true ]]'
 check 'and its services point the shared Traefik at it' \
   '[[ -n $(fact staging.served) && -z $(fact staging.astray) ]]'
+
+echo '=== 5. local gateways have private Redis networks'
+for stack in first second default; do
+  check "$stack leaves the legacy shared store stopped" \
+    '[[ $(fact "$stack.redis-legacy.enabled") == false ]]'
+  check "$stack confines the API store to the API gateway" \
+    '[[ $(fact "$stack.redis-api.members") == "api-gateway redis-api" &&
+       $(fact "$stack.redis-api.internal") == true &&
+       $(fact "$stack.redis-api.url") == redis://redis-api:6379 ]]'
+  check "$stack confines the realtime store to the realtime gateway" \
+    '[[ $(fact "$stack.redis-realtime.members") == "realtime-gateway redis-realtime" &&
+       $(fact "$stack.redis-realtime.internal") == true &&
+       $(fact "$stack.redis-realtime.url") == redis://redis-realtime:6379 ]]'
+done
 
 if ((FAILED)); then
   echo '--- what the configurations render'

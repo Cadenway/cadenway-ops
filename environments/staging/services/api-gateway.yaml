@@ -15,7 +15,7 @@ services:
     # applications itself.
     environment:
       PORT: '3000'
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: redis://redis-api:6379
       # The web application and the website, the only origins CORS and the CSRF check accept.
       ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN},${PUBLIC_SCHEME:-https}://${DOMAIN}
       INTERNAL_TOKEN_ISSUER: api-gateway
@@ -33,6 +33,7 @@ services:
     networks:
       - edge
       - internal
+      - redis-api
     # The environment in the router, service and network names keeps two stacks apart on one shared
     # Traefik.
     labels:
@@ -59,3 +60,5 @@ networks:
     name: cadenway-edge-${ENVIRONMENT:-local}
     external: true
   internal: {}
+  redis-api:
+    internal: true
