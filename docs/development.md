@@ -113,7 +113,9 @@ ansible-playbook -i ansible/inventory/hosts.example.yml --syntax-check ansible/p
 ansible-lint ansible/
 shellcheck agent/cadenway-agent.sh agent/tests/e2e.sh ansible/tests/run.sh \
   ansible/roles/backup/files/cadenway-backup.sh ansible/roles/backup/files/cadenway-restore.sh \
-  ansible/roles/backup/tests/e2e.sh
+  ansible/roles/backup/tests/e2e.sh ansible/roles/backup/tests/storage_e2e.sh \
+  ansible/roles/backup/tests/task_membership_e2e.sh \
+  ansible/roles/backup/tests/real_task_membership_e2e.sh
 ```
 
 When `terraform/` exists, use `terraform -chdir=terraform fmt -check` and
