@@ -3,7 +3,7 @@
 ## Approved deployment inputs
 
 On a production host, the agent reads `CADENWAY_PRODUCTION_BRANCH` (default `production`)
-for production and the shared edge. It verifies the selected commit with the SSH public
+for production and its edge. It verifies the selected commit with the SSH public
 allowed-signers file at `CADENWAY_PRODUCTION_SIGNERS` (default
 `/etc/cadenway/production-signers`), before checking it out. Keep that branch separate from
 `CADENWAY_BRANCH` and restrict both applied refs to Ops-controlled updates. The application
@@ -12,27 +12,35 @@ Ops authorization, so approval includes the exact Git tree. Bootstrap the produc
 from the last applied production and edge history. Roll back with a new approved commit
 that restores the earlier versions and definitions.
 
-Each released production app uses `tag@sha256:<digest>` in
-`environments/prod/versions.env`. Ops verifies and records the digest of the approved artifact
-before signing the production commit. The agent refuses an unpinned tag and writes the
-approved image reference into the canonical service definition before Compose loads
-environment variables. Bootstrap the signed branch with pins for all deployed apps. Tracking
-new digests and signing the commit happen outside the host.
+Run staging and production on separate hosts with independent storage. The agent
+refuses multiple configured environments and checks that the Docker daemon has
+no remaining containers from the other environment. Each host fetches only its
+release ref. An unavailable ref leaves workloads in place and reports failure for
+that tick. Each fetch has a 30-second deadline and five seconds to stop after termination.
 
-A non-production environment sharing the daemon with production needs a distinct signature
-from `CADENWAY_RELEASE_SIGNERS` (default `/etc/cadenway/release-signers`). Its Compose
-infrastructure, encrypted secrets and process settings must match the production-approved
-tree. The non-production authorization can update its own service definitions and image tags.
+Each released app uses `tag@sha256:<digest>` in the environment's `versions.env`.
+Ops verifies and records the digest of the approved artifact before changing the
+protected ref. Production commits also carry the Ops signature. The agent refuses
+an unpinned tag and inserts the approved image reference into the canonical model
+before Compose loads environment variables. Bootstrap both refs with pins for all
+deployed apps before enabling the agent. The installed resource policy applies
+to app containers and companions in both environments.
 
 The agent validates service manifests using its installed `compose-policy.py` before
 decrypting the environment. The policy grants each service explicit interpolation variables
 and permits only declared app resources, inline configs, and assigned network and ingress
-settings. It stages canonical copies in `/run` for Compose. A new service environment
-variable, Redis network or ingress setting requires the corresponding Ops policy update.
+settings. It stages canonical copies with static label names in `/run` for Compose.
+It checks the resolved labels, route and networks against host-owned public settings
+before pulling or starting containers. A new service environment variable, Redis
+network or ingress setting requires the corresponding Ops policy update.
 The [deployment guide](../docs/deployment.md) describes the repository protections and
 promotion procedure.
 
 ## Readiness and batch recovery
+
+The same host lock serializes releases with database restores. The agent resolves
+an interrupted restore before processing any application rollout for that environment.
+An unresolved journal stops reconciliation until safe recovery succeeds.
 
 The agent creates candidates with the normal Compose configuration and withholds
 their internal service DNS aliases until readiness. They can still reach their
@@ -54,8 +62,17 @@ network names and aliases. Before the applied marker is replaced, the next run
 removes uncommitted candidates and restarts suspended containers. After that point,
 the next run finishes retiring obsolete containers.
 
+The agent resolves local journals under the shared host lock before contacting
+Git or checking a release signature. Recovery of an interrupted first release
+can remove its candidates even without an applied marker or an existing mirror.
+A journal that cannot be reconciled blocks new work for its environment until the
+next tick. When the last applied commit is missing from the local mirror, the agent
+preserves the existing checkout and journal until that commit is available.
+
 Database migrations and infrastructure changes apply separately from the application
-batch. Keep migrations compatible with the previously running binaries. Network
+batch. The agent records a unique label before starting each migration container.
+Recovery removes a migration container matching the journal before starting a
+new release. Keep migrations compatible with the previously running binaries. Network
 promotion can refresh application connections while the previous containers are available.
 
 # Companion processes

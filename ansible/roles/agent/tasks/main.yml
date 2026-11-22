@@ -1,23 +1,19 @@
-- name: Check the environments of this host
+- name: Check the settings of the assigned environment
   ansible.builtin.assert:
     that:
-      - cadenway_environments | length > 0
-      # compose/edge.yaml creates exactly these edge networks.
-      - cadenway_environments | difference(['staging', 'prod']) | length == 0
       - cadenway_environments | difference(cadenway_environment_settings.keys()) | length == 0
       - cadenway_repo_url | length > 0
       - cadenway_acme_email | length > 0
     fail_msg: >-
-      Set cadenway_environments on the host (staging, prod or both), a cadenway_environment_settings
-      entry for each of them, cadenway_repo_url and cadenway_acme_email.
+      Configure cadenway_environment_settings for the assigned environment,
+      cadenway_repo_url and cadenway_acme_email.
     quiet: true
 
-- name: Check the approved production and shared-host release authorities
+- name: Check the approved production release authority
   ansible.builtin.assert:
     that:
       - cadenway_repo_branch != cadenway_production_branch
       - cadenway_production_signers | length > 0
-      - cadenway_environments | length == 1 or cadenway_release_signers | length > 0
     fail_msg: Configure the protected production ref and the host-pinned public approval keys.
     quiet: true
   when: "'prod' in cadenway_environments"
@@ -60,6 +56,20 @@
     - { path: /etc/cadenway/env, mode: '0750' }
     - { path: /opt/cadenway, mode: '0750' }
     - { path: /var/lib/cadenway-agent, mode: '0700' }
+
+- name: Record the assigned environment on the host
+  ansible.builtin.copy:
+    content: "{{ cadenway_environments[0] }}\n"
+    dest: /etc/cadenway/assigned-environment
+    owner: root
+    group: root
+    mode: '0644'
+    force: false
+  when: not cadenway_preview_first_run
+
+- name: Check the recorded assignment before configuring deployment
+  ansible.builtin.import_tasks: check-host-assignment.yml
+  when: not cadenway_preview_first_run
 
 # The private keys are created on the host and never leave it.
 - name: Generate the host age key that decrypts the environment secrets

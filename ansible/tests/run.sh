@@ -5,6 +5,7 @@
 #   3. a second apply as the admin user, which must change nothing (idempotence);
 #   4. a `--check` preview of the set-up host, which must change nothing;
 # then checks the result: admin login over IPv4, root refused, services active.
+# It also checks that setup refuses co-hosted environments and an existing host reassignment.
 #
 #   bash ansible/tests/run.sh            (from the repository root, with Docker)
 #
@@ -48,7 +49,7 @@ cadenway:
   hosts:
     cw-ansible-target:
       ansible_host: cw-ansible-target
-      cadenway_environments: [staging, prod]
+      cadenway_environments: [prod]
 HOSTS
 cat >/tmp/vars.yml <<VARS
 cadenway_admin_ssh_keys: ['$(cat /root/.ssh/id_ed25519.pub)']
@@ -75,10 +76,26 @@ phase() {
     echo "$recap" | grep -q 'changed=0' || { grep -E '^changed:' /tmp/out | head; exit 1; }
   fi
 }
+refuse_assignment() {
+  user=$1
+  environments=$2
+  message=$3
+  if ansible-playbook ansible/playbooks/setup.yml -e @/tmp/vars.yml --check \
+    -e "ansible_user=$user" -e "$environments" >/tmp/out 2>&1; then
+    echo 'setup accepted an invalid environment assignment'
+    exit 1
+  fi
+  grep -Fq "$message" /tmp/out || { cat /tmp/out; exit 1; }
+  echo "$message"
+}
+refuse_assignment root '{"cadenway_environments":["staging","prod"]}' \
+  'Assign exactly one environment (staging or prod) to each VPS.'
 expect_unchanged=no phase 'preview of a fresh host' --check -e ansible_user=root
 expect_unchanged=no phase 'first apply' -e ansible_user=root
 expect_unchanged=yes phase 'second apply' --diff
 expect_unchanged=yes phase 'preview of a set-up host' --check
+refuse_assignment cadenway '{"cadenway_environments":["staging"]}' \
+  'This VPS is already assigned to another environment. Use a dedicated VPS.'
 ssh -o BatchMode=yes cadenway@cw-ansible-target 'sudo -n true' && echo 'admin logs in over IPv4'
 if ssh -o BatchMode=yes root@cw-ansible-target true 2>/dev/null; then
   echo 'root login still allowed'

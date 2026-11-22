@@ -13,18 +13,23 @@
 #   docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/agent:/agent:ro" \
 #     docker:28.5.2-cli sh -c "apk add --no-cache bash >/dev/null && bash /agent/tests/e2e.sh"
 #
+# CADENWAY_E2E_PREPARED=1 reuses runner dependencies and the pinned SOPS binary.
+#
 # It creates and removes the Compose projects cadenway-test and cadenway-edge: never run it on a
 # Cadenway host.
 #
 # The assertions are strings evaluated by `check`, so they expand late on purpose.
 # shellcheck disable=SC2016,SC2034,SC2329
 set -euo pipefail
-apk add --quiet --no-cache bash git jq curl age util-linux coreutils py3-yaml openssh-keygen >/dev/null
+if [[ ${CADENWAY_E2E_PREPARED:-0} != 1 ]]; then
+  apk add --quiet --no-cache bash git jq curl age util-linux coreutils py3-yaml openssh-keygen >/dev/null
+  curl -fsSL -o /usr/local/bin/sops https://github.com/getsops/sops/releases/download/v3.13.3/sops-v3.13.3.linux.amd64
+  chmod +x /usr/local/bin/sops
+fi
+echo "e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b  /usr/local/bin/sops" | sha256sum -c - >/dev/null
+export SOPS_DISABLE_VERSION_CHECK=1
 python3 /agent/tests/compose-policy.py
 bash /agent/tests/release-authorization.sh
-curl -fsSL -o /usr/local/bin/sops https://github.com/getsops/sops/releases/download/v3.13.3/sops-v3.13.3.linux.amd64
-echo "e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b  /usr/local/bin/sops" | sha256sum -c - >/dev/null
-chmod +x /usr/local/bin/sops
 mkdir -p /run/lock /etc/cadenway/env /src
 cp /agent/cadenway-agent.sh /usr/local/bin/cadenway-agent && chmod +x /usr/local/bin/cadenway-agent
 cp /agent/compose-policy.py /usr/local/bin/compose-policy.py
@@ -62,21 +67,23 @@ cat >$R/compose/compose.yaml <<'EOF'
 name: cadenway
 include:
   - infra.yaml
-  - ${CADENWAY_SERVICES:-../environments/test/services}/web-service.yaml
+  - ${CADENWAY_SERVICES:-../environments/test/services}/webapp.yaml
   - ${CADENWAY_SERVICES:-../environments/test/services}/other-service.yaml
 EOF
-# web-service: health command, served config content.
+# webapp: health command, served config content.
 write_web() {
-  cat >$S/web-service.yaml <<EOF
+  cat >$S/webapp.yaml <<EOF
 services:
-  web-service:
-    image: busybox:\${WEB_SERVICE_VERSION}
+  webapp:
+    image: busybox:\${WEBAPP_VERSION}
     command: ['sh', '-c', 'httpd -f -p 8080 -h /srv']
     environment:
-      SECRET_VALUE: \${WEB_SERVICE_DATABASE_URL}
+      SECRET_VALUE: \${WEBAPP_DATABASE_URL}
     labels:
-      traefik.enable: 'true'
-      traefik.docker.network: 'cadenway-edge-\${ENVIRONMENT:-local}'
+      - traefik.enable=true
+      - traefik.docker.network=cadenway-edge-\${ENVIRONMENT:-local}
+      - traefik.http.routers.webapp-\${ENVIRONMENT:-local}.rule=Host(\`app.\${DOMAIN}\`)
+      - traefik.http.services.webapp-\${ENVIRONMENT:-local}.loadbalancer.server.port=8080
     configs:
       - source: web-config
         target: /srv/config.txt
@@ -106,7 +113,7 @@ EOF
 }
 write_web true first
 write_other true
-versions() { printf 'WEB_SERVICE_VERSION=%s\nOTHER_SERVICE_VERSION=%s\n' "$1" "$2" >$R/environments/test/versions.env; }
+versions() { printf 'WEBAPP_VERSION=%s\nOTHER_SERVICE_VERSION=%s\n' "$1" "$2" >$R/environments/test/versions.env; }
 secrets() {
   printf '%s\n' "$@" 'ALERT_WEBHOOK_URL=' >/tmp/plain.env
   sops --encrypt --age "$RECIPIENT" --input-type dotenv --output-type dotenv /tmp/plain.env \
@@ -114,7 +121,7 @@ secrets() {
   rm /tmp/plain.env
 }
 versions 1.36.1 ''
-secrets 'WEB_SERVICE_DATABASE_URL=first'
+secrets 'WEBAPP_DATABASE_URL=first'
 git -C $R init -q -b main && git -C $R add -A && git -C $R -c user.name=t -c user.email=t@t commit -qm init
 
 cat >/etc/cadenway/agent.env <<EOF
@@ -123,7 +130,7 @@ CADENWAY_ENVIRONMENTS=test
 CADENWAY_HEALTH_TIMEOUT=60
 EOF
 echo 'ACME_EMAIL=unused@example.com' >/etc/cadenway/edge.env
-echo 'ENVIRONMENT=test' >/etc/cadenway/env/test.env
+printf '%s\n' 'ENVIRONMENT=test' 'DOMAIN=example.test' >/etc/cadenway/env/test.env
 
 commit() { git -C $R add -A && git -C $R -c user.name=t -c user.email=t@t commit -qm "$1"; }
 containers() {
@@ -131,7 +138,7 @@ containers() {
     --filter label=com.docker.compose.oneoff=False --filter "label=com.docker.compose.service=$1" \
     --format '{{.ID}} {{.Image}}'
 }
-web() { containers web-service; }
+web() { containers webapp; }
 head_is() { [[ $(cat "/var/lib/cadenway-agent/test/$1" 2>/dev/null) == $(git -C "$R" rev-parse HEAD) ]]; }
 run_agent() {
   set +e
@@ -179,7 +186,7 @@ check 'skipped' '[[ $OUT == *"failed before"* ]]'
 
 echo '=== 6. fix, and a rotated secret with a dollar sign'
 write_web true first
-secrets 'WEB_SERVICE_DATABASE_URL=pa$word$HOME'
+secrets 'WEBAPP_DATABASE_URL=pa$word$HOME'
 commit 'fix and rotate'
 run_agent
 check 'secret kept literally' '[[ $(docker exec "$(web | cut -d" " -f1)" printenv SECRET_VALUE) == "pa\$word\$HOME" ]]'
@@ -197,13 +204,13 @@ check 'new content served' '[[ $(docker exec "$(web | cut -d" " -f1)" cat /srv/c
 echo '=== 8. missing secret: refused before anything changes'
 BEFORE=$(web | cut -d" " -f1)
 secrets 'OTHER=1'
-commit 'drop WEB_SERVICE_DATABASE_URL'
+commit 'drop WEBAPP_DATABASE_URL'
 run_agent
 check 'commit failed' 'head_is failed'
-check 'names the variable' '[[ $OUT == *"misses WEB_SERVICE_DATABASE_URL"* ]]'
+check 'names the variable' '[[ $OUT == *"misses WEBAPP_DATABASE_URL"* ]]'
 check 'web untouched' '[[ $(web | cut -d" " -f1) == "$BEFORE" ]]'
-secrets 'WEB_SERVICE_DATABASE_URL=pa$word$HOME'
-commit 'restore WEB_SERVICE_DATABASE_URL'
+secrets 'WEBAPP_DATABASE_URL=pa$word$HOME'
+commit 'restore WEBAPP_DATABASE_URL'
 run_agent
 check 'restored' 'head_is applied'
 
@@ -276,7 +283,7 @@ EOF
 readonly MIGRATOR_URL='postgres://data_migrator:mi$grat0r@db:5432/data'
 MIGRATED="migrated with $(printf %s "$MIGRATOR_URL" | sha256sum | cut -c1-64)"
 data_secrets() {
-  secrets 'WEB_SERVICE_DATABASE_URL=pa$word$HOME' 'DATA_SERVICE_DATABASE_URL=postgres://data_app:app@db:5432/data' "$@"
+  secrets 'WEBAPP_DATABASE_URL=pa$word$HOME' 'DATA_SERVICE_DATABASE_URL=postgres://data_app:app@db:5432/data' "$@"
 }
 data() { containers data-service; }
 data_id() { data | cut -d" " -f1; }
@@ -306,7 +313,7 @@ EOF
 chmod +x /usr/local/sbin/docker
 BEFORE=$(data_id)
 write_data dropped
-# web-service rolls out in the same run: it has no database, so its migration gets nothing.
+# webapp rolls out in the same run: it has no database, so its migration gets nothing.
 write_web true third
 commit 'drop MIGRATION_DATABASE_URL from the definition'
 run_agent
@@ -318,9 +325,9 @@ check 'the service container does not' \
 check 'and keeps its own database URL' \
   '[[ $(docker exec "$(data_id)" printenv DATABASE_URL) == postgres://data_app:* ]]'
 check 'passed by name to docker compose run' \
-  'grep -qF -- "run --rm --no-deps -T -e MIGRATION_DATABASE_URL data-service" /tmp/docker-arguments'
+  'grep -qE -- "run --rm --no-deps --pull never -T --label io[.]cadenway[.]agent[.]migration=data-service[.][[:alnum:]]+ -e MIGRATION_DATABASE_URL data-service" /tmp/docker-arguments'
 check 'a deployable without a database is migrated without it' \
-  'grep -qF -- "run --rm --no-deps -T web-service sh" /tmp/docker-arguments'
+  'grep -qE -- "run --rm --no-deps --pull never -T --label io[.]cadenway[.]agent[.]migration=webapp[.][[:alnum:]]+ webapp sh" /tmp/docker-arguments'
 check 'never in a docker argument list' '! grep -qF grat0r /tmp/docker-arguments'
 check 'nor in the logs' '[[ $OUT != *grat0r* ]]'
 
@@ -476,7 +483,7 @@ other_id() { containers other-service | cut -d' ' -f1; }
 write_slow_web() {
   write_web true "$1"
   sed -i "s/test: \\['CMD', 'true'\\].*}/test: ['CMD', 'test', '-f', '\\/tmp\\/rollout-ready'], interval: 2s, retries: 2, start_period: 2m }/" \
-    "$S/web-service.yaml"
+    "$S/webapp.yaml"
 }
 
 wait_for_web_candidate() {
@@ -512,17 +519,17 @@ check 'unready candidate keeps its edge endpoint and has no internal serving ali
     | jq -e '"'"'has("cadenway-edge-test") and (.["cadenway-test_internal"].Aliases // [] | length == 0)'"'"' >/dev/null'
 DB=$(containers db | cut -d' ' -f1)
 check 'internal DNS still returns only the previous address' \
-  '[[ $(docker exec "$DB" nslookup -type=a web-service | awk "/^Address: / && !/127\\.0\\.0\\.11/ {print \$2}") == "$PREVIOUS_IP" ]]'
+  '[[ $(docker exec "$DB" nslookup -type=a webapp | awk "/^Address: / && !/127\\.0\\.0\\.11/ {print \$2}") == "$PREVIOUS_IP" ]]'
 check 'the previous configuration is still served' \
-  '[[ $(docker exec "$DB" wget -qO- http://web-service:8080/config.txt) == third ]]'
+  '[[ $(docker exec "$DB" wget -qO- http://webapp:8080/config.txt) == third ]]'
 docker exec "$CANDIDATE" touch /tmp/rollout-ready
 finish_background_agent
 check 'ready candidate now serves through both networks' \
   'head_is applied && [[ $(web_id) == "$CANDIDATE" ]] && \
     docker inspect --format "{{json .NetworkSettings.Networks}}" "$CANDIDATE" \
-      | jq -e '"'"'length == 2 and all(.[]; .Aliases | index("web-service") != null)'"'"' >/dev/null'
+      | jq -e '"'"'length == 2 and all(.[]; .Aliases | index("webapp") != null)'"'"' >/dev/null'
 check 'the candidate serves the new configuration with the declared permissions' \
-  '[[ $(docker exec "$DB" wget -qO- http://web-service:8080/config.txt) == fourth ]] && \
+  '[[ $(docker exec "$DB" wget -qO- http://webapp:8080/config.txt) == fourth ]] && \
     [[ $(docker exec "$CANDIDATE" stat -c "%a %u %g" /srv/config.txt) == "444 0 0" ]]'
 
 echo '=== 24. a later failure rolls back the full application batch'
@@ -530,10 +537,10 @@ PREVIOUS_WEB=$(web_id)
 PREVIOUS_OTHER=$(other_id)
 sed -i 's/^OTHER_SERVICE_VERSION=.*/OTHER_SERVICE_VERSION=1.36.1/' "$R/environments/test/versions.env"
 write_web false broken
-commit 'prepare other-service then fail web-service'
+commit 'prepare other-service then fail webapp'
 run_agent
 check 'the earlier candidate was prepared before web failed' \
-  '[[ $OUT == *"Container cadenway-test-other-service-"*"Created"* && $OUT == *"web-service: the new container could not be prepared"* ]]'
+  '[[ $OUT == *"Container cadenway-test-other-service-"*"Created"* && $OUT == *"webapp: the new container could not be prepared"* ]]'
 check 'both previous containers and the applied commit are retained' \
   'head_is failed && [[ $(web_id) == "$PREVIOUS_WEB" && $(other_id) == "$PREVIOUS_OTHER" ]] && \
     [[ $(git -C /opt/cadenway/envs/test rev-parse HEAD) == $(cat /var/lib/cadenway-agent/test/applied) ]]'
@@ -554,6 +561,12 @@ check 'the uncommitted candidate was left running' \
   '[[ $RESULT == 137 && $(docker inspect --format "{{.State.Running}}" "$CANDIDATE") == true ]]'
 # The readiness sleep inherits the lock descriptor and lasts at most two seconds.
 flock /run/lock/cadenway-agent.lock true
+mv -- "$R" "$R.offline"
+run_agent
+mv -- "$R.offline" "$R"
+check 'offline recovery removes the candidate and keeps the last applied release serving' \
+  '[[ $RESULT != 0 && $OUT == *"cannot fetch its release ref"* && $(web_id) == "$PREVIOUS_WEB" ]] && \
+    ! docker inspect "$CANDIDATE" >/dev/null 2>&1 && [[ ! -d /var/lib/cadenway-agent/test/rollout ]]'
 write_web true sixth
 commit 'resume from a healthy release'
 run_agent
@@ -589,15 +602,20 @@ APPLIED_WEB=$(web_id)
 check 'the new release serves while the retired original stays stopped' \
   '[[ $RESULT != 0 && -n $APPLIED_WEB ]] && head_is applied && \
     [[ $(docker inspect --format "{{.State.Running}}" "$PREVIOUS_WEB") == false ]]'
+mv -- "$R" "$R.offline"
 run_agent
-check 'the next run removes only the stopped original and clears the journal' \
-  '[[ $RESULT == 0 && $(web_id) == "$APPLIED_WEB" ]] && \
+mv -- "$R.offline" "$R"
+check 'offline recovery removes only the stopped original and clears the committed journal' \
+  '[[ $RESULT != 0 && $OUT == *"cannot fetch its release ref"* && $(web_id) == "$APPLIED_WEB" ]] && \
     ! docker inspect "$PREVIOUS_WEB" >/dev/null 2>&1 && \
     [[ ! -d /var/lib/cadenway-agent/test/rollout && ! -f /var/lib/cadenway-agent/test/retrying ]]'
+run_agent
+check 'the applied release stays intact when its ref is available again' \
+  '[[ $RESULT == 0 && $(web_id) == "$APPLIED_WEB" ]] && head_is applied'
 
 echo '=== 28. a public candidate without readiness keeps the previous release'
 write_web true eighth
-sed -i '/^    healthcheck:/d' "$S/web-service.yaml"
+sed -i '/^    healthcheck:/d' "$S/webapp.yaml"
 commit 'omit the healthcheck on a public service'
 run_agent
 check 'the public candidate is refused before it starts' \
@@ -610,6 +628,39 @@ commit 'request a disallowed config reference'
 run_agent
 check 'service scope violation failed the commit without replacing the previous container' \
   'head_is failed && [[ $(web | cut -d" " -f1) == "$PREVIOUS" && $OUT == *"outside the service grant"* ]]'
+
+echo '=== 30. offline recovery removes only the one-off migration recorded by the agent'
+write_web true seventh
+write_data dropped
+sed -i '/printf .*migrated with/i\      sleep 120' "$S/data-service.yaml"
+commit 'hold an agent managed migration open while the agent stops'
+PREVIOUS_DATA=$(data_id)
+MANUAL_MIGRATION=$(docker run --detach --rm --pull never --network none \
+  --label com.docker.compose.project=cadenway-test --label com.docker.compose.oneoff=True \
+  --label com.docker.compose.service=data-service --label io.cadenway.agent.migration=data-service.manual \
+  busybox:1.37.0 sleep 120)
+setsid cadenway-agent >/tmp/cadenway-rollout-log 2>&1 &
+AGENT_PID=$!
+for ((attempt = 0; attempt < 120; attempt++)); do
+  MIGRATOR=$(docker ps -q --no-trunc --filter label=com.docker.compose.project=cadenway-test \
+    --filter label=com.docker.compose.oneoff=True --filter label=com.docker.compose.service=data-service \
+    --filter label=io.cadenway.agent.migration | grep -vxF "$MANUAL_MIGRATION" || true)
+  [[ -z $MIGRATOR ]] || break
+  sleep 0.25
+done
+kill -KILL -- "-$AGENT_PID"
+finish_background_agent
+check 'the agent-owned migration is still running after the process group was stopped' \
+  '[[ $RESULT == 137 && -n $MIGRATOR && $(docker inspect --format "{{.State.Running}}" "$MIGRATOR") == true ]]'
+flock -w 10 /run/lock/cadenway-agent.lock true
+mv -- "$R" "$R.offline"
+run_agent
+mv -- "$R.offline" "$R"
+check 'the interrupted migration is removed before fetching and the unrelated one-off remains' \
+  '[[ $RESULT != 0 && $OUT == *"cannot fetch its release ref"* && $(data_id) == "$PREVIOUS_DATA" ]] && \
+    ! docker inspect "$MIGRATOR" >/dev/null 2>&1 && [[ ! -d /var/lib/cadenway-agent/test/rollout ]] && \
+    [[ $(docker inspect --format "{{.State.Running}}" "$MANUAL_MIGRATION") == true ]]'
+docker rm -f "$MANUAL_MIGRATION" >/dev/null
 
 echo '=== cleanup'
 docker compose -p cadenway-test down -v --remove-orphans >/dev/null 2>&1 || true

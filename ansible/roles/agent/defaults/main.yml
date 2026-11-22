@@ -1,6 +1,6 @@
 # GitOps agent: a systemd timer that pulls cadenway-ops and applies the host's environments.
 
-# Environments this host runs, in order; one or several (staging and prod can share a VPS).
+# The single environment this VPS runs. Staging and production use independent host storage.
 cadenway_environments: []
 # Per environment: `domain` (required), `public_scheme` (default https).
 cadenway_environment_settings: {}

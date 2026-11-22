@@ -38,20 +38,21 @@ To roll back an applied release, create a new approved commit with the previous 
 image. Use the original approved digest for production. The new commit must descend from the
 applied commit so the agent can distinguish an authorized rollback from a ref rewind.
 
-## Topologies
+## Host topology
 
-The same files serve both; the inventory decides (`ansible/inventory/hosts.example.yml`).
+Use a dedicated VPS for each hosted environment. Set `cadenway_environments: [staging]` on the
+staging host and `cadenway_environments: [prod]` on the production host. Allocate independent
+storage for the operating systems, Docker images and writable layers, and service data. A
+container CPU or memory limit cannot protect another environment's disk allocation.
 
-| Topology                | Inventory                                                  | On the host                                                  |
-| ----------------------- | ---------------------------------------------------------- | ------------------------------------------------------------ |
-| One VPS per environment | two hosts, `cadenway_environments: [staging]` and `[prod]` | one Traefik (`cadenway-edge`), one stack (`cadenway-<env>`)  |
-| One VPS for both        | one host, `cadenway_environments: [staging, prod]`         | one Traefik, two stacks side by side, each with its own data |
+Traefik owns ports 80 and 443 on each VPS. Public application services join their assigned named
+edge network. Their routes and networks use the environment recorded by the host, and their
+hostnames use its configured domain.
 
-Traefik runs once per host from `compose/edge.yaml` and owns ports 80 and 443. It creates one edge
-network per environment (`cadenway-edge-staging`, `cadenway-edge-prod`); the exposed services of an
-environment join only theirs, so staging and production containers never share a network. Router,
-service and network names carry the environment (`api-gateway-staging`), and each environment answers
-on its own domain.
+Before switching an old shared VPS to this policy, move staging to its independent host, retire
+its containers from the original Docker daemon, and confirm any pending restore or rollout is
+reconciled. Keep storage volumes and backups until the move is verified. The agent leaves existing
+containers alone when it refuses an invalid host assignment.
 
 ## Setting up a host
 
@@ -98,7 +99,7 @@ a throwaway Ubuntu 24.04 container in CI.
 | Organization variables                | `CADENWAY_DEPLOY_APP_CLIENT_ID`                                                                           |
 | Each service repository, environments | `release`, `staging`, `production`, each limited to the `main` branch; required reviewers on `production` |
 | The same three environments           | the environment secret `CADENWAY_DEPLOY_APP_PRIVATE_KEY`; never an organization or repository secret      |
-| `cadenway-ops` release refs          | protect the staging and production refs independently and remove the deploy App from their bypass lists |
+| `cadenway-ops` release refs           | protect the staging and production refs independently and remove the deploy App from their bypass lists   |
 | GHCR packages                         | public, or `GHCR_PULL_USER` and `GHCR_PULL_TOKEN` in the environment's secrets                            |
 
 Service release workflows publish images and submit their proposed Compose definition and version
@@ -113,15 +114,40 @@ the independent SSH signing key whose public allowed-signers line is provisioned
 and edge heads. Apply a rollback through a newly approved commit containing the intended older
 definitions. Bootstrap the production ref ahead of enabling this agent on an existing host.
 
-For a daemon shared with staging, pin the separate staging approval keys in
-`cadenway_release_signers`. The signed production commit also approves infrastructure and host
-configuration used by staging, including the SOPS source. Staging approval alone changes only the
-service definitions and image versions of that environment. Use disjoint public keys in the two
-signer lists. Ansible installs the public keys and the Compose policy when it configures the host.
+Ansible installs the public approval keys and the Compose policy. Each environment's protected ref
+must include the exact approved image pin for every released service in `versions.env`. The agent
+requires `tag@sha256:<digest>` in staging and production, including the image used for companions
+and migrations. Bootstrap both release refs with verified registry digests before enabling this
+policy. A legacy ref containing only tags is refused.
+
+The agent resolves interrupted restores and releases under its host lock before contacting the Git
+remote. Each reconciliation requires a successful fetch of its own approval ref.
+
+The installed policy sets the following per-container ceilings on hosted application services,
+including one-off migrations. The memory ceiling includes the container's swap allowance.
+
+| Process              | vCPU |  Memory | PIDs |
+| -------------------- | ---: | ------: | ---: |
+| Backend or companion | 0.50 | 256 MiB |  128 |
+| Frontend             | 0.25 |  64 MiB |   64 |
+
+The current allowlist and maximum companion replicas give one full application generation a
+combined ceiling of 8.5 vCPU, 4,224 MiB and 2,176 PIDs. Size each host for the extra generation
+during rollout. Budget additional capacity for PostgreSQL, Redis, NATS, Traefik, object
+storage, the operating system and other host workloads. These limits are ceilings. Verify capacity
+and Linux cgroup enforcement on the host.
+
+For an existing daemon, activate an approved release that recreates historical application
+containers with the new limits. Confirm the effective limits on the running containers and on
+any retained rollback candidates before relying on the budget. Reapplying the same approval
+skips an already applied release, and local recovery can restart historical containers with
+their original limits.
 
 The agent compiles included service definitions against its installed per-service policy before
-decryption. Update that policy through Ops review when a service needs a new variable, network,
-configuration or routing label. Service publishing credentials are not approval credentials.
+decryption. Only the public services can join the edge network. The policy expands the known route
+names to static labels and checks the resolved model against the assigned network and hostname.
+Update that policy through Ops review when a service needs a new variable, network, configuration
+or routing label. Service publishing credentials are not approval credentials.
 
 Keep all Traefik labels in the approved Compose files. The agent checks the pulled image before
 either migration or creation of a replacement. Both steps use the checked local image without a
@@ -193,6 +219,55 @@ served under the live name is retained under `cw_restore_failed_…` with connec
 Inspect it for any writes accepted before rollback. Investigate a reported rollback failure
 before restarting services manually.
 
+Before stopping application containers, the restore persists the old and candidate database
+identities, running container IDs and its current phase on the host. After an abrupt interruption,
+the agent resolves that journal under the same lock before the next reconciliation. To run recovery
+directly, invoke `cadenway-restore --recover <environment>` on the assigned host. A pending switch
+recovers the verified old database and workloads. A committed switch keeps the recovered database
+after verifying its identity and workload health. Investigate any refused recovery before resuming
+reconciliation.
+
+An interruption while the archive loads, before cutover begins, leaves the active service in place.
+Check for an abandoned candidate database and temporary encrypted archive after such an interruption.
+
+To recover Task with a fresh membership projection, run a Task-only restore:
+
+```sh
+cadenway-restore --rebuild-task-memberships <environment> <timestamp> <identity-file> task
+```
+
+This mode requires one running Organization container with the membership export command, one
+running Task container with the rebuild command, and their environment's PostgreSQL on the Compose
+internal network. Keep the live Organization database authoritative at a point in time at least
+as recent as the Task backup. A coupled rollback of Organization and Task requires separate
+coordination. The flag is explicit so the general restore remains compatible with images without
+these commands.
+
+The restore stops Task and its relay before streaming the current Organization membership catalog
+into a disposable process using the exact Task image. The catalog includes removed memberships
+and their versions. The importer receives only the Task application connection and writes to the
+candidate database. With Task stopped, concurrent changes after the Organization snapshot remain
+for its durable membership consumers to apply after restart. Keep the membership stream and its
+durable consumers available through the restore. The outage includes the catalog export and
+import. Either command failing prevents the switch. Recovery removes an abandoned importer,
+discards the unswitched candidate and resumes the prior Task workloads.
+
+For a local test with the two real maintenance commands, build the backup runner below and supply
+two locally built service images that include the commands. The runner applies both migrations to
+disposable PostgreSQL databases and verifies that the restored Task uses the newer Organization
+roles and tombstones. It runs the maintenance commands without starting either HTTP service.
+
+```sh
+task_image=$(docker image inspect --format '{{.Id}}' task-service:local)
+organization_image=$(docker image inspect --format '{{.Id}}' organization-service:local)
+docker run --rm --init --network none \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD/ansible/roles/backup:/backup:ro" \
+  -e CADENWAY_E2E_PREPARED=1 \
+  -e "CADENWAY_E2E_TASK_IMAGE=$task_image" \
+  -e "CADENWAY_E2E_ORGANIZATION_IMAGE=$organization_image" cadenway-backup-e2e:local
+```
+
 For the `storage` database, the restore inventories durable objects referenced by the candidate
 before stopping Storage. That includes elected attachments of tasks that have not been purged,
 verified Intake reservations and prepared or attached media of active profile owners. After
@@ -214,13 +289,15 @@ bytes separately.
 
 In Compose, set `STORAGE_S3_ERASE_TRANSIENT_VERSIONS=true` for the versioned application bucket.
 Storage's runtime identity needs `s3:ListBucketVersions` and `s3:DeleteObjectVersion` for transient
-attachment cleanup, plus `s3:GetObject` and `s3:PutObject` on `attachment-restore-pins/`.
+attachment and profile-media cleanup, plus `s3:GetObject` and `s3:PutObject` on
+`attachment-restore-pins/`. The profile-media markers use its `profile-media/candidate/` subpath.
 Exclude the current objects under `attachment-restore-pins/` from expiry for as long as the
-corresponding attachment history can be restored. These markers preserve the decision to protect
-the elected file even after a PostgreSQL restore rolls back the election metadata.
+corresponding object history can be restored. These markers preserve the decision to protect the
+accepted file even after a PostgreSQL restore rolls back its metadata.
 
 `ansible/roles/backup/tests/e2e.sh` covers PostgreSQL backup and restore with SOPS 3.13.3 and a
-disposable S3 endpoint. It exercises recovery of deleted objects on a versioned application bucket.
+disposable S3 endpoint. It exercises recovery of deleted objects on a versioned application bucket
+and Task membership recovery, including failure before cutover and interrupted recovery.
 
 To replay the Storage API end to end, build the test runner and point it at a locally built
 Storage image. Run the following from this repository with `storage-service:local` replaced by
@@ -238,11 +315,12 @@ docker run --rm --init --network none \
   -e "CADENWAY_E2E_STORAGE_IMAGE=$storage_image" cadenway-backup-e2e:local
 ```
 
-This mode verifies the production migrations, presigned uploads, API completion, encrypted dump,
-deletion, restore, and downloads after Storage restarts. It compares the restored bytes and S3
-versions and repeats the restore to check that it creates no extra versions. The test uses
-synthetic data in disposable containers that share the runner's loopback network. CI runs the
-default backup suite without the Storage image input.
+This mode verifies the production migrations, single-use multipart transfers for attachments,
+intake and avatars, API completion, encrypted dump, deletion, restore, and downloads after Storage
+restarts. Two concurrent avatar transfers must produce a single S3 version. The recipe also
+compares restored bytes and S3 versions and repeats the restore to check that it creates no extra
+versions. The test uses synthetic data in disposable containers that share the runner's loopback
+network. CI runs the default backup suite without the Storage image input.
 
 NATS JetStream streams, Meilisearch indexes and Traefik certificates are not backed up: the outbox
 replays events, search-service rebuilds its index, Let's Encrypt issues certificates again.

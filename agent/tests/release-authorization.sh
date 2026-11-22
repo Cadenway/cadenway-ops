@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify the production and co-hosted staging release boundaries without invoking Docker.
+# Verify the production and staging release boundaries without invoking Docker.
 set -euo pipefail
 
 agent=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/cadenway-agent.sh
@@ -10,6 +10,7 @@ state=$test_root/state
 trace=$test_root/trace
 export CADENWAY_AGENT_CONFIG=/dev/null CADENWAY_REPO_URL=$source_repo
 export CADENWAY_ENVIRONMENTS=staging
+export CADENWAY_SETTINGS_DIR=$test_root
 mkdir -p "$state"/{edge,prod}
 
 git init --quiet --initial-branch=main "$source_repo"
@@ -36,21 +37,39 @@ git -C "$source_repo" add environments/staging
 signed_commit release 'signed staging'
 staging=$(git -C "$source_repo" rev-parse HEAD)
 git -C "$source_repo" switch --quiet --create production "$baseline"
+mkdir -p "$source_repo/environments/prod"
+printf 'WEBAPP_VERSION=1.2.3\n' >"$source_repo/environments/prod/versions.env"
+git -C "$source_repo" add environments/prod/versions.env
 signed_commit production 'signed production'
 production=$(git -C "$source_repo" rev-parse HEAD)
 
+configure_paths() {
+  local prefix=$1 journal_path=$2
+  export CADENWAY_ROOT=$test_root/$prefix CADENWAY_STATE_DIR=$journal_path
+  export CADENWAY_LOCK_FILE=$test_root/$prefix.lock CADENWAY_SECRETS_DIR=$test_root/$prefix.run
+}
+
 run_agent() (
-  export CADENWAY_ENVIRONMENTS='staging prod'
-  export CADENWAY_ROOT=$test_root/agent CADENWAY_SETTINGS_DIR=$test_root
-  export CADENWAY_STATE_DIR=$state CADENWAY_LOCK_FILE=$test_root/lock CADENWAY_SECRETS_DIR=$test_root/run
+  export CADENWAY_ENVIRONMENTS="${2:-prod}"
+  configure_paths mirror "$state"
   export CADENWAY_BRANCH=main CADENWAY_PRODUCTION_BRANCH=${1:-production}
   # shellcheck source=/dev/null
   source "$agent"
   # These test doubles are invoked by the sourced release loop.
   # shellcheck disable=SC2329
+  confirm_host_assignment() { return 0; }
+  # shellcheck disable=SC2329
   apply_edge() { printf 'edge %s\n' "$1" >>"$trace"; }
   # shellcheck disable=SC2329
   apply_environment() { printf '%s %s\n' "$1" "$2" >>"$trace"; }
+  # shellcheck disable=SC2329
+  timeout() {
+    [[ $1 == -k && $2 == 5s && $3 == 30s && $4 == git ]] || return 1
+    if [[ ${*: -1} == +refs/heads/main:refs/heads/main ]]; then
+      [[ ${fixture_staging_timeout:-false} == false ]] || return 124
+    fi
+    command timeout "$@"
+  }
   main
 )
 
@@ -65,19 +84,36 @@ check_refusal() {
 }
 
 run_agent
-printf 'edge %s\nstaging %s\nprod %s\n' "$production" "$staging" "$production" |
-  diff - "$trace"
-echo 'PASS independently signed refs apply to the expected environment and shared edge'
+run_agent production staging
+printf 'edge %s\nprod %s\nedge %s\nstaging %s\n' "$production" "$production" "$staging" "$staging" | diff - "$trace"
+echo 'PASS dedicated hosts apply the expected environment and edge ref'
 
+check_refusal 'one environment per host with independent storage' production 'staging prod'
+echo 'PASS a shared host assignment is refused before reconciliation'
+
+git -C "$source_repo" update-ref -d refs/heads/main
 : >"$trace"
-git -C "$source_repo" update-ref refs/heads/main "$production"
-if output=$(run_agent 2>&1) || [[ $output != *'release sharing the production daemon needs its own Ops approval'* ]]; then
-  printf 'unexpected staging authorization result: %s\n' "$output" >&2
+if output=$(run_agent production staging 2>&1) || [[ $output != *'non-production: cannot fetch its release ref'* ]]; then
+  printf 'unexpected missing staging ref result: %s\n' "$output" >&2
   exit 1
 fi
+[[ ! -s $trace ]]
+echo 'PASS an unavailable staging ref never applies its cached tip'
+
+: >"$trace"
+run_agent production prod
 printf 'edge %s\nprod %s\n' "$production" "$production" | diff - "$trace"
 git -C "$source_repo" update-ref refs/heads/main "$staging"
-echo 'PASS lack of a staging approval leaves production and the shared edge independent'
+echo 'PASS a production-only host needs only the production ref'
+
+: >"$trace"
+if output=$(fixture_staging_timeout=true run_agent production staging 2>&1) ||
+  [[ $output != *'non-production: cannot fetch its release ref'* ]]; then
+  printf 'unexpected staging fetch timeout result: %s\n' "$output" >&2
+  exit 1
+fi
+[[ ! -s $trace ]]
+echo 'PASS a staging fetch timeout prevents staging reconciliation'
 
 check_refusal 'separate protected Ops ref' main
 git -C "$source_repo" update-ref refs/heads/production "$staging"
@@ -90,6 +126,8 @@ check_refusal 'also authorizes non-production releases'
 git -C "$source_repo" -c commit.gpgsign=false commit --quiet --allow-empty -m 'unsigned desired state'
 check_refusal 'unsigned by Ops or would rewind'
 git -C "$source_repo" update-ref refs/heads/production "$production"
+printf 'WEBAPP_VERSION=2.0.0\n' >"$source_repo/environments/prod/versions.env"
+git -C "$source_repo" add environments/prod/versions.env
 signed_commit production 'later approved production'
 later=$(git -C "$source_repo" rev-parse HEAD)
 printf '%s\n' "$later" >"$state/prod/applied"
@@ -103,18 +141,127 @@ check_refusal 'unsigned by Ops or would rewind'
 echo 'PASS a rewind of the shared edge is refused even when the application can fast-forward'
 
 git -C "$source_repo" update-ref refs/heads/production "$later"
-git -C "$source_repo" switch --quiet main
-mkdir -p "$source_repo/compose"
-printf 'unapproved infrastructure fixture\n' >"$source_repo/compose/infra.yaml"
-git -C "$source_repo" add compose/infra.yaml
-signed_commit release 'stage signer changes host infrastructure'
+git -C "$source_repo" restore --source "$production" --staged --worktree environments/prod/versions.env
+signed_commit production 'approved rollback to the previous version'
+rollback=$(git -C "$source_repo" rev-parse HEAD)
+printf '%s\n' "$later" >"$state/prod/applied"
 : >"$trace"
-if output=$(run_agent 2>&1) || [[ $output != *'host and secret configuration also require production approval'* ]]; then
-  printf 'unexpected shared daemon authorization result: %s\n' "$output" >&2
-  exit 1
-fi
-printf 'edge %s\nprod %s\n' "$later" "$later" | diff - "$trace"
-echo 'PASS the staging signer cannot approve co-hosted infrastructure'
+run_agent production prod
+printf 'edge %s\nprod %s\n' "$rollback" "$rollback" | diff - "$trace"
+git -C "$source_repo" diff --quiet "$production" "$rollback" -- environments/prod/versions.env
+echo 'PASS a signed descendant may restore an earlier application version'
+
+(
+  configure_paths first-release "$test_root/first-state"
+  # shellcheck source=/dev/null
+  source "$agent"
+  # shellcheck disable=SC2329
+  confirm_host_assignment() { return 0; }
+  mkdir -p "$STATE_DIR/staging/rollout/baseline"
+  printf '%s\n' "$staging" >"$STATE_DIR/staging/rollout/commit"
+  : >"$STATE_DIR/staging/rollout/baseline/gateway"
+  # shellcheck disable=SC2329
+  new_since() {
+    [[ $1 == staging && $2 == gateway ]] || return 1
+    printf '%s\n' first-candidate
+  }
+  # shellcheck disable=SC2329
+  docker() {
+    [[ $* == 'rm -f first-candidate' ]] || return 1
+    printf '%s\n' removed >"$test_root/first-candidate"
+  }
+  # shellcheck disable=SC2329
+  fetch_release() {
+    [[ ! -d $STATE_DIR/staging/rollout && -f $test_root/first-candidate ]] ||
+      printf '%s\n' too-early >"$test_root/first-fetch-order"
+    return 1
+  }
+  if main; then
+    echo 'the first release should fail to fetch its unavailable ref' >&2
+    exit 1
+  fi
+  [[ ! -e $test_root/first-fetch-order && ! -d $MIRROR && ! -d $STATE_DIR/staging/rollout && -f $test_root/first-candidate ]]
+)
+echo 'PASS recovery removes an interrupted first candidate without an applied state or mirror'
+
+(
+  configure_paths interrupted-release "$test_root/interrupted-state"
+  # shellcheck source=/dev/null
+  source "$agent"
+  # shellcheck disable=SC2329
+  confirm_host_assignment() { return 0; }
+  mkdir -p "$STATE_DIR/staging/rollout" "$ROOT/envs/staging"
+  printf '%s\n' "$baseline" >"$STATE_DIR/staging/applied"
+  printf '%s\n' "$staging" >"$STATE_DIR/staging/rollout/commit"
+  printf '%s\n' 'local checkout fixture' >"$ROOT/envs/staging/fixture"
+  # shellcheck disable=SC2329
+  fetch_release() {
+    printf '%s\n' 'unexpected remote fetch' >"$test_root/interrupted-fetch"
+    return 1
+  }
+  if main; then
+    echo 'recovery should require the last applied commit' >&2
+    exit 1
+  fi
+  [[ -f $ROOT/envs/staging/fixture && -d $STATE_DIR/staging/rollout && ! -e $test_root/interrupted-fetch ]]
+)
+echo 'PASS recovery preserves the checkout and journal when the last applied commit is unavailable locally'
+
+(
+  configure_paths separate-storage "$test_root/isolated-state"
+  # shellcheck source=/dev/null
+  source "$agent"
+  # shellcheck disable=SC2329
+  docker() {
+    [[ $* == 'ps -aq --filter label=com.docker.compose.project=cadenway-prod' ]] || return 1
+    printf '%s' "$foreign_container"
+  }
+  # shellcheck disable=SC2329
+  fetch_release() {
+    printf '%s\n' fetched >"$test_root/isolated-fetch"
+    return 1
+  }
+  foreign_container=previous-production-container
+  if main; then
+    echo 'a daemon with containers from another environment was accepted' >&2
+    exit 1
+  fi
+  [[ ! -e $test_root/isolated-fetch ]]
+  foreign_container=''
+  confirm_host_assignment staging
+  printf '%s\n' prod >"$CADENWAY_SETTINGS_DIR/assigned-environment"
+  if confirm_host_assignment staging; then
+    echo 'a conflicting host assignment was accepted' >&2
+    exit 1
+  fi
+  rm -f "$CADENWAY_SETTINGS_DIR/assigned-environment"
+)
+echo 'PASS a daemon with containers from another environment and a conflicting host assignment are refused'
+
+(
+  configure_paths interrupted-restore "$test_root/restore-state"
+  # shellcheck source=/dev/null
+  source "$agent"
+  # shellcheck disable=SC2329
+  confirm_host_assignment() { return 0; }
+  # shellcheck disable=SC2329
+  recover_database_restore() {
+    [[ $1 == staging ]] || return 1
+    printf '%s\n' attempted >"$test_root/restore-attempted"
+    return 1
+  }
+  # shellcheck disable=SC2329
+  fetch_release() {
+    printf '%s\n' fetched >"$test_root/unexpected-restore-fetch"
+    return 1
+  }
+  if main; then
+    echo 'GitOps proceeded after failing to recover a database restore' >&2
+    exit 1
+  fi
+  [[ -e $test_root/restore-attempted && ! -e $test_root/unexpected-restore-fetch ]]
+)
+echo 'PASS a failed database restore recovery prevents reconciliation'
 
 (
   # shellcheck source=/dev/null

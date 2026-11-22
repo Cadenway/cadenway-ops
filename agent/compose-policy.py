@@ -5,6 +5,7 @@ import argparse
 import json
 import re
 import stat
+import sys
 from pathlib import Path
 
 import yaml
@@ -49,7 +50,8 @@ GRANTS = {
         "DOCUMENT_TASK_SERVICE_URL", "SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS",
     },
     "identity-service": {
-        "IDENTITY_PASSWORD_PEPPER", "IDENTITY_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK",
+        "IDENTITY_AUTHENTICATION_COUNTER_RETENTION_ENABLED", "IDENTITY_PASSWORD_PEPPER",
+        "IDENTITY_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK",
         "NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS",
         "ORGANIZATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS", "ORGANIZATION_SERVICE_URL",
         "REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS",
@@ -79,7 +81,8 @@ GRANTS = {
         "TASK_SERVICE_URL", "REDIS_URL", "REALTIME_GATEWAY_REDIS_URL",
     },
     "search-service": {
-        "DOCUMENT_SERVICE_URL", "MEILI_MASTER_KEY", "MEILI_URL", "ORGANIZATION_SERVICE_URL",
+        "DOCUMENT_SERVICE_URL", "MEILI_URL", "ORGANIZATION_SERVICE_URL",
+        "SEARCH_SERVICE_MEILI_API_KEY",
         "SEARCH_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK", "SEARCH_SERVICE_PALETTE_CURSOR_SECRET",
         "STORAGE_SERVICE_URL", "TASK_SERVICE_URL",
     },
@@ -104,6 +107,11 @@ COMPANIONS = {
     "notification-service": "notification-service-worker",
     "task-service": "task-service-relay",
 }
+COMPANION_REPLICAS = {
+    "notification-service-worker": "${NOTIFICATION_SERVICE_WORKER_REPLICAS:-0}",
+    "task-service-relay": "${TASK_SERVICE_RELAY_REPLICAS:-0}",
+}
+FRONTEND_SERVICES = frozenset({"webapp", "website"})
 APP_FIELDS = {
     "command", "configs", "deploy", "entrypoint", "environment", "healthcheck",
     "image", "init", "labels", "networks", "restart", "stop_grace_period",
@@ -128,6 +136,8 @@ ENV_NAME = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*")
 TAG = re.compile(r"[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}")
 PINNED_TAG = re.compile(TAG.pattern + r"@sha256:[0-9a-f]{64}")
 REFERENCE = re.compile(r"\$\$|\$\{?([a-zA-Z_][a-zA-Z0-9_]*)")
+ENVIRONMENT_REFERENCE = "${ENVIRONMENT:-local}"
+DOMAIN = re.compile(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*")
 MAX_MANIFEST_BYTES = 64 * 1024
 
 
@@ -197,36 +207,38 @@ def check_references(value, allowed):
 
 
 def owned_ingress_labels(service):
-    env_ref = "${ENVIRONMENT:-local}"
+    if service not in INGRESS:
+        return {}
+    env_ref = ENVIRONMENT_REFERENCE
     approved = {
         "traefik.enable": {"true", "false"},
         "traefik.docker.network": {f"cadenway-edge-{env_ref}"},
     }
-    if service in INGRESS:
-        port, hosts = INGRESS[service]
-        route = f"{service}-{env_ref}"
-        approved[f"traefik.http.routers.{route}.rule"] = hosts
-        approved[f"traefik.http.services.{route}.loadbalancer.server.port"] = {port}
-        if service == "realtime-gateway":
-            sticky = f"traefik.http.services.{route}.loadbalancer.sticky.cookie"
-            approved[f"{sticky}.name"] = {"cadenway_realtime_route"}
-            approved[f"{sticky}.secure"] = {"true"}
-            approved[f"{sticky}.httponly"] = {"true"}
-            approved[f"{sticky}.samesite"] = {"lax"}
-        if service == "website":
-            redirect = f"website-www-{env_ref}"
-            approved[f"traefik.http.routers.{route}.middlewares"] = {redirect}
-            approved[f"traefik.http.middlewares.{redirect}.redirectregex.regex"] = {
-                r"^https?://www\.(.+)"
-            }
-            approved[f"traefik.http.middlewares.{redirect}.redirectregex.replacement"] = {
-                "${PUBLIC_SCHEME:-https}://$${1}"
-            }
-            approved[f"traefik.http.middlewares.{redirect}.redirectregex.permanent"] = {"true"}
+    port, hosts = INGRESS[service]
+    route = f"{service}-{env_ref}"
+    approved[f"traefik.http.routers.{route}.rule"] = hosts
+    approved[f"traefik.http.services.{route}.loadbalancer.server.port"] = {port}
+    if service == "realtime-gateway":
+        sticky = f"traefik.http.services.{route}.loadbalancer.sticky.cookie"
+        approved[f"{sticky}.name"] = {"cadenway_realtime_route"}
+        approved[f"{sticky}.secure"] = {"true"}
+        approved[f"{sticky}.httponly"] = {"true"}
+        approved[f"{sticky}.samesite"] = {"lax"}
+    if service == "website":
+        redirect = f"website-www-{env_ref}"
+        approved[f"traefik.http.routers.{route}.middlewares"] = {redirect}
+        approved[f"traefik.http.middlewares.{redirect}.redirectregex.regex"] = {
+            r"^https?://www\.(.+)"
+        }
+        approved[f"traefik.http.middlewares.{redirect}.redirectregex.replacement"] = {
+            "${PUBLIC_SCHEME:-https}://$${1}"
+        }
+        approved[f"traefik.http.middlewares.{redirect}.redirectregex.permanent"] = {"true"}
     return {key.lower(): values for key, values in approved.items()}
 
 
-def validate_ingress(service, labels):
+def canonical_labels(service, labels, environment):
+    """Accept exact route templates and give Compose only static label names."""
     approved = owned_ingress_labels(service)
     if isinstance(labels, list):
         if not all(isinstance(label, str) and "=" in label for label in labels):
@@ -235,16 +247,23 @@ def validate_ingress(service, labels):
     else:
         labels = mapping(labels).items()
     seen = set()
+    canonical = {}
     for key, value in labels:
-        key = key.lower()
-        if not key.startswith("traefik."):
-            continue
-        if key in seen or not isinstance(value, str) or value not in approved.get(key, ()):
-            raise PolicyError("an ingress label is outside the service's route")
-        seen.add(key)
+        match = key.lower()
+        if match.startswith("traefik."):
+            if not isinstance(value, str) or value not in approved.get(match, ()):
+                raise PolicyError("an ingress label is outside the service's route")
+            key = match.replace(ENVIRONMENT_REFERENCE.lower(), environment)
+        elif not key or "$" in key:
+            raise PolicyError("non-ingress label names must be static")
+        if key.lower() in seen:
+            raise PolicyError("label names must be unique")
+        seen.add(key.lower())
+        canonical[key] = value
+    return canonical
 
 
-def validate_application(service, app, configs, granted_networks):
+def validate_application(service, app, configs, granted_networks, environment):
     mapping(app, APP_FIELDS)
     if not isinstance(app.get("image"), str):
         raise PolicyError("an application image is required")
@@ -256,10 +275,13 @@ def validate_application(service, app, configs, granted_networks):
         isinstance(name, str) and name in granted_networks for name in networks
     ):
         raise PolicyError("service networks must be declared bridge endpoints")
+    if "edge" in networks and service not in INGRESS:
+        raise PolicyError("only public services may join the edge network")
     deployment = mapping(app.get("deploy", {}), {"replicas", "resources"})
     for settings in mapping(deployment.get("resources", {}), {"limits", "reservations"}).values():
         mapping(settings, {"cpus", "memory", "pids"})
-    validate_ingress(service, app.get("labels", {}))
+    if "labels" in app:
+        app["labels"] = canonical_labels(service, app["labels"], environment)
     mounts = app.get("configs", [])
     if not isinstance(mounts, list):
         raise PolicyError("invalid config mounts")
@@ -271,6 +293,34 @@ def validate_application(service, app, configs, granted_networks):
             raise PolicyError("a config mount must name a local inline config")
 
 
+def apply_shared_host_quotas(document, owner):
+    """Keep the application resource budget in the installed policy."""
+    if owner not in GRANTS and owner not in FRONTEND_SERVICES:
+        raise PolicyError("no shared-host resource budget for this service")
+    # A file may only name its owner and the listed companion. The owner can have one
+    # replica and each companion at most two. The rollout can overlap two generations.
+    limits = (
+        {"cpus": "0.25", "memory": "64m", "pids": 64}
+        if owner in FRONTEND_SERVICES
+        else {"cpus": "0.50", "memory": "256m", "pids": 128}
+    )
+    for name, app in document["services"].items():
+        replicas = app.get("deploy", {}).get("replicas")
+        if name == owner:
+            if replicas is not None and not (type(replicas) is int and replicas == 1):
+                raise PolicyError("shared-host owner must use one replica")
+            replicas = 1
+        elif not (
+            (type(replicas) is int and 0 <= replicas <= 2)
+            or replicas == COMPANION_REPLICAS[name]
+        ):
+            raise PolicyError("shared-host companion must use zero to two replicas")
+        # Drop publisher-selected limits and reservations. The trusted replica reference
+        # is checked again once Compose resolves the environment.
+        app["deploy"] = {"replicas": replicas, "resources": {"limits": limits}}
+        app["memswap_limit"] = limits["memory"]
+
+
 def read_input(path):
     metadata = path.lstat()
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_MANIFEST_BYTES:
@@ -278,7 +328,7 @@ def read_input(path):
     return path.read_text(encoding="utf-8")
 
 
-def read_manifest(path, owner):
+def read_manifest(path, owner, environment):
     source = read_input(path)
     if any(
         isinstance(token, (yaml.AliasToken, yaml.AnchorToken, yaml.TagToken))
@@ -295,14 +345,15 @@ def read_manifest(path, owner):
             mapping(config, {"content"}).get("content"), str
         ):
             raise PolicyError("only local inline configs are allowed")
-    granted_networks = NETWORKS.copy()
+    granted_networks = {name: options for name, options in NETWORKS.items()
+                        if name != "edge" or owner in INGRESS}
     if owner in PRIVATE_NETWORKS:
         granted_networks[PRIVATE_NETWORKS[owner]] = ({"internal": True},)
     for name, network in mapping(document.get("networks", {}), granted_networks.keys()).items():
         if network not in granted_networks[name]:
             raise PolicyError("network cannot select a different host resource")
     for service, app in apps.items():
-        validate_application(service, app, configs, granted_networks)
+        validate_application(service, app, configs, granted_networks, environment)
     check_references(document, allowed_variables(owner))
     return document
 
@@ -322,24 +373,25 @@ def validate_versions(path, owners, require_digest):
         ):
             raise PolicyError("versions.env only accepts each declared service's literal image tag")
         if require_digest and value and not PINNED_TAG.fullmatch(value):
-            raise PolicyError(f"versions.env production image {name} needs tag@sha256:<digest>")
+            raise PolicyError(f"versions.env hosted image {name} needs tag@sha256:<digest>")
         versions[name] = value
     return versions
 
 
-def pin_production_images(document, owner, versions):
+def pin_hosted_images(document, owner, versions):
     variable = f"{prefix(owner)}_VERSION"
     registry = f"ghcr.io/${{GHCR_OWNER}}/cadenway-{owner}:"
     expected = registry + f"${{{variable}}}"
     for app in document["services"].values():
         if app["image"] != expected:
-            raise PolicyError("production image must use the owning service's version pin")
+            raise PolicyError("hosted image must use the owning service's version pin")
         # Insert the approved pin itself so Compose interpolation cannot substitute a tag
         # from the host process or another dotenv file.
         app["image"] = registry + versions.get(variable, "")
 
 
-def stage_definitions(directory, version_file, destination, require_digest):
+def stage_definitions(directory, version_file, destination, require_digest, shared_host_quotas,
+                      environment):
     if directory.is_symlink() or not directory.is_dir():
         raise PolicyError("service definitions must be a real directory")
     manifests = {}
@@ -353,9 +405,11 @@ def stage_definitions(directory, version_file, destination, require_digest):
     for path in paths:
         owner = path.stem
         try:
-            document = read_manifest(path, owner)
+            document = read_manifest(path, owner, environment)
+            if shared_host_quotas:
+                apply_shared_host_quotas(document, owner)
             if require_digest:
-                pin_production_images(document, owner, versions)
+                pin_hosted_images(document, owner, versions)
             names = set(document.get("configs", {}))
             if names & config_names:
                 raise PolicyError("inline config names must be unique in the project")
@@ -372,19 +426,77 @@ def stage_definitions(directory, version_file, destination, require_digest):
         (destination / name).write_text(f"{document}\n", encoding="utf-8")
 
 
+def validate_resolved_ingress(model, environment, domain, scheme):
+    """Check Compose's actual labels and networks against the host's public settings."""
+    if not OWNER_NAME.fullmatch(environment) or not DOMAIN.fullmatch(domain) or scheme not in {"http", "https"}:
+        raise PolicyError("invalid public routing settings")
+    edge_name = f"cadenway-edge-{environment}"
+    networks = mapping(model.get("networks", {}))
+    if "edge" in networks:
+        edge = mapping(networks["edge"])
+        if edge.get("name") != edge_name or edge.get("external") is not True:
+            raise PolicyError("the resolved edge network is outside the environment")
+
+    def resolved_values(values):
+        formats = set()
+        for value in values:
+            resolved = (value.replace(ENVIRONMENT_REFERENCE, environment).replace("${DOMAIN}", domain)
+                        .replace("${PUBLIC_SCHEME:-https}", scheme))
+            # Compose's normalized model may preserve the dollar escape for later YAML reuse.
+            formats.update((resolved, resolved.replace("$$", "$")))
+        return formats
+
+    for service, app in mapping(model.get("services")).items():
+        active_networks = mapping(app.get("networks", {}))
+        actual_networks = {mapping(networks[name]).get("name", "") for name in active_networks}
+        edge_networks = {name for name in actual_networks if name.startswith("cadenway-edge-")}
+        if edge_networks - {edge_name}:
+            raise PolicyError("a service joins another environment's edge network")
+        joins_edge = edge_name in edge_networks
+        labels = {key.lower(): value for key, value in mapping(app.get("labels", {})).items()
+                  if key.lower().startswith("traefik.")}
+        approved = {key.replace(ENVIRONMENT_REFERENCE.lower(), environment):
+                    resolved_values(values)
+                    for key, values in owned_ingress_labels(service).items()}
+        if joins_edge and service not in INGRESS:
+            raise PolicyError("a resolved private service joins the edge network")
+        if any(value not in approved.get(key, ()) for key, value in labels.items()):
+            raise PolicyError("resolved labels are outside the service's route")
+        if labels.get("traefik.enable") == "true":
+            router = f"traefik.http.routers.{service}-{environment}.rule"
+            port = f"traefik.http.services.{service}-{environment}.loadbalancer.server.port"
+            if not joins_edge or labels.get("traefik.docker.network") != edge_name or not (
+                router in labels and port in labels
+            ):
+                raise PolicyError("a public service needs an explicit route, port and edge network")
+
+
 def main():
     cli = argparse.ArgumentParser(description=__doc__)
-    cli.add_argument("directory", type=Path)
-    cli.add_argument("versions", type=Path)
-    cli.add_argument("destination", type=Path)
+    cli.add_argument("directory", type=Path, nargs="?")
+    cli.add_argument("versions", type=Path, nargs="?")
+    cli.add_argument("destination", type=Path, nargs="?")
+    cli.add_argument("--environment", default="local")
+    cli.add_argument("--check-ingress", nargs=2, metavar=("DOMAIN", "SCHEME"))
     cli.add_argument("--require-digest", action="store_true")
+    cli.add_argument("--shared-host-quotas", action="store_true")
     args = cli.parse_args()
+    if not OWNER_NAME.fullmatch(args.environment):
+        cli.error("invalid environment name")
     try:
-        stage_definitions(args.directory, args.versions, args.destination, args.require_digest)
+        if args.check_ingress is not None:
+            validate_resolved_ingress(json.load(sys.stdin), args.environment, *args.check_ingress)
+        else:
+            if args.directory is None or args.versions is None or args.destination is None:
+                cli.error("staging requires directory, versions and destination")
+            stage_definitions(
+                args.directory, args.versions, args.destination, args.require_digest,
+                args.shared_host_quotas, args.environment,
+            )
     except PolicyError as error:
         cli.exit(1, f"Compose policy: {error}\n")
-    except (OSError, ValueError) as error:
-        cli.exit(1, f"Compose policy: input or temporary directory rejected ({type(error).__name__})\n")
+    except (OSError, ValueError, TypeError, KeyError):
+        cli.exit(1, "Compose policy: input or temporary directory rejected\n")
 
 
 if __name__ == "__main__":

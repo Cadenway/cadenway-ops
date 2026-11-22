@@ -1,7 +1,7 @@
 # Entry point of one Cadenway environment: its infrastructure and one definition per deployable.
 #
-# Traefik is not here: edge.yaml runs it once per host, so staging and production can share a VPS
-# or run on their own. The GitOps agent starts this file as the project cadenway-<env> with
+# Traefik is not here: edge.yaml runs it separately on the VPS assigned to each environment.
+# The GitOps agent starts this file as the project cadenway-<env> with
 # CADENWAY_SERVICES=../environments/<env>/services: each environment runs the definitions its deploy
 # wrote, so a staging release never changes what production runs. Locally, the stack runs the
 # staging definitions.

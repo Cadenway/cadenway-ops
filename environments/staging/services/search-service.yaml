@@ -10,8 +10,7 @@
 # INTERNAL_TOKEN_TRUSTED_ISSUERS lists who may call this service: the API gateway only. The folded
 # scalar gives the service one line of JSON.
 #
-# MEILI_URL and MEILI_API_KEY reach the Meilisearch of the environment with its master key. Nothing
-# reads them until the index is wired.
+# MEILI_URL and MEILI_API_KEY reach the environment's Meilisearch with Search's restricted key.
 #
 # MIGRATION_DATABASE_URL is deliberately absent: the GitOps agent of cadenway-ops hands the
 # migrator's URL to the one-off migration container only (docs/database.md there), so the running
@@ -30,7 +29,7 @@ services:
       INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
         {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
       MEILI_URL: ${MEILI_URL}
-      MEILI_API_KEY: ${MEILI_MASTER_KEY}
+      MEILI_API_KEY: ${SEARCH_SERVICE_MEILI_API_KEY:-}
     networks:
       - internal
     healthcheck:

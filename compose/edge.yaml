@@ -1,14 +1,11 @@
-# Edge of a VPS: the one Traefik that owns ports 80 and 443, whatever the number of environments.
+# Edge of a VPS: the Traefik that owns ports 80 and 443 for its assigned environment.
 #
 # A Compose project of its own (`cadenway-edge`), started once per host by the GitOps agent. It
-# creates one edge network per environment (`cadenway-edge-staging`, `cadenway-edge-prod`), which
-# the exposed services of that environment join as an external network: one VPS can run staging and
-# production side by side without their containers sharing a network, or each environment can have
-# its own VPS (the other network then stays empty).
+# declares both edge network names (`cadenway-edge-staging`, `cadenway-edge-prod`). The assigned
+# environment's public services join only its own network. The other network stays empty.
 #
-# Routers, services and networks carry the environment in their name (`api-gateway-staging`), so two
-# stacks never collide; each one answers on its own domain. Values come from /etc/cadenway/edge.env,
-# written by Ansible.
+# Routers, services and networks carry the environment in their name (`api-gateway-staging`).
+# Values come from /etc/cadenway/edge.env, written by Ansible.
 name: cadenway-edge
 
 services:

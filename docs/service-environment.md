@@ -30,16 +30,21 @@ variable is therefore released after the variable exists on the host: the secret
 Every call between backends carries a token signed by the caller with its own Ed25519 key and
 checked by the called service against the keys of the issuers it trusts.
 
-| Issuer                 | Calls                              | Its key pair in the stack                                                          |
-| ---------------------- | ---------------------------------- | ---------------------------------------------------------------------------------- |
-| `api-gateway`          | every service                      | `API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS` |
-| `realtime-gateway`     | identity-service, task-service     | `REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                     |
-| `automation-service`   | task-service, notification-service | `AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                   |
-| `integration-service`  | task-service                       | `INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                  |
-| `notification-service` | identity-service                   | `NOTIFICATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                 |
+| Issuer                 | Calls                                                | Its key pair in the stack                                                          |
+| ---------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `api-gateway`          | every service                                        | `API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS` |
+| `realtime-gateway`     | identity-service, organization-service, task-service | `REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                     |
+| `automation-service`   | task-service, notification-service                   | `AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                   |
+| `integration-service`  | task-service                                         | `INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                  |
+| `notification-service` | identity-service                                     | `NOTIFICATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                 |
+| `document-service`     | task-service                                         | `DOCUMENT_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                     |
+| `billing-service`      | organization-service, storage-service                | `BILLING_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                      |
+| `identity-service`     | organization-service                                 | `IDENTITY_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                     |
+| `organization-service` | identity-service                                     | `ORGANIZATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                 |
+| `task-service`         | organization-service                                 | `TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                         |
 
-- `<NAME>_INTERNAL_TOKEN_PRIVATE_JWK` is one line of JSON, a secret, read by that issuer only, as
-  `INTERNAL_TOKEN_PRIVATE_JWK`.
+- `<NAME>_INTERNAL_TOKEN_PRIVATE_JWK` is one line of JSON and is read only by that issuer. Identity,
+  Organization and Task consume the scoped variable name. Other issuers use `INTERNAL_TOKEN_PRIVATE_JWK`.
 - `<NAME>_INTERNAL_TOKEN_PUBLIC_JWKS` is the public key as one line of JSON; several keys separated
   by commas during a rotation. A called service builds `INTERNAL_TOKEN_TRUSTED_ISSUERS` from the
   public keys of the issuers it trusts, in its own definition: who a service trusts is reviewed in
@@ -64,26 +69,33 @@ No private key is committed, not even a development one. Once, after `cp .env.ex
 docker compose run --rm internal-token-keys
 ```
 
-The container runs `compose/internal-token/generate-keys.mjs`, which appends the five key pairs to
+The container runs `compose/internal-token/generate-keys.mjs`, which appends the issuer key pairs to
 `compose/.env` (never committed). Compose then reads them like any other variable, exactly as it
 reads the secrets on a host. A second run changes nothing; to replace a pair, delete its two lines
 and run it again. Without the keys, Compose warns that the variables are not set and the backends
 refuse to start, naming `INTERNAL_TOKEN_PRIVATE_JWK` or `INTERNAL_TOKEN_TRUSTED_ISSUERS`.
 
-Run the generator again on existing workstations to add the Notification pair. It keeps the
-existing issuer keys.
+Run the generator again on existing workstations to add missing pairs. It keeps the existing
+issuer keys.
 
 ### Keys of staging and production
 
 An operator generates them and puts them in the secrets, each environment with its own:
 
 ```bash
-docker compose run --rm internal-token-keys --print   # ten lines, on the terminal only
+docker compose run --rm internal-token-keys --print   # two assignments per issuer, on the terminal only
 sops edit environments/staging/secrets.sops.env       # paste them
 ```
 
 To rotate the key of an issuer: add the new public key to its `…_PUBLIC_JWKS` after a comma and
 merge; replace its `…_PRIVATE_JWK` and merge; then remove the old public key.
+
+For current membership checks, provision Task, Identity and Realtime as outbound issuers and make
+their public keys available to Organization. Give Organization's public key to Identity for the
+verified-address authority. The host provides `ORGANIZATION_SERVICE_URL` and `IDENTITY_SERVICE_URL`.
+Install compatible contracts and release Organization's receiver and Identity's verified-address
+receiver before activating the corresponding callers. The environment definitions carry references.
+They require the actual per-environment key material and compatible image versions to run.
 
 Before enabling activity e-mail, provision `NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`
 for Identity and deploy the Identity image that serves the recipient route. Install the exact
@@ -128,7 +140,7 @@ removes the line from its `deploy/compose.yaml`.
 | notification-service | `api-gateway`, `automation-service`                                            | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM`, each from the variable of the same name; `WEB_APP_URL: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}`, the origin of the links in its e-mails                                                                                                                                                       |
 | automation-service   | `api-gateway`                                                                  | `INTERNAL_TOKEN_ISSUER: automation-service`, `INTERNAL_TOKEN_PRIVATE_JWK: ${AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}`, `TASK_SERVICE_URL`, `NOTIFICATION_SERVICE_URL`                                                                                                                                                                                        |
 | integration-service  | `api-gateway`                                                                  | `INTERNAL_TOKEN_ISSUER: integration-service`, `INTERNAL_TOKEN_PRIVATE_JWK: ${INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}`, `TASK_SERVICE_URL`                                                                                                                                                                                                                  |
-| search-service       | `api-gateway`                                                                  | `MEILI_URL: ${MEILI_URL}`, `MEILI_API_KEY: ${MEILI_MASTER_KEY}`                                                                                                                                                                                                                                                                                                    |
+| search-service       | `api-gateway`                                                                  | `MEILI_URL: ${MEILI_URL}`, `MEILI_API_KEY: ${SEARCH_SERVICE_MEILI_API_KEY:-}`                                                                                                                                                                                                                                                                                      |
 | api-gateway          | nobody: it authenticates the applications itself                               | `ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN},${PUBLIC_SCHEME:-https}://${DOMAIN}`, `INTERNAL_TOKEN_ISSUER: api-gateway`, `INTERNAL_TOKEN_PRIVATE_JWK: ${API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}`, the ten `<NAME>_SERVICE_URL`; `NATS_URL`, `NATS_USER: api-gateway`, `NATS_PASSWORD: ${API_GATEWAY_NATS_PASSWORD}` once it publishes its usage event |
 | realtime-gateway     | nobody: it authenticates the sockets itself                                    | `ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}`, `INTERNAL_TOKEN_ISSUER: realtime-gateway`, `INTERNAL_TOKEN_PRIVATE_JWK: ${REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}`, `IDENTITY_SERVICE_URL`, `TASK_SERVICE_URL`, `NATS_USER: realtime-gateway`, `NATS_PASSWORD: ${REALTIME_GATEWAY_NATS_PASSWORD}`                                                 |
 
@@ -186,20 +198,30 @@ workstation: the one exception to the rule above ([database](database.md)).
 Besides those of the [database](database.md#variables) and of the
 [broker](messaging.md#secrets), `secrets.sops.env` of each environment holds:
 
-| Variable                                                                                                                                                                                   | Used by                                                |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
-| `API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK` | the issuer named by the variable                       |
-| `API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS`, `REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS`, `AUTOMATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`, `INTEGRATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS` | the services that trust it                             |
-| `NOTIFICATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`                                                                                                                                          | notification-service when activity delivery is enabled |
-| `NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`                                                                                                                                          | identity-service when activity delivery is enabled     |
-| `IDENTITY_PASSWORD_PEPPER`                                                                                                                                                                 | identity-service                                       |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM`                                                                                                                        | notification-service                                   |
-| `STORAGE_S3_ENDPOINT`, `STORAGE_S3_PUBLIC_ENDPOINT`, `STORAGE_S3_REGION`, `STORAGE_S3_BUCKET`, `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`, `STORAGE_S3_FORCE_PATH_STYLE`   | storage-service                                        |
-| `STORAGE_UPLOAD_RECEIPT_KEYS`                                                                                                                                                              | attachment-enabled storage-service                     |
+| Variable                                                                                                                                                                                   | Used by                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
+| `API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK` | the issuer named by the variable                                |
+| `API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS`, `REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS`, `AUTOMATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`, `INTEGRATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS` | the services that trust it                                      |
+| `NOTIFICATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`                                                                                                                                          | notification-service when activity delivery is enabled          |
+| `NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`                                                                                                                                          | identity-service when activity delivery is enabled              |
+| `IDENTITY_PASSWORD_PEPPER`                                                                                                                                                                 | identity-service                                                |
+| `IDENTITY_AUTHENTICATION_COUNTER_RETENTION_ENABLED`                                                                                                                                        | Identity counter cleanup, enabled after all replicas support it |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM`                                                                                                                        | notification-service                                            |
+| `MEILI_MASTER_KEY`, `SEARCH_SERVICE_MEILI_API_KEY`                                                                                                                                         | Meilisearch administration and Search, respectively             |
+| `STORAGE_S3_ENDPOINT`, `STORAGE_S3_PUBLIC_ENDPOINT`, `STORAGE_S3_REGION`, `STORAGE_S3_BUCKET`, `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`, `STORAGE_S3_FORCE_PATH_STYLE`   | storage-service                                                 |
+| `STORAGE_UPLOAD_RECEIPT_KEYS`                                                                                                                                                              | attachment-enabled storage-service                              |
 
 The public keys are not secret; they sit with the private ones so that an environment's keys are
 edited in one place. JSON values need no quoting in the file: the agent writes each value between
 single quotes, and a JSON Web Key contains none.
+
+Before enabling hosted Search, provision a dedicated Meilisearch API key for indexes matching
+`search_*`. Grant `search`, `indexes.get`, `indexes.create`, `indexes.delete`, `settings.update`,
+`tasks.get`, `documents.add` and `documents.delete`. Keep the master key in the engine and its
+administration procedure. Record the application key as `SEARCH_SERVICE_MEILI_API_KEY` in the SOPS
+document through the established secret-management procedure. Verify the key's index and action
+scope and update the service before retiring a previous key. The local disposable Meilisearch
+instance may use the key configured in `compose/.env`.
 
 Storage object recovery uses `STORAGE_RESTORE_S3_ACCESS_KEY_ID` and
 `STORAGE_RESTORE_S3_SECRET_ACCESS_KEY` from the environment's SOPS document. Only

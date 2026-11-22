@@ -13,6 +13,11 @@
   hosts: cadenway
   become: true
   pre_tasks:
+    - name: Verify the host's environment assignment
+      ansible.builtin.import_role:
+        name: agent
+        tasks_from: check-host-assignment
+
     - name: Find out whether the host was ever set up
       ansible.builtin.stat:
         path: /etc/cadenway/agent.env

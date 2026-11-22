@@ -12,6 +12,11 @@ services:
       PORT: '3001'
       REDIS_URL: redis://redis-realtime:6379
       NATS_URL: ${NATS_URL}
+      INTERNAL_TOKEN_ISSUER: realtime-gateway
+      INTERNAL_TOKEN_PRIVATE_JWK: ${REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK:-}
+      IDENTITY_SERVICE_URL: ${IDENTITY_SERVICE_URL}
+      ORGANIZATION_SERVICE_URL: ${ORGANIZATION_SERVICE_URL}
+      TASK_SERVICE_URL: ${TASK_SERVICE_URL}
     networks:
       - edge
       - internal

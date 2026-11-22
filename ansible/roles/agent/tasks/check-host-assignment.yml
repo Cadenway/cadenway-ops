@@ -1,0 +1,44 @@
+- name: Require one hosted environment per VPS
+  ansible.builtin.assert:
+    that:
+      - cadenway_environments is sequence
+      - cadenway_environments is not string
+      - cadenway_environments is not mapping
+      - cadenway_environments | length == 1
+      - cadenway_environments[0] in ['staging', 'prod']
+    fail_msg: Assign exactly one environment (staging or prod) to each VPS.
+    quiet: true
+
+- name: Inspect the recorded host assignment
+  ansible.builtin.stat:
+    path: /etc/cadenway/assigned-environment
+    follow: false
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  register: cadenway_assignment_file
+
+- name: Check the recorded host assignment
+  when: cadenway_assignment_file.stat.exists
+  block:
+    - name: Require a root-owned regular assignment file
+      ansible.builtin.assert:
+        that:
+          - cadenway_assignment_file.stat.isreg
+          - cadenway_assignment_file.stat.uid == 0
+          - cadenway_assignment_file.stat.mode == '0644'
+          - cadenway_assignment_file.stat.size <= 8
+        fail_msg: The host assignment file must contain one environment and be owned by root.
+        quiet: true
+
+    - name: Read the assigned environment
+      ansible.builtin.slurp:
+        src: /etc/cadenway/assigned-environment
+      register: cadenway_recorded_assignment
+
+    - name: Preserve this host's environment assignment
+      ansible.builtin.assert:
+        that:
+          - cadenway_recorded_assignment.content | b64decode == cadenway_environments[0] ~ '\n'
+        fail_msg: This VPS is already assigned to another environment. Use a dedicated VPS.
+        quiet: true

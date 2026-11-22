@@ -24,8 +24,13 @@ class ComposePolicyTest(unittest.TestCase):
         self.versions.write_text("TASK_SERVICE_VERSION=1.2.3\n", encoding="utf-8")
         self.output = base / "validated"
 
-    def run_policy(self, services=None, versions=None, require_digest=False):
-        options = ["--require-digest"] if require_digest else []
+    def run_policy(self, services=None, versions=None, require_digest=False, shared_host_quotas=False,
+                   environment="local"):
+        options = ["--environment", environment]
+        if require_digest:
+            options.append("--require-digest")
+        if shared_host_quotas:
+            options.append("--shared-host-quotas")
         return subprocess.run(
             [
                 sys.executable, "-E", "-P", str(AGENT / "compose-policy.py"),
@@ -47,8 +52,8 @@ class ComposePolicyTest(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def assert_rejected(self, message, require_digest=False):
-        result = self.run_policy(require_digest=require_digest)
+    def assert_rejected(self, message, **options):
+        result = self.run_policy(**options)
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn(message, result.stderr)
         self.assertFalse(self.output.exists())
@@ -108,9 +113,12 @@ class ComposePolicyTest(unittest.TestCase):
                 self.versions.write_text(f"TASK_SERVICE_VERSION=1.2.3\n{line}\n", encoding="utf-8")
                 self.assert_rejected("literal image tag")
 
-    def test_production_denies_a_mutable_tag(self):
+    def test_hosted_releases_require_immutable_images(self):
         self.write_task()
-        self.assert_rejected("production image TASK_SERVICE_VERSION needs tag@sha256", True)
+        for env in ("staging", "prod"):
+            with self.subTest(environment=env):
+                self.assert_rejected("hosted image TASK_SERVICE_VERSION needs tag@sha256",
+                                     require_digest=True, environment=env)
 
     def test_production_uses_the_exact_approved_digest(self):
         self.write_task()
@@ -131,7 +139,87 @@ class ComposePolicyTest(unittest.TestCase):
         fixture = self.services / "task-service.yaml"
         model = fixture.read_text(encoding="utf-8").replace("${TASK_SERVICE_VERSION}", "1.2.3")
         fixture.write_text(model, encoding="utf-8")
-        self.assert_rejected("production image must use the owning service's version pin", True)
+        self.assert_rejected("hosted image must use the owning service's version pin", require_digest=True)
+
+    def test_shared_host_supplies_limits_without_a_deploy_section(self):
+        self.write_task()
+        result = self.run_policy(shared_host_quotas=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((self.output / "task-service.yaml").read_text(encoding="utf-8"))
+        app = manifest["services"]["task-service"]
+        self.assertEqual(app["deploy"], {
+            "replicas": 1,
+            "resources": {"limits": {"cpus": "0.50", "memory": "256m", "pids": 128}},
+        })
+        self.assertEqual(app["memswap_limit"], "256m")
+
+    def test_shared_host_overwrites_source_limits_and_reservations(self):
+        self.write_task(
+            '    deploy:\n'
+            '      resources:\n'
+            '        limits: {cpus: "0.0", memory: 0, pids: -1}\n'
+            '        reservations: {cpus: "1000", memory: 8g}\n'
+        )
+        result = self.run_policy(shared_host_quotas=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((self.output / "task-service.yaml").read_text(encoding="utf-8"))
+        app = manifest["services"]["task-service"]
+        self.assertEqual(app["deploy"]["resources"], {
+            "limits": {"cpus": "0.50", "memory": "256m", "pids": 128},
+        })
+
+    def test_shared_host_rejects_owner_scale_and_competing_settings(self):
+        for field, error in (
+            ("deploy: {replicas: 2}", "owner must use one replica"),
+            ("deploy: {replicas: true}", "owner must use one replica"),
+            ("deploy: {replicas: '${TASK_SERVICE_RELAY_REPLICAS:-0}'}", "owner must use one replica"),
+            ("scale: 3", "unsupported Compose mapping"),
+            ("cpus: 0", "unsupported Compose mapping"),
+            ("mem_limit: 0", "unsupported Compose mapping"),
+            ("memswap_limit: -1", "unsupported Compose mapping"),
+            ("pids_limit: -1", "unsupported Compose mapping"),
+            ("deploy: {resources: {limits: {cgroup_parent: custom}}}", "unsupported Compose mapping"),
+        ):
+            with self.subTest(field=field):
+                self.write_task(f"    {field}\n")
+                self.assert_rejected(error, shared_host_quotas=True)
+
+    def write_task_with_relay(self, replicas):
+        self.write_task(
+            "  task-service-relay:\n"
+            "    image: ghcr.io/${GHCR_OWNER}/cadenway-task-service:${TASK_SERVICE_VERSION}\n"
+            "    networks: [internal]\n"
+            f"    deploy: {{replicas: {replicas}}}\n"
+        )
+
+    def test_shared_host_companion_preserves_its_bounded_replica_setting(self):
+        self.write_task_with_relay("'${TASK_SERVICE_RELAY_REPLICAS:-0}'")
+        result = self.run_policy(shared_host_quotas=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((self.output / "task-service.yaml").read_text(encoding="utf-8"))
+        relay = manifest["services"]["task-service-relay"]
+        self.assertEqual(relay["deploy"]["replicas"], "${TASK_SERVICE_RELAY_REPLICAS:-0}")
+        self.assertEqual(relay["deploy"]["resources"], {
+            "limits": {"cpus": "0.50", "memory": "256m", "pids": 128},
+        })
+        self.assertEqual(relay["memswap_limit"], "256m")
+
+    def test_shared_host_rejects_unbounded_companion_replicas(self):
+        for replicas in (3, -1, "false", "'${TASK_SERVICE_RELAY_REPLICAS:-3}'"):
+            with self.subTest(replicas=replicas):
+                self.write_task_with_relay(replicas)
+                self.assert_rejected("companion must use zero to two replicas", shared_host_quotas=True)
+
+    def test_shared_host_rejects_extra_workloads(self):
+        self.write_task()
+        extra = self.services / "extra.yaml"
+        extra.write_text(
+            "services:\n"
+            "  extra: {image: fixture, networks: [internal]}\n"
+            "networks: {internal: {}}\n",
+            encoding="utf-8",
+        )
+        self.assert_rejected("no shared-host resource budget for this service", shared_host_quotas=True)
 
     def test_other_service_cannot_request_a_private_redis_network(self):
         self.write_task()
@@ -147,6 +235,52 @@ class ComposePolicyTest(unittest.TestCase):
         )
         self.assert_rejected("outside the service's route")
 
+    def test_deployed_labels_are_a_static_mapping_for_the_assigned_environment(self):
+        source = REPO / "environments" / "staging"
+        if not source.is_dir():
+            self.skipTest("the full Ops checkout is only available outside the mounted CI harness")
+        result = self.run_policy(source / "services", source / "versions.env", environment="staging")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        website = json.loads((self.output / "website.yaml").read_text(encoding="utf-8"))
+        labels = website["services"]["website"]["labels"]
+        self.assertTrue(all("$" not in key for key in labels))
+        self.assertEqual(labels["traefik.http.routers.website-staging.rule"],
+                         "Host(`${DOMAIN}`) || Host(`www.${DOMAIN}`)")
+
+    def test_private_service_does_not_join_edge(self):
+        self.write_task()
+        fixture = self.services / "task-service.yaml"
+        model = fixture.read_text(encoding="utf-8").replace("[internal]", "[internal, edge]")
+        fixture.write_text(model, encoding="utf-8")
+        self.assert_rejected("service networks must be declared bridge endpoints")
+
+    def resolved_routing(self, model):
+        return subprocess.run(
+            [
+                sys.executable, "-E", "-P", str(AGENT / "compose-policy.py"),
+                "--environment", "staging", "--check-ingress", "staging.example.test", "https",
+            ],
+            input=json.dumps(model), capture_output=True, text=True, check=False,
+        )
+
+    def test_resolved_ingress_matches_the_host_and_network(self):
+        model = {
+            "networks": {"edge": {"name": "cadenway-edge-staging", "external": True}},
+            "services": {"website": {"networks": {"edge": None}, "labels": {
+                "traefik.enable": "true",
+                "traefik.docker.network": "cadenway-edge-staging",
+                "traefik.http.routers.website-staging.rule": "Host(`www.staging.example.test`)",
+                "traefik.http.services.website-staging.loadbalancer.server.port": "8080",
+                "traefik.http.middlewares.website-www-staging.redirectregex.replacement": "https://${1}",
+            }}},
+        }
+        result = self.resolved_routing(model)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        model["services"]["website"]["networks"] = {}
+        result = self.resolved_routing(model)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("needs an explicit route, port and edge network", result.stderr)
+
     def test_current_repository_manifest_stays_compatible(self):
         for name in ("staging", "prod"):
             with self.subTest(environment=name):
@@ -160,6 +294,26 @@ class ComposePolicyTest(unittest.TestCase):
                     sorted(item.name for item in self.output.glob("*.yaml")),
                     sorted(item.name for item in (env / "services").glob("*.yaml")),
                 )
+
+    def test_current_repository_manifests_fit_shared_host_quotas(self):
+        for name in ("staging", "prod"):
+            with self.subTest(environment=name):
+                env = REPO / "environments" / name
+                if not env.is_dir():
+                    self.skipTest("the full Ops checkout is only available outside the mounted CI harness")
+                self.output = self.output.parent / name
+                result = self.run_policy(env / "services", env / "versions.env", shared_host_quotas=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for manifest in self.output.glob("*.yaml"):
+                    owner = manifest.stem
+                    app = json.loads(manifest.read_text(encoding="utf-8"))["services"][owner]
+                    limits = (
+                        {"cpus": "0.25", "memory": "64m", "pids": 64}
+                        if owner in {"website", "webapp"}
+                        else {"cpus": "0.50", "memory": "256m", "pids": 128}
+                    )
+                    self.assertEqual(app["deploy"], {"replicas": 1, "resources": {"limits": limits}})
+                    self.assertEqual(app["memswap_limit"], limits["memory"])
 
 
 if __name__ == "__main__":

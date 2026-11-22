@@ -2,9 +2,8 @@
 # GitOps agent of a Cadenway host: applies approved Ops releases, one run per timer tick.
 #
 # Pull-only: the host fetches the repository with a read-only deploy key; nothing reaches the VPS from
-# outside. One host runs one or several environments (CADENWAY_ENVIRONMENTS), each as the Compose
-# project cadenway-<env> with its own definitions (environments/<env>/services/), behind the single
-# Traefik of the cadenway-edge project.
+# outside. One host runs one environment (CADENWAY_ENVIRONMENTS) as the Compose project
+# cadenway-<env> with its own definitions, behind the Traefik of the cadenway-edge project.
 #
 # For each environment, on a new commit:
 #   1. check out the commit, validate its service definitions, decrypt its secrets into /run (tmpfs);
@@ -13,7 +12,7 @@
 #      not healthy: run its migrations in a one-off container, to which the agent gives the migrator
 #      URL of its database, start the new container without serving aliases, wait for `healthy`;
 #      prepare companion replicas, then promote the healthy batch and retire obsolete containers.
-#      An interrupted batch is recovered from its local journal before applying another commit;
+#      At the start of every tick, interrupted batches are recovered before reading remote refs;
 #   4. record the commit as applied; or as failed when the desired state itself is wrong (never
 #      retried); or retry on the next tick when the failure is transient (registry, network), and
 #      notify once per commit.
@@ -75,19 +74,16 @@ notify() {
     log "notify: the webhook did not accept the message"
 }
 
-# Keeps a bare mirror of only the configured release refs.
-fetch() {
-  local branch
-  local -a refspecs=()
-  for branch in "$@"; do
-    git check-ref-format "refs/heads/$branch" || return 1
-    refspecs+=("+refs/heads/$branch:refs/heads/$branch")
-  done
+# Fetch one desired-state ref. Never return a cached tip after a failed fetch.
+fetch_release() {
+  local ref=refs/heads/$1
+  git check-ref-format "$ref" || return 1
   if [[ ! -d $MIRROR ]]; then
     git init --quiet --bare "$MIRROR" &&
       git -C "$MIRROR" remote add origin "$CADENWAY_REPO_URL" || return 1
   fi
-  git -C "$MIRROR" fetch --quiet --no-tags --prune origin "${refspecs[@]}"
+  timeout -k 5s 30s git -C "$MIRROR" fetch --quiet --no-tags origin "+$ref:$ref" || return 1
+  git -C "$MIRROR" rev-parse --verify "$ref^{commit}"
 }
 
 # The public trust store lives on the host. Verify before worktree checkout or any Compose apply.
@@ -109,15 +105,6 @@ descends_from() {
   [[ -z $applied ]] || git -C "$MIRROR" merge-base --is-ancestor "$applied" "$commit"
 }
 
-# An approval for staging alone may change its app manifests and versions. Infrastructure, SOPS
-# sources and process settings on a shared daemon also need the production approval.
-has_approved_host_inputs() {
-  local release=$1 production=$2 env=$3
-  git -C "$MIRROR" diff --quiet --no-ext-diff --no-textconv "$production" "$release" -- \
-    compose "environments/$env" ":(exclude)environments/$env/services" \
-    ":(exclude)environments/$env/versions.env"
-}
-
 # Checks out a commit, detached, in a stable worktree: Compose sees the same paths on every run.
 # A worktree whose link to the mirror broke (mirror recreated) is created again.
 checkout() {
@@ -125,8 +112,8 @@ checkout() {
   if [[ -e $worktree/.git ]] && git -C "$worktree" checkout --quiet --detach --force "$commit"; then
     return 0
   fi
-  rm -rf "$worktree"
-  git -C "$MIRROR" worktree prune
+  git -C "$MIRROR" cat-file -e "$commit^{commit}" >/dev/null 2>&1 || return 1
+  rm -rf "$worktree" && git -C "$MIRROR" worktree prune || return 1
   git -C "$MIRROR" worktree add --quiet --detach --force "$worktree" "$commit"
 }
 
@@ -151,18 +138,32 @@ apply_edge() {
   printf '%s\n' "$commit" >"$STATE_DIR/edge/applied"
 }
 
+reconcile_edge() {
+  local commit=$1
+  if ! apply_edge "$commit"; then
+    log "edge: ${commit:0:12} failed; environments without their edge network wait"
+    return 1
+  fi
+}
+
 # Runs Compose for one environment using only the service documents staged by the installed policy.
 env_compose() {
   local env=$1
   shift
   local worktree=$ROOT/envs/$env
   local process_file=$worktree/environments/$env/processes.env
+  local public_settings=$SETTINGS_DIR/env/$env.env
+  local domain scheme registry_owner
+  domain=$(dotenv_value "$public_settings" DOMAIN) || return 1
+  scheme=$(dotenv_value "$public_settings" PUBLIC_SCHEME) || return 1
+  registry_owner=$(dotenv_value "$public_settings" GHCR_OWNER) || return 1
   local -a process_settings=()
   [[ ! -f $process_file ]] || process_settings=(--env-file "$process_file")
-  CADENWAY_SERVICES=$SECRETS_DIR/$env/definitions \
+  ENVIRONMENT=$env DOMAIN=$domain PUBLIC_SCHEME=${scheme:-https} GHCR_OWNER=$registry_owner \
+    CADENWAY_SERVICES=$SECRETS_DIR/$env/definitions \
     docker compose -p "cadenway-$env" --project-directory "$worktree/compose" \
     -f "$worktree/compose/compose.yaml" \
-    --env-file "$SETTINGS_DIR/env/$env.env" \
+    --env-file "$public_settings" \
     --env-file "$worktree/environments/$env/versions.env" \
     --env-file "$SECRETS_DIR/$env/secrets.env" \
     "${process_settings[@]}" \
@@ -170,18 +171,31 @@ env_compose() {
 }
 
 # Constrain the service manifests before Compose can load files or use the environment's secrets.
-# The canonical copies contain only the same raw literals and authorized references as the source.
+# The canonical copies use static label names and authorized references.
 stage_service_definitions() {
   local env=$1 base=$ROOT/envs/$1/environments
   local scratch=${SECRETS_DIR:?}/$env
-  local -a policy_options=()
-  [[ $env != prod ]] || policy_options=(--require-digest)
+  local -a policy_options=(--environment "$env")
+  case $env in
+    prod | staging) policy_options+=(--require-digest --shared-host-quotas) ;;
+  esac
   [[ $env =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ! -L $base && ! -L $base/$env ]] || return 1
   # The release lock also covers this scratch directory. A killed process cannot run its
   # exit trap, so the next tick discards the previous candidate's files before staging.
   rm -rf -- "$scratch" && install -d -m 0700 "$scratch" || return 1
   python3 -I "$SCRIPT_DIR/compose-policy.py" "${policy_options[@]}" "$base/$env/services" \
     "$base/$env/versions.env" "$scratch/definitions"
+}
+
+# Validate only routing data from the Compose model. Resolved secrets never reach logs or disk.
+valid_resolved_ingress() {
+  local env=$1 domain scheme public_settings=$SETTINGS_DIR/env/$1.env
+  domain=$(dotenv_value "$public_settings" DOMAIN) || return 1
+  scheme=$(dotenv_value "$public_settings" PUBLIC_SCHEME) || return 1
+  env_compose "$env" config --format json 2>/dev/null |
+    jq -c '{networks, services: (.services | map_values({labels, networks} | del(.[] | nulls)))}' |
+    python3 -I "$SCRIPT_DIR/compose-policy.py" --environment "$env" \
+      --check-ingress "$domain" "${scheme:-https}"
 }
 
 # Replica counts and owner modes are desired Git state, independent of image releases. Keep the
@@ -279,14 +293,34 @@ fingerprint() {
 # environment of this one command, so it never appears in an argument list; it overrides the entry
 # a definition may still carry. A deployable without a database has no such secret and gets nothing.
 migrate() {
-  local env=$1 service=$2 url
+  local env=$1 service=$2 url marker
   local -a forward=()
+  # Journal a unique label before Docker can create the one-off. Compose's --rm only takes
+  # effect after the container exits, so an interrupted run may otherwise leave a migrator alive.
+  marker=$(mktemp "$STATE_DIR/$env/rollout/migrations/$service.XXXXXXXX") || return 1
   url=$(dotenv_value "$SECRETS_DIR/$env/secrets.env" "$(migration_variable "$service")")
   if [[ -n $url ]]; then
     forward=(-e MIGRATION_DATABASE_URL)
   fi
-  MIGRATION_DATABASE_URL=$url env_compose "$env" run --rm --no-deps --pull never -T "${forward[@]}" "$service" \
+  MIGRATION_DATABASE_URL=$url env_compose "$env" run --rm --no-deps --pull never -T \
+    --label "io.cadenway.agent.migration=${marker##*/}" "${forward[@]}" "$service" \
     sh -c 'if [ -f dist/migrate.js ]; then exec node dist/migrate.js; fi'
+}
+
+cleanup_migrations() {
+  local env=$1 marker name inventory id
+  for marker in "$STATE_DIR/$env/rollout"/migrations/*; do
+    [[ -f $marker ]] || continue
+    name=${marker##*/}
+    inventory=$(docker ps --all --no-trunc \
+      --filter "label=com.docker.compose.project=cadenway-$env" \
+      --filter 'label=com.docker.compose.oneoff=True' \
+      --filter "label=com.docker.compose.service=${name%.*}" \
+      --filter "label=io.cadenway.agent.migration=$name" --format '{{.ID}}') || return 1
+    for id in $inventory; do
+      docker rm -f "$id" >/dev/null || return 1
+    done
+  done
 }
 
 # Public routes belong to the approved Compose definitions. An image must not supply
@@ -589,7 +623,7 @@ prepare_companion_owner() {
 
 begin_release() {
   local rollout=$STATE_DIR/$1/rollout
-  mkdir -p "$rollout"/{baseline,networks,obsolete,records} &&
+  mkdir -p "$rollout"/{baseline,migrations,networks,obsolete,records} &&
     printf '%s\n' "$2" >"$rollout/commit"
 }
 
@@ -644,6 +678,7 @@ recover_release() {
   local env=$1 state=$STATE_DIR/$1 rollout=$STATE_DIR/$1/rollout pending applied
   rm -rf "$state/rollout-completed" || return 1
   [[ -d $rollout ]] || return 0
+  cleanup_migrations "$env" || return 1
   pending=$(read_state "$rollout/commit")
   applied=$(read_state "$state/applied")
   if [[ -n $pending && $pending == "$applied" ]]; then
@@ -724,19 +759,16 @@ missing_variables() {
   } | sort -u
 }
 
-# Applies one environment at a commit. Returns 0 when applied, 1 when the commit failed (recorded,
-# not retried), TRANSIENT when it will be tried again on the next tick.
+# Applies one recovered environment at an approved commit. Returns 0 when applied, 1 when the
+# commit failed (recorded, not retried), TRANSIENT when it will be tried again on the next tick.
 apply_environment() {
   local env=$1 commit=$2
   local worktree=$ROOT/envs/$env state=$STATE_DIR/$env
   local applied failed start=$SECONDS file service version missing code owner replicas result=0
+  local ALERT_WEBHOOK_URL=''
   local -a deployables=() infrastructure=() changed=()
   local -A companion_targets=() owners_applied=()
-  mkdir -p "$state"
-  if ! recover_release "$env"; then
-    log "$env: cannot recover the previous release; trying again on the next tick"
-    return "$TRANSIENT"
-  fi
+  mkdir -p "$state" || return "$TRANSIENT"
   applied=$(read_state "$state/applied")
   failed=$(read_state "$state/failed")
   [[ $commit == "$applied" ]] && return 0
@@ -749,7 +781,6 @@ apply_environment() {
     return "$TRANSIENT"
   fi
 
-  ALERT_WEBHOOK_URL=''
   if ! checkout "$worktree" "$commit"; then
     log "$env: ${commit:0:12} cannot be checked out; trying again on the next tick"
     return "$TRANSIENT"
@@ -769,9 +800,9 @@ apply_environment() {
     if [[ -n $missing ]]; then
       result=1
       notify "cadenway $env: ${commit:0:12} misses $(tr '\n' ' ' <<<"$missing")"
-    elif ! env_compose "$env" config -q >/dev/null 2>&1; then
+    elif ! valid_resolved_ingress "$env"; then
       result=1
-      log "$env: the Compose configuration is invalid"
+      log "$env: the resolved Compose configuration or routing is invalid"
     elif ! login_registry "$env"; then
       result=$TRANSIENT
       log "$env: the GHCR login failed"
@@ -901,9 +932,31 @@ apply_environment() {
   return "$result"
 }
 
+recover_database_restore() {
+  local env=$1 journal=$STATE_DIR/restore/$1.json
+  [[ -e $journal || -L $journal ]] || return 0
+  CADENWAY_STATE_DIR=$STATE_DIR CADENWAY_LOCK_FILE=$LOCK_FILE \
+    /usr/local/bin/cadenway-restore --recover-under-lock "$env"
+}
+
+# Existing containers from another environment must be retired before this host can reconcile.
+confirm_host_assignment() {
+  local env=$1 marker=$SETTINGS_DIR/assigned-environment containers other
+  if [[ -e $marker || -L $marker ]]; then
+    [[ -f $marker && ! -L $marker && $(read_state "$marker") == "$env" ]] || return 1
+  fi
+  case $env in
+    staging) other=prod ;;
+    prod) other=staging ;;
+    *) return 0 ;;
+  esac
+  containers=$(docker ps -aq --filter "label=com.docker.compose.project=cadenway-$other") || return 1
+  [[ -z $containers ]]
+}
+
 main() {
-  local commit environment_commit edge_commit env status=0 production_commit=''
-  local -a branches=("$BRANCH") environments=()
+  local commit env status=0
+  local -a environments=()
   exec 9>"$LOCK_FILE"
   flock -n 9 || {
     log 'another run is in progress'
@@ -911,61 +964,57 @@ main() {
   }
   # Only the run holding the lock cleans up: decrypted secrets never outlive it.
   trap 'rm -rf "${SECRETS_DIR:?}"/*' EXIT
-  mkdir -p "$ROOT/envs" "$STATE_DIR"
+  mkdir -p "$ROOT/envs" "$STATE_DIR" || return 1
 
   read -r -a environments <<<"$ENVIRONMENTS"
-  for env in "${environments[@]}"; do
-    if [[ $env == prod ]]; then
-      if [[ $BRANCH == "$PRODUCTION_BRANCH" ]]; then
-        log "production requires a separate protected Ops ref"
-        return 1
-      fi
-      branches+=("$PRODUCTION_BRANCH")
-      break
-    fi
-  done
-  if ! fetch "${branches[@]}"; then
-    log "cannot fetch the configured release refs: check the deploy key and the network"
+  if ((${#environments[@]} != 1)); then
+    log 'configure one environment per host with independent storage'
     return 1
   fi
-  commit=$(git -C "$MIRROR" rev-parse "refs/heads/$BRANCH")
-  edge_commit=$commit
-  if ((${#branches[@]} > 1)); then
-    production_commit=$(git -C "$MIRROR" rev-parse "refs/heads/$PRODUCTION_BRANCH")
-    if ! authorized_commit "$production_commit" "$PRODUCTION_SIGNERS" \
+  env=${environments[0]}
+  if [[ ! $env =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+    log 'the configured environment name must be valid'
+    return 1
+  fi
+  # Resolve an interrupted restore before reconciliation. Recovery uses the journaled workload IDs.
+  if ! recover_database_restore "$env"; then
+    log "$env: cannot recover the interrupted database restore; reconcile the restore journal"
+    return 1
+  fi
+  if ! confirm_host_assignment "$env"; then
+    log "$env: host assignment or Docker isolation cannot be verified; separate the environments first"
+    return 1
+  fi
+  # Resolve the release journal before reading a remote tip.
+  if ! recover_release "$env"; then
+    log "$env: cannot recover the previous release; trying again on the next tick"
+    return 1
+  fi
+  if [[ $env == prod ]]; then
+    if [[ $BRANCH == "$PRODUCTION_BRANCH" ]]; then
+      log 'production requires a separate protected Ops ref'
+      return 1
+    fi
+    if ! commit=$(fetch_release "$PRODUCTION_BRANCH"); then
+      log 'production: cannot fetch its protected release ref; check the deploy key and the network'
+      return 1
+    fi
+    if ! authorized_commit "$commit" "$PRODUCTION_SIGNERS" \
       "$(read_state "$STATE_DIR/prod/applied")" ||
-      ! descends_from "$production_commit" "$(read_state "$STATE_DIR/edge/applied")"; then
+      ! descends_from "$commit" "$(read_state "$STATE_DIR/edge/applied")"; then
       log "production: the release is unsigned by Ops or would rewind an applied ref"
       return 1
     fi
-    if authorized_commit "$production_commit" "$RELEASE_SIGNERS" ''; then
+    if authorized_commit "$commit" "$RELEASE_SIGNERS" ''; then
       log "production: its approval key also authorizes non-production releases"
       return 1
     fi
-    edge_commit=$production_commit
+  elif ! commit=$(fetch_release "$BRANCH"); then
+    log 'non-production: cannot fetch its release ref; check the deploy key and the network'
+    return 1
   fi
-  apply_edge "$edge_commit" || {
-    log "edge: ${edge_commit:0:12} failed; environments without their edge network wait"
-    status=1
-  }
-  for env in "${environments[@]}"; do
-    environment_commit=$commit
-    if [[ $env == prod ]]; then
-      environment_commit=$production_commit
-    elif [[ -n $production_commit ]] &&
-      { ! authorized_commit "$commit" "$RELEASE_SIGNERS" "$(read_state "$STATE_DIR/$env/applied")" ||
-        authorized_commit "$commit" "$PRODUCTION_SIGNERS" ''; }; then
-      log "$env: a release sharing the production daemon needs its own Ops approval"
-      status=1
-      continue
-    elif [[ -n $production_commit ]] &&
-      ! has_approved_host_inputs "$commit" "$production_commit" "$env"; then
-      log "$env: host and secret configuration also require production approval on a shared daemon"
-      status=1
-      continue
-    fi
-    apply_environment "$env" "$environment_commit" || status=1
-  done
+  reconcile_edge "$commit" || status=1
+  apply_environment "$env" "$commit" || status=1
   return "$status"
 }
 

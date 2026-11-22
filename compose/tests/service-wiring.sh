@@ -44,15 +44,15 @@ OUT=$(generate /work/.env) && OUT="succeeded: $OUT"
 check 'refuses a file that does not exist' '[[ $OUT == *"copy .env.example to .env first"* && $OUT != succeeded:* ]]'
 cp .env.example "$WORK/.env"
 OUT=$(generate /work/.env) || OUT="failed: $OUT"
-check 'writes the pairs' '[[ $OUT == *"wrote the key pairs of API_GATEWAY, REALTIME_GATEWAY, AUTOMATION_SERVICE, INTEGRATION_SERVICE, NOTIFICATION_SERVICE, DOCUMENT_SERVICE, BILLING_SERVICE"* ]]'
+check 'writes the pairs' '[[ $OUT == *"wrote the key pairs of API_GATEWAY, REALTIME_GATEWAY, AUTOMATION_SERVICE, INTEGRATION_SERVICE, NOTIFICATION_SERVICE, DOCUMENT_SERVICE, BILLING_SERVICE, IDENTITY_SERVICE, ORGANIZATION_SERVICE, TASK_SERVICE"* ]]'
 OUT=$(grep -c '_INTERNAL_TOKEN_\(PRIVATE_JWK\|PUBLIC_JWKS\)=' "$WORK/.env")
-check 'two variables per issuer' '[[ $OUT == 14 ]]'
+check 'two variables per issuer' '[[ $OUT == 20 ]]'
 BEFORE=$(sha256sum "$WORK/.env")
 OUT=$(generate /work/.env) || OUT="failed: $OUT"
 check 'a second run writes nothing' '[[ $OUT == *"nothing written"* && $(sha256sum "$WORK/.env") == "$BEFORE" ]]'
 OUT=$(generate --print) || OUT="failed: $OUT"
-check '--print prints fourteen unquoted lines' \
-  '[[ $(grep -c "^[A-Z_]*_INTERNAL_TOKEN_[A-Z_]*={\"kty\":\"OKP\"" <<<"$OUT") == 14 ]]'
+OUT=$(grep -c '^[A-Z_]*_INTERNAL_TOKEN_[A-Z_]*={"kty":"OKP"' <<<"$OUT") || true
+check '--print prints twenty unquoted assignments' '[[ $OUT == 20 ]]'
 check 'and leaves the file alone' '[[ $(sha256sum "$WORK/.env") == "$BEFORE" ]]'
 
 echo '=== 2. the keys sign and verify'
@@ -67,7 +67,7 @@ const variables = Object.fromEntries(
     .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
 );
 const message = Buffer.from('cadenway');
-for (const issuer of ['API_GATEWAY', 'REALTIME_GATEWAY', 'AUTOMATION_SERVICE', 'INTEGRATION_SERVICE', 'NOTIFICATION_SERVICE', 'DOCUMENT_SERVICE', 'BILLING_SERVICE']) {
+for (const issuer of ['API_GATEWAY', 'REALTIME_GATEWAY', 'AUTOMATION_SERVICE', 'INTEGRATION_SERVICE', 'NOTIFICATION_SERVICE', 'DOCUMENT_SERVICE', 'BILLING_SERVICE', 'IDENTITY_SERVICE', 'ORGANIZATION_SERVICE', 'TASK_SERVICE']) {
   const quotedPrivate = variables[`${issuer}_INTERNAL_TOKEN_PRIVATE_JWK`];
   const quotedPublic = variables[`${issuer}_INTERNAL_TOKEN_PUBLIC_JWKS`];
   if (!/^'.*'$/.test(quotedPrivate) || !/^'.*'$/.test(quotedPublic)) throw new Error('not quoted');
@@ -110,12 +110,21 @@ const trusted = {
 };
 const called = {
   'api-gateway': Object.keys(trusted),
-  'realtime-gateway': ['identity-service', 'task-service'],
+  'realtime-gateway': ['identity-service', 'organization-service', 'task-service'],
+  'identity-service': ['organization-service'],
+  'organization-service': ['identity-service'],
+  'task-service': ['organization-service'],
   'automation-service': ['task-service', 'notification-service'],
   'integration-service': ['task-service'],
   'notification-service': ['identity-service'],
   'document-service': ['task-service'],
 };
+const scopedSigners = {
+  'identity-service': 'IDENTITY_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK',
+  'organization-service': 'ORGANIZATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK',
+  'task-service': 'TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK',
+};
+const signerVariable = (name) => scopedSigners[name] ?? 'INTERNAL_TOKEN_PRIVATE_JWK';
 const port = (name) => /^\d+$/.test(services[name].environment.PORT);
 const fail = (message) => {
   console.log(`wrong: ${message}`);
@@ -135,9 +144,10 @@ for (const [name, issuers] of Object.entries(trusted)) {
 }
 for (const [name, targets] of Object.entries(called)) {
   const environment = services[name].environment;
-  // Document fixes its issuer in the application rather than accepting an environment variable.
-  if (name !== 'document-service' && environment.INTERNAL_TOKEN_ISSUER !== name) fail(`${name} issuer`);
-  if (JSON.parse(environment.INTERNAL_TOKEN_PRIVATE_JWK).d === undefined) fail(`${name} private key`);
+  // These backends fix the issuer in the application.
+  if (name !== 'document-service' && !(name in scopedSigners) &&
+      environment.INTERNAL_TOKEN_ISSUER !== name) fail(`${name} issuer`);
+  if (JSON.parse(environment[signerVariable(name)]).d === undefined) fail(`${name} private key`);
   for (const target of targets) {
     const variable = `${target.toUpperCase().replaceAll('-', '_')}_URL`;
     const expected = `http://${target}:${services[target].environment.PORT}`;
@@ -153,6 +163,19 @@ for (const [name, targets] of Object.entries(called)) {
     }
   }
   if (extra.length > 0) fail(`${name} also has ${extra}`);
+}
+for (const [receiver, senders] of Object.entries({
+  'identity-service': ['organization-service'],
+  'organization-service': ['identity-service', 'task-service', 'realtime-gateway'],
+})) {
+  for (const sender of senders) {
+    const publicVariable = `${sender.toUpperCase().replaceAll('-', '_')}_INTERNAL_TOKEN_PUBLIC_JWKS`;
+    const key = JSON.parse(services[receiver].environment[publicVariable]);
+    const signer = JSON.parse(services[sender].environment[signerVariable(sender)]);
+    if (key.kty !== 'OKP' || key.d !== undefined || key.x !== signer.x || key.kid !== signer.kid) {
+      fail(`${receiver} ${sender} public key`);
+    }
+  }
 }
 const taskDocumentKey = JSON.parse(services['task-service'].environment.DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS);
 const documentPrivateKey = JSON.parse(services['document-service'].environment.INTERNAL_TOKEN_PRIVATE_JWK);
@@ -179,8 +202,10 @@ if (automation.AUTOMATION_TASK_TRIGGERS_ENABLED !== 'false' ||
 }
 for (const name of Object.keys(services)) {
   const environment = services[name].environment ?? {};
-  if (!(name in called) && name !== 'billing-service' && 'INTERNAL_TOKEN_PRIVATE_JWK' in environment) {
-    fail(`${name} has a private key`);
+  const keys = Object.keys(environment).filter((key) => key.endsWith('INTERNAL_TOKEN_PRIVATE_JWK'));
+  const expected = name in called || name === 'billing-service' ? signerVariable(name) : undefined;
+  if (keys.length !== (expected === undefined ? 0 : 1) || keys.some((key) => key !== expected)) {
+    fail(`${name} signing key scope`);
   }
 }
 const billing = services['billing-service'].environment;
@@ -203,7 +228,8 @@ if (storage.S3_ENDPOINT !== 'http://garage:3900') fail('storage endpoint');
 if (storage.S3_PUBLIC_ENDPOINT !== 'http://s3.cadenway.localhost') fail('storage public endpoint');
 if (storage.S3_BUCKET !== 'cadenway-local' || !storage.S3_ACCESS_KEY_ID.startsWith('GK')) fail('bucket');
 const notification = services['notification-service'].environment;
-if (notification.SMTP_HOST !== 'mailpit' || notification.SMTP_PORT !== '1025') fail('SMTP');
+if (notification.SMTP_HOST !== 'mailpit' || notification.SMTP_PORT !== '1025' ||
+    notification.NODE_ENV !== 'development' || notification.SMTP_ALLOW_INSECURE_LOCAL !== 'true') fail('SMTP');
 const search = services['search-service'].environment;
 if (search.MEILI_URL !== 'http://meilisearch:7700' || !search.MEILI_API_KEY) fail('Meilisearch');
 // The relying party is the host of the web application, also its only origin.
