@@ -54,6 +54,7 @@ cadenway_repo_url: git@github.com:example/cadenway-ops.git
 cadenway_ghcr_owner: example
 cadenway_acme_email: ops@example.com
 cadenway_backup_age_recipient: age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq
+cadenway_backup_signing_public_keys: ['$(cut -d ' ' -f 1,2 /root/.ssh/id_ed25519.pub)']
 ansible_ssh_common_args: -o StrictHostKeyChecking=accept-new
 VARS
 phase() {

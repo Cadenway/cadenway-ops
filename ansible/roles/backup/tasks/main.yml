@@ -5,12 +5,42 @@
     fail_msg: Set cadenway_backup_age_recipient to the public age key the dumps are encrypted to.
     quiet: true
 
+- name: Check the backup manifest verification keys
+  ansible.builtin.assert:
+    that:
+      - cadenway_backup_signing_public_keys is sequence
+      - cadenway_backup_signing_public_keys is not string
+      - cadenway_backup_signing_public_keys | length > 0
+      - >-
+        (cadenway_backup_signing_public_keys
+        | select('match', cadenway_backup_signer_pattern) | list | length)
+        == (cadenway_backup_signing_public_keys | length)
+    fail_msg: >-
+      Set cadenway_backup_signing_public_keys to trusted Ed25519 public keys
+      in OpenSSH format without comments.
+    quiet: true
+  vars:
+    cadenway_backup_signer_pattern: '^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]{43}$'
+
 - name: Install backup and object recovery clients
   ansible.builtin.apt:
     name:
+      - openssh-client
       - rclone
       - python3-boto3
     state: present
+
+- name: Pin the verification keys independently of the backup bucket
+  ansible.builtin.copy:
+    content: |
+      {% for key in cadenway_backup_signing_public_keys %}
+      cadenway-backup {{ key }}
+      {% endfor %}
+    dest: /etc/cadenway/backup-allowed-signers
+    owner: root
+    group: root
+    mode: '0644'
+  when: not cadenway_preview_first_run
 
 - name: Write the backup configuration
   ansible.builtin.template:

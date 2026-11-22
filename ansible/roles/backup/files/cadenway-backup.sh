@@ -1,28 +1,26 @@
 #!/usr/bin/env bash
 # Nightly backup of the PostgreSQL databases of every environment on this host, to Object Storage.
 #
-# One `pg_dump --format=custom` per service database, streamed through age (encrypted to the backup
-# recipient, whose private key never reaches a host) straight into the bucket: no plaintext dump
-# touches the disk. Objects: <bucket>/<env>/<UTC timestamp>/<database>.dump.age.
+# One `pg_dump --format=custom` per service database, streamed through age before staging the
+# ciphertext. Each snapshot has a content-addressed object and a signed manifest published last.
 #
-# Old backups are deleted (retention) only after every database of the environment was saved: a
-# failing night never costs the backups that still work. Any failure makes the unit fail and posts
-# to the environment's ALERT_WEBHOOK_URL.
+# Object Storage manages retention independently of this host. Any backup failure makes the unit
+# fail and posts to the environment's ALERT_WEBHOOK_URL.
 #
 # The Object Storage credentials come from the environment's secrets.sops.env, decrypted in memory.
 # Configuration: /etc/cadenway/backup.env (written by Ansible).
 set -euo pipefail
 
-# Plain KEY=value lines: CADENWAY_ENVIRONMENTS, CADENWAY_BACKUP_DATABASES, CADENWAY_BACKUP_RECIPIENT,
-# CADENWAY_BACKUP_RETENTION_DAYS.
+# Plain KEY=value lines: CADENWAY_ENVIRONMENTS, CADENWAY_BACKUP_DATABASES, CADENWAY_BACKUP_RECIPIENT.
 set -a
 # shellcheck source=/dev/null
 source /etc/cadenway/backup.env
 set +a
 export SOPS_AGE_KEY_FILE=/etc/cadenway/age.key
 
-STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-readonly STAMP
+readonly SIGNING_KEY=/etc/cadenway/backup-signing.key
+readonly ALLOWED_SIGNERS=/etc/cadenway/backup-allowed-signers
+readonly SIGNING_NAMESPACE=cadenway-backup-manifest-v1
 
 secret() { sed -n "s/^$2=//p" <<<"$1" | tail -n 1; }
 
@@ -36,9 +34,46 @@ notify() {
       --config <(printf 'url = "%s"\n' "$url") >/dev/null || true
 }
 
-# Saves every database of one environment; returns 1 on the first problem, before any retention.
+# Publish the ciphertext first. A missing manifest leaves the generation ineligible for restore.
+publish_database() (
+  local postgres=$1 env=$2 bucket=$3 database=$4 work digest size object prefix
+  umask 077
+  work=$(mktemp -d /var/lib/cadenway-backup.XXXXXXXX) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  if ! docker exec "$postgres" pg_dump --username=postgres --format=custom "$database" |
+    age --encrypt --recipient "$CADENWAY_BACKUP_RECIPIENT" >"$work/archive"; then
+    return 1
+  fi
+
+  digest=$(sha256sum <"$work/archive") || return 1
+  digest=${digest%% *}
+  size=$(wc -c <"$work/archive") || return 1
+  prefix="$env/$STAMP/$database"
+  object="$prefix-$digest.dump.age"
+
+  jq -cn --arg env "$env" --arg stamp "$STAMP" --arg database "$database" \
+    --arg bucket "$bucket" --arg object "$object" --arg sha256 "$digest" --argjson size "$size" \
+    '{version: 1, $env, $stamp, $database, $bucket, $object, $sha256, $size}' >"$work/manifest" ||
+    return 1
+  ssh-keygen -Y sign -f "$SIGNING_KEY" -n "$SIGNING_NAMESPACE" "$work/manifest" >/dev/null ||
+    return 1
+  # A configuration or rotation mistake must not publish a backup the restore host cannot verify.
+  ssh-keygen -Y verify -f "$ALLOWED_SIGNERS" -I cadenway-backup -n "$SIGNING_NAMESPACE" \
+    -s "$work/manifest.sig" <"$work/manifest" >/dev/null || return 1
+  jq -cn --rawfile manifest "$work/manifest" --rawfile signature "$work/manifest.sig" \
+    '{$manifest, $signature}' >"$work/signed-manifest" || return 1
+
+  rclone copyto --immutable --checksum --s3-no-check-bucket "$work/archive" "backup:$bucket/$object" &&
+    rclone copyto --immutable --checksum --s3-no-check-bucket \
+      "$work/signed-manifest" "backup:$bucket/$prefix.manifest.json"
+)
+
+# Save every database of one environment and keep trying after an individual failure.
 backup_environment() {
-  local env=$1 postgres database plain bucket name object failures=0
+  local env=$1 postgres database plain bucket name failures=0
   postgres=$(docker ps -q --filter "label=com.docker.compose.project=cadenway-$env" \
     --filter label=com.docker.compose.service=postgres)
   if [[ -z $postgres ]]; then
@@ -65,25 +100,26 @@ backup_environment() {
   }
 
   for database in $CADENWAY_BACKUP_DATABASES; do
-    object="backup:$bucket/$env/$STAMP/$database.dump.age"
-    if docker exec "$postgres" pg_dump --username=postgres --format=custom "$database" |
-      age --encrypt --recipient "$CADENWAY_BACKUP_RECIPIENT" |
-      rclone rcat "$object"; then
+    if publish_database "$postgres" "$env" "$bucket" "$database"; then
       echo "$env: $database saved to $env/$STAMP" >&2
     else
-      echo "$env: $database FAILED; removing the partial object" >&2
-      rclone deletefile "$object" 2>/dev/null || true
+      echo "$env: $database FAILED" >&2
       failures=$((failures + 1))
     fi
   done
-  ((failures == 0)) || return 1
-
-  rclone delete --min-age "${CADENWAY_BACKUP_RETENTION_DAYS}d" "backup:$bucket/$env/" || return 1
-  rclone rmdirs --leave-root "backup:$bucket/$env/" || true
+  ((failures == 0))
 }
 
 main() {
   local env status=0
+  # Serialize manual and timer starts before choosing the snapshot timestamp.
+  exec 9>/run/lock/cadenway-backup.lock
+  flock -n 9 || {
+    echo "a backup is already running" >&2
+    return 1
+  }
+  STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+  readonly STAMP
   for env in $CADENWAY_ENVIRONMENTS; do
     ALERT_URL=''
     if ! backup_environment "$env"; then

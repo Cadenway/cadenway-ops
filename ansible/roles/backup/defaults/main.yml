@@ -2,6 +2,9 @@
 
 # Public age key the dumps are encrypted to (`age1…`); its private key stays with the operators.
 cadenway_backup_age_recipient: ''
+# Pinned OpenSSH Ed25519 verification keys, without comments. Retain old keys during rotation
+# until the last manifest signed with them has expired.
+cadenway_backup_signing_public_keys: []
 # Service databases created by compose/postgres/init; each belongs to the service <name>-service.
 cadenway_backup_databases:
   - identity
@@ -14,7 +17,6 @@ cadenway_backup_databases:
   - automation
   - integration
   - search
-cadenway_backup_retention_days: 30
 # systemd calendar expression of the nightly run, with a random delay of up to 30 minutes.
 cadenway_backup_schedule: '*-*-* 03:00:00'
 

@@ -17,6 +17,22 @@ SELECT elected_object_key FROM attachments WHERE id = :'id' AND status = 'ready'
 SQL
 }
 
+wait_for_attachment_cleanup() {
+  local key=$1 cleaned
+  # The real service's cleanup sweep runs once a minute. Capture S3 history only
+  # after it has finished so the fixture cannot race the application's delete marker.
+  for _ in {1..120}; do
+    cleaned=$(sql -d storage --set="key=$key" <<'SQL'
+SELECT status = 'cleaned' FROM attachment_candidates WHERE object_key = :'key';
+SQL
+    ) || return 1
+    if [[ $cleaned == t ]]; then return 0; fi
+    sleep 1
+  done
+  echo 'Storage did not record the elected attachment cleanup.' >&2
+  return 1
+}
+
 echo '=== Storage API 1. start the real service and apply its migrations'
 start_postgres "$STORAGE_FIXTURE_NETWORK"
 start_files_s3
@@ -63,6 +79,7 @@ docker run --pull never -d --name "$STORAGE" --network "$STORAGE_FIXTURE_NETWORK
   -e INTERNAL_TOKEN_AUDIENCE=storage-service -e "INTERNAL_TOKEN_TRUSTED_ISSUERS=$trusted_public_key" \
   -e "S3_ENDPOINT=$STORAGE_S3_ENDPOINT" -e "S3_PUBLIC_ENDPOINT=$STORAGE_S3_ENDPOINT" \
   -e "S3_REGION=$STORAGE_S3_REGION" -e "S3_BUCKET=$STORAGE_S3_BUCKET" -e S3_FORCE_PATH_STYLE=true \
+  -e S3_ERASE_TRANSIENT_VERSIONS=true \
   -e "S3_ACCESS_KEY_ID=$STORAGE_RESTORE_S3_ACCESS_KEY_ID" \
   -e "S3_SECRET_ACCESS_KEY=$STORAGE_RESTORE_S3_SECRET_ACCESS_KEY" \
   -e "STORAGE_UPLOAD_RECEIPT_KEYS=$receipt_keyring" "$CADENWAY_E2E_STORAGE_IMAGE" >/dev/null
@@ -89,8 +106,8 @@ echo 'PASS HTTP upload, multipart transfer, attachment completion and avatar pre
 prepare_backups storage
 cadenway-backup
 stamp=$(storage_stamp)
-[[ $stamp =~ ^[0-9]{8}T[0-9]{6}Z$ && -s $BUCKET_DIR/$stamp/storage.dump.age ]]
-echo 'PASS encrypted backup exists before the files were hidden'
+[[ $stamp =~ ^[0-9]{8}T[0-9]{6}Z$ && -s $(backup_archive "$stamp" storage) ]]
+echo 'PASS encrypted backup and signed manifest exist before the files were hidden'
 
 echo '=== Storage API 3. upload another file after the dump and delete the originals'
 late=$(storage_api upload-later)
@@ -99,6 +116,7 @@ late_sha=$(jq -er .attachmentSha256 <<<"$late")
 [[ $late_key == org/*/* && $(storage_fixture digest "$late_key") == "$late_sha" ]]
 late_history=$(storage_fixture history "$late_key")
 storage_api delete-attachment "$state"
+wait_for_attachment_cleanup "$attachment_key"
 storage_fixture hide "$attachment_key" "$avatar_key"
 storage_api missing-avatar "$state"
 history=$(storage_fixture history "$attachment_key" "$avatar_key")

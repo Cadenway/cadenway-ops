@@ -16,7 +16,7 @@ verify_sops() {
 }
 
 install_runner_dependencies() {
-  apk add --quiet --no-cache bash jq curl age rclone util-linux coreutils python3 py3-boto3 >/dev/null
+  apk add --quiet --no-cache bash jq curl age rclone util-linux coreutils openssh-keygen python3 py3-boto3 >/dev/null
   curl -fsSL -o /usr/local/bin/sops https://github.com/getsops/sops/releases/download/v3.13.3/sops-v3.13.3.linux.amd64
   chmod +x /usr/local/bin/sops
   verify_sops
@@ -115,7 +115,15 @@ started_at() { docker inspect --format '{{.State.StartedAt}}' "$1"; }
 temporary_archives() { find /var/lib -maxdepth 1 -type d -name 'cadenway-restore*'; }
 candidate_databases() { sql -c "SELECT datname FROM pg_database WHERE starts_with(datname, 'cw_restore_candidate_')"; }
 storage_stamp() {
-  basename "$(dirname "$(find "$BUCKET_DIR" -type f -name storage.dump.age | sort | tail -1)")"
+  backup_stamp storage
+}
+backup_stamp() {
+  basename "$(dirname "$(find "$BUCKET_DIR" -type f -name "$1.manifest.json" | sort | tail -1)")"
+}
+backup_archive() {
+  local archive
+  archive=$(jq -er '.manifest | fromjson | .object' "$BUCKET_DIR/$1/$2.manifest.json") || return 1
+  printf '/data/backups/%s\n' "$archive"
 }
 storage_db_id() { sql -c "SELECT oid FROM pg_database WHERE datname = 'storage'"; }
 storage_restore() { cadenway-restore "$TEST_ENV" "$1" "$BACKUP_KEY" storage; }
@@ -147,12 +155,14 @@ prepare_backups() {
   poll curl --silent --max-time 2 -o /dev/null http://127.0.0.1:9000/
   age-keygen -o /etc/cadenway/age.key 2>/dev/null
   age-keygen -o "$BACKUP_KEY" 2>/dev/null
+  ssh-keygen -q -t ed25519 -N '' -f /etc/cadenway/backup-signing.key
+  printf 'cadenway-backup %s\n' "$(cut -d ' ' -f 1,2 /etc/cadenway/backup-signing.key.pub)" \
+    >/etc/cadenway/backup-allowed-signers
   recipient=$(age-keygen -y "$BACKUP_KEY")
   cat >/etc/cadenway/backup.env <<EOF
 CADENWAY_ENVIRONMENTS=$TEST_ENV
 CADENWAY_BACKUP_DATABASES="$databases"
 CADENWAY_BACKUP_RECIPIENT=$recipient
-CADENWAY_BACKUP_RETENTION_DAYS=30
 EOF
   config_dir="/opt/cadenway/envs/$TEST_ENV/environments/$TEST_ENV"
   mkdir -p "$config_dir"
@@ -242,17 +252,18 @@ fails() { ! "$@"; }
 echo '=== 1. a failed backup keeps older objects'
 check 'missing database fails backup' fails cadenway-backup 2>"$TEST_DIR/backup.log"
 check 'old backup kept' test -e "$old_dir/task.dump.age"
-check 'no partial object for the failed database' test -z "$(find "$BUCKET_DIR" -name missing.dump.age)"
+check 'no manifest or partial object for the failed database' test -z "$(find "$BUCKET_DIR" -name 'missing*')"
 
-echo '=== 2. a successful backup writes a large encrypted archive and applies retention'
+echo '=== 2. a successful backup publishes a signed manifest and leaves independent retention to Object Storage'
 sed -i 's/^CADENWAY_BACKUP_DATABASES=.*/CADENWAY_BACKUP_DATABASES="task"/' /etc/cadenway/backup.env
 sleep 1
 cadenway-backup 2>"$TEST_DIR/backup.log"
-STAMP=$(basename "$(dirname "$(find "$BUCKET_DIR" -name task.dump.age | sort | tail -1)")")
-archive="$BUCKET_DIR/$STAMP/task.dump.age"
+STAMP=$(backup_stamp task)
+manifest="$BUCKET_DIR/$STAMP/task.manifest.json"
+archive=$(backup_archive "$STAMP" task)
 check 'archive is larger than the failing pipe case' test "$(wc -c <"$archive")" -ge 9273887
 check 'dump encrypted' fails grep -q CAD-482 "$archive"
-check 'old backup deleted' test ! -e "$old_dir/task.dump.age"
+check 'old backup remains for independent bucket retention' test -e "$old_dir/task.dump.age"
 
 restore() { cadenway-restore "$TEST_ENV" "$1" "$BACKUP_KEY" task; }
 reject_restore() {
@@ -279,13 +290,38 @@ LIVE_DATABASE=$(database_id)
 TASK_STARTED=$(started_at "$TASK")
 RELAY_STARTED=$(started_at "$RELAY")
 
-echo '=== 3. missing, damaged and incompatible dumps preserve the live database'
+echo '=== 3. untrusted, damaged and incompatible dumps preserve the live database'
 reject_restore 'missing dump rejected' 20991231T000000Z
-corrupt_stamp=20991230T000000Z
-mkdir -p "$BUCKET_DIR/$corrupt_stamp"
-# Keep the header and most of the encrypted data, but cut off the final authenticated block.
-head -c -4096 "$archive" >"$BUCKET_DIR/$corrupt_stamp/task.dump.age"
-reject_restore 'truncated archive rejected' "$corrupt_stamp"
+check 'missing manifest diagnosed' grep -Fq 'no trusted backup manifest' "$TEST_DIR/restore.log"
+reject_restore 'legacy unsigned archive rejected' 20200101T000000Z
+check 'unsigned archive rejected before restore' grep -Fq 'no trusted backup manifest' "$TEST_DIR/restore.log"
+
+cp "$manifest" "$TEST_DIR/original-envelope"
+jq -c '.manifest | fromjson | .stamp = "20991230T000000Z"' "$manifest" >"$TEST_DIR/wrong-scope"
+ssh-keygen -q -Y sign -f /etc/cadenway/backup-signing.key -n cadenway-backup-manifest-v1 "$TEST_DIR/wrong-scope"
+jq -cn --rawfile manifest "$TEST_DIR/wrong-scope" --rawfile signature "$TEST_DIR/wrong-scope.sig" \
+  '{$manifest, $signature}' >"$manifest"
+reject_restore 'valid manifest for a different timestamp rejected' "$STAMP"
+check 'wrong manifest scope diagnosed' grep -Fq 'signed backup manifest has invalid scope or metadata' "$TEST_DIR/restore.log"
+cp "$TEST_DIR/original-envelope" "$manifest"
+
+jq -rj .manifest "$manifest" >"$TEST_DIR/untrusted-manifest"
+ssh-keygen -q -t ed25519 -N '' -f "$TEST_DIR/untrusted-signer"
+ssh-keygen -q -Y sign -f "$TEST_DIR/untrusted-signer" -n cadenway-backup-manifest-v1 "$TEST_DIR/untrusted-manifest"
+jq --rawfile signature "$TEST_DIR/untrusted-manifest.sig" '.signature = $signature' "$TEST_DIR/original-envelope" >"$manifest"
+reject_restore 'manifest from an untrusted signer rejected' "$STAMP"
+check 'untrusted signature diagnosed' grep -Fq 'no trusted backup manifest' "$TEST_DIR/restore.log"
+cp "$TEST_DIR/original-envelope" "$manifest"
+
+cp "$archive" "$TEST_DIR/original-archive"
+head -c -4096 "$TEST_DIR/original-archive" >"$archive"
+reject_restore 'truncated archive rejected' "$STAMP"
+check 'truncated archive rejected before restore' grep -Fq 'encrypted archive does not match the signed manifest' "$TEST_DIR/restore.log"
+cp "$TEST_DIR/original-archive" "$archive"
+printf '\000' | dd of="$archive" bs=1 seek=8 count=1 conv=notrunc status=none
+reject_restore 'same-size modified archive rejected' "$STAMP"
+check 'modified archive rejected before restore' grep -Fq 'encrypted archive does not match the signed manifest' "$TEST_DIR/restore.log"
+cp "$TEST_DIR/original-archive" "$archive"
 check_active_database
 
 sql -d task -c "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ('newer-live-migration', 2)"

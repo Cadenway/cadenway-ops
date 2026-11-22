@@ -110,11 +110,31 @@ branch: the key writes the desired state of every host.
 
 ## Backups
 
-`cadenway-backup.timer` dumps every service database of every environment of the host each night
-(`pg_dump --format=custom`), encrypts each dump to `cadenway_backup_age_recipient` and streams it to
-`<bucket>/<env>/<timestamp>/<database>.dump.age`. Older backups (30 days) are deleted only after every
-database was saved; a failure leaves them, fails the unit and posts to `ALERT_WEBHOOK_URL`. Run one now
-with `ansible-playbook ansible/playbooks/backup.yml --limit <host>`.
+`cadenway-backup.timer` dumps every service database of every environment of the host each night.
+It encrypts `pg_dump --format=custom` to `cadenway_backup_age_recipient` and stages only the ciphertext
+in a private directory under `/var/lib`. Allocate enough local disk space for the largest encrypted
+service archive. Each archive is stored under
+`<bucket>/<env>/<timestamp>/<database>-<sha256>.dump.age`. Backup publishes
+`<database>.manifest.json` last. It carries an Ed25519 signature over the format version,
+environment, timestamp, database, bucket, archive key, byte count and SHA-256. The digest identifies
+the exact encrypted generation independently of the Object Storage provider's version identifiers.
+
+Provision the signing identity out of band on the backup host at
+`/etc/cadenway/backup-signing.key`, readable only by root. Use a dedicated OpenSSH Ed25519 key
+available to the non-interactive backup service. The signing identity is independent of any
+Object Storage credential and of the age recipient. Configure `cadenway_backup_signing_public_keys`
+in the host inventory with the matching OpenSSH public key lines without comments. Ansible pins
+these keys for both backup publication and restore. For a rotation, pin the new key before switching
+signers and keep the previous verification key until the last snapshot it signed expires.
+
+Protect archive and manifest objects with a 30-day independent bucket retention policy. Grant
+the host identity permission to publish and read backup objects. Keep permissions to delete
+objects, shorten retention or bypass immutability with a separate administrative identity.
+Use provider-enforced immutability where available and apply lifecycle expiry to both the manifest
+and its archive. Failed publications may leave encrypted archives without manifests. They expire
+under the same bucket lifecycle and are ineligible for restore. A backup failure posts to
+`ALERT_WEBHOOK_URL`. Run a backup with
+`ansible-playbook ansible/playbooks/backup.yml --limit <host>`.
 
 A restore overwrites live data; the playbook asks for the environment twice and the backup private
 key, which it removes from the host afterwards:
@@ -126,8 +146,15 @@ ansible-playbook ansible/playbooks/restore.yml --limit cadenway-prod \
   -e cadenway_restore_identity_file=~/.config/cadenway/backup.key
 ```
 
-The restore holds the GitOps lock. It decrypts and restores the complete archive into a temporary
-database before stopping the running application and its workers. When the live database exists,
+The restore holds the GitOps lock. It checks the manifest against the pinned public keys and the
+requested snapshot, then verifies the downloaded ciphertext length and digest before any database
+change. Produce and verify a signed snapshot before cutting over from a system that holds only
+unsigned backups. Keep historical archives under their existing retention. They require separate
+operator-led provenance verification.
+
+The restore loads the archive into a temporary database and validates the contents under the
+service's migrator role before stopping the running application and its workers. Separate
+cluster administration connections handle creation and cutover. When the live database exists,
 its Drizzle migration history must match the archive. Use a backup compatible with the running
 application version. The restore then switches the database names in one transaction and verifies
 that the previously running containers become healthy. Containers already stopped stay stopped.
@@ -159,6 +186,13 @@ object sizes and ETags across retained payload versions and checks the ETag afte
 Storage recovery uses the application bucket and a [dedicated restore identity](service-environment.md#secrets).
 The encrypted dump protects database metadata, and the application bucket retains the object
 bytes separately.
+
+In Compose, set `STORAGE_S3_ERASE_TRANSIENT_VERSIONS=true` for the versioned application bucket.
+Storage's runtime identity needs `s3:ListBucketVersions` and `s3:DeleteObjectVersion` for transient
+attachment cleanup, plus `s3:GetObject` and `s3:PutObject` on `attachment-restore-pins/`.
+Exclude the current objects under `attachment-restore-pins/` from expiry for as long as the
+corresponding attachment history can be restored. These markers preserve the decision to protect
+the elected file even after a PostgreSQL restore rolls back the election metadata.
 
 `ansible/roles/backup/tests/e2e.sh` covers PostgreSQL backup and restore with SOPS 3.13.3 and a
 disposable S3 endpoint. It exercises recovery of deleted objects on a versioned application bucket.

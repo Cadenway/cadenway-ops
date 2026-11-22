@@ -242,7 +242,9 @@ def verify_recovered_versions(*keys):
     for key in keys:
         previous = [entry for entry in before if entry[0] == key]
         recovered = [entry for entry in after if entry[0] == key]
-        assert len(recovered) == len(previous) + 1
+        assert len(recovered) == len(previous) + 1, (
+            f"expected one new version for {key}: before {previous}, after {recovered}"
+        )
         assert all((*entry[:3], False) in recovered for entry in previous)
         assert (
             sum(kind == "Versions" and latest for _, kind, _, latest in recovered) == 1

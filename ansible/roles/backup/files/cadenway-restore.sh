@@ -3,7 +3,8 @@
 #
 #   cadenway-restore <env> <timestamp> <identity file> [database...]
 #
-# A backup is restored to a separate database while the old database still serves traffic.
+# Each archive is authenticated before any database is created or modified. A backup is restored
+# to a separate database while the old database still serves traffic.
 # Only a fully restored candidate with a compatible migration journal can replace it.
 # Storage also requires the immutable object keys referenced by its restored metadata.
 # The old database is retained with connections disabled after a successful cutover.
@@ -30,29 +31,74 @@ set -a
 source /etc/cadenway/backup.env
 set +a
 export SOPS_AGE_KEY_FILE=/etc/cadenway/age.key
+readonly ALLOWED_SIGNERS=/etc/cadenway/backup-allowed-signers
+readonly SIGNING_NAMESPACE=cadenway-backup-manifest-v1
+readonly MAX_MANIFEST_SIZE=8192
 
 secret() { sed -n "s/^$2=//p" <<<"$1" | tail -n 1; }
+
+# Download only the generation named by a trusted manifest. Bound untrusted reads to the
+# manifest limit and signed ciphertext length before verifying the exact bytes on disk.
+download_verified_archive() {
+  local bucket=$1 database=$2 prefix digest size manifest signature envelope archive object actual
+  prefix="$ENVIRONMENT/$STAMP/$database"
+  envelope="$WORK/$database.signed-manifest"
+  manifest="$WORK/$database.manifest"
+  signature="$WORK/$database.signature"
+  archive="$WORK/$database.dump.age"
+
+  if ! rclone cat --head "$((MAX_MANIFEST_SIZE + 1))" "backup:$bucket/$prefix.manifest.json" >"$envelope" ||
+    (($(wc -c <"$envelope") > MAX_MANIFEST_SIZE)) ||
+    ! jq -erj '.manifest | strings | select(length > 0)' "$envelope" >"$manifest" ||
+    ! jq -erj '.signature | strings | select(length > 0)' "$envelope" >"$signature" ||
+    ! ssh-keygen -Y verify -f "$ALLOWED_SIGNERS" -I cadenway-backup -n "$SIGNING_NAMESPACE" \
+      -s "$signature" <"$manifest" >/dev/null; then
+    echo "$ENVIRONMENT: no trusted backup manifest for $database; nothing was changed" >&2
+    return 1
+  fi
+
+  if ! jq -e --arg env "$ENVIRONMENT" --arg stamp "$STAMP" --arg database "$database" --arg bucket "$bucket" \
+    '.version == 1 and .env == $env and .stamp == $stamp and .database == $database and .bucket == $bucket' \
+    "$manifest" >/dev/null ||
+    ! digest=$(jq -er '.sha256 | strings | select(test("^[0-9a-f]{64}$"))' "$manifest") ||
+    ! size=$(jq -er '.size | numbers | select(. == floor and . > 0 and . < 9007199254740991)' "$manifest"); then
+    echo "$ENVIRONMENT: signed backup manifest has invalid scope or metadata for $database" >&2
+    return 1
+  fi
+
+  object="$prefix-$digest.dump.age"
+  if ! jq -e --arg object "$object" '.object == $object' "$manifest" >/dev/null ||
+    ! rclone cat --head "$((size + 1))" "backup:$bucket/$object" >"$archive" ||
+    (($(wc -c <"$archive") != size)) ||
+    ! actual=$(sha256sum <"$archive") || [[ ${actual%% *} != "$digest" ]]; then
+    echo "$ENVIRONMENT: encrypted archive does not match the signed manifest for $database; nothing was changed" >&2
+    rm -f -- "$archive"
+    return 1
+  fi
+}
 
 containers_of() {
   docker ps -q --filter "label=com.docker.compose.project=cadenway-$ENVIRONMENT" \
     --filter "label=com.docker.compose.service=$1"
 }
 
-psql_on() {
-  local container=$1 database=$2
-  shift 2
-  docker exec -i "$container" psql --quiet --no-psqlrc --username=postgres \
+psql_as() {
+  local container=$1 database=$2 role=$3
+  shift 3
+  docker exec -i "$container" psql --quiet --no-psqlrc --username="$role" --no-password \
     --dbname="$database" --set=ON_ERROR_STOP=1 "$@"
 }
 
 database_oid() {
-  psql_on "$1" postgres --no-align --tuples-only --set=name="$2" <<'SQL'
+  psql_as "$1" postgres postgres --no-align --tuples-only --set=name="$2" <<'SQL'
 SELECT oid FROM pg_database WHERE datname = :'name';
 SQL
 }
 
 migration_journal() {
-  psql_on "$1" "$2" --no-align --tuples-only <<'SQL'
+  psql_as "$1" "$2" "$3" --no-align --tuples-only <<'SQL'
+BEGIN READ ONLY;
+SET LOCAL search_path = pg_catalog;
 SELECT to_regclass('drizzle.__drizzle_migrations') IS NOT NULL AS has_journal \gset
 \if :has_journal
   SELECT coalesce(jsonb_agg(jsonb_build_array(hash, created_at) ORDER BY id), '[]'::jsonb)
@@ -60,13 +106,16 @@ SELECT to_regclass('drizzle.__drizzle_migrations') IS NOT NULL AS has_journal \g
 \else
   SELECT 'no journal';
 \endif
+COMMIT;
 SQL
 }
 
-# List durable object references from the candidate while only the restore operator can connect.
+# Read restored objects under the service role, with the system policy required by its RLS.
 storage_object_manifest() {
-  psql_on "$1" "$2" --no-align --tuples-only <<'SQL'
+  psql_as "$1" "$2" storage_migrator --no-align --tuples-only <<'SQL'
 BEGIN READ ONLY;
+SET LOCAL search_path = pg_catalog;
+SET LOCAL app.system_access = 'on';
 SELECT json_build_object('key', object_key, 'size', size_bytes)
 FROM (
   SELECT attachment.elected_object_key AS object_key, attachment.size_bytes
@@ -149,7 +198,7 @@ start_group() {
 # RENAME refuses a database with other sessions. A direct client still connected after
 # the known users have stopped aborts the entire transaction without renaming either database.
 switch_databases() {
-  psql_on "$1" postgres --set=live="$2" --set=ready="$3" --set=parked="$4" --set=has_live="$5" <<'SQL'
+  psql_as "$1" postgres postgres --set=live="$2" --set=ready="$3" --set=parked="$4" --set=has_live="$5" <<'SQL'
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '30s';
@@ -165,7 +214,7 @@ SQL
 }
 
 withdraw_candidate() {
-  psql_on "$1" postgres --set=live="$2" --set=candidate="$3" <<'SQL'
+  psql_as "$1" postgres postgres --set=live="$2" --set=candidate="$3" <<'SQL'
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '30s';
@@ -242,7 +291,7 @@ restore_database() (
       if ! discarded_oid=$(database_oid "$pg_container" "$candidate_db"); then
         echo "$ENVIRONMENT: could not inspect candidate $candidate_db for cleanup" >&2
       elif [[ -n $new_oid && $discarded_oid == "$new_oid" ]]; then
-        if ! psql_on "$pg_container" postgres --set=name="$candidate_db" <<'SQL'
+        if ! psql_as "$pg_container" postgres postgres --set=name="$candidate_db" <<'SQL'
 DROP DATABASE :"name";
 SQL
         then
@@ -259,14 +308,14 @@ SQL
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
-  psql_on "$pg_container" postgres --set=candidate="$candidate_db" --set=migrator="${db_name}_migrator" <<'SQL' ||
+  psql_as "$pg_container" postgres postgres --set=candidate="$candidate_db" --set=migrator="${db_name}_migrator" <<'SQL' ||
 CREATE DATABASE :"candidate" WITH OWNER :"migrator" ALLOW_CONNECTIONS false;
 SQL
     return 1
   candidate_created=true
   new_oid=$(database_oid "$pg_container" "$candidate_db") || return 1
   [[ -n $new_oid ]] || return 1
-  psql_on "$pg_container" postgres --set=candidate="$candidate_db" <<'SQL' || return 1
+  psql_as "$pg_container" postgres postgres --set=candidate="$candidate_db" <<'SQL' || return 1
 BEGIN;
 REVOKE ALL ON DATABASE :"candidate" FROM PUBLIC;
 ALTER DATABASE :"candidate" WITH ALLOW_CONNECTIONS true;
@@ -274,16 +323,16 @@ COMMIT;
 SQL
 
   if ! age --decrypt --identity "$IDENTITY" "$WORK/$db_name.dump.age" |
-    docker exec -i "$pg_container" pg_restore --username=postgres --exit-on-error \
-      --no-owner --role="${db_name}_migrator" --dbname="$candidate_db"; then
+    docker exec -i "$pg_container" pg_restore --username="${db_name}_migrator" --no-password \
+      --exit-on-error --no-owner --dbname="$candidate_db"; then
     echo "$ENVIRONMENT: the dump of $db_name could not be restored to the candidate; the live database was untouched" >&2
     return 1
   fi
 
-  candidate_journal=$(migration_journal "$pg_container" "$candidate_db") || return 1
+  candidate_journal=$(migration_journal "$pg_container" "$candidate_db" "${db_name}_migrator") || return 1
   if [[ -n $original_oid ]]; then
     has_original=true
-    current_journal=$(migration_journal "$pg_container" "$db_name") || return 1
+    current_journal=$(migration_journal "$pg_container" "$db_name" "${db_name}_migrator") || return 1
     if [[ $current_journal != "$candidate_journal" ]]; then
       echo "$ENVIRONMENT: $db_name migration journal differs; align the application and backup before restoring" >&2
       return 1
@@ -305,7 +354,7 @@ SQL
       fi
     fi
   fi
-  psql_on "$pg_container" postgres --set=candidate="$candidate_db" --set=app="${db_name}_app" <<'SQL' ||
+  psql_as "$pg_container" postgres postgres --set=candidate="$candidate_db" --set=app="${db_name}_app" <<'SQL' ||
 BEGIN;
 ALTER DATABASE :"candidate" WITH ALLOW_CONNECTIONS false;
 GRANT CONNECT ON DATABASE :"candidate" TO :"app";
@@ -394,8 +443,7 @@ main() {
     return 1
   }
   for database in "${databases[@]}"; do
-    if ! rclone copyto "backup:$bucket/$ENVIRONMENT/$STAMP/$database.dump.age" "$WORK/$database.dump.age"; then
-      echo "$ENVIRONMENT: the dump of $database is missing or unreadable; nothing was changed" >&2
+    if ! download_verified_archive "$bucket" "$database"; then
       status=1
       continue
     fi
