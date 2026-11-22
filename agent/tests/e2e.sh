@@ -518,10 +518,10 @@ check 'unready candidate keeps its edge endpoint and has no internal serving ali
   'docker inspect --format "{{json .NetworkSettings.Networks}}" "$CANDIDATE" \
     | jq -e '"'"'has("cadenway-edge-test") and (.["cadenway-test_internal"].Aliases // [] | length == 0)'"'"' >/dev/null'
 DB=$(containers db | cut -d' ' -f1)
-# BusyBox also prints the DNS server before the answer. Compare the set of answers and retain
-# the response for diagnostics if the candidate appears before its readiness marker.
+# Use the absolute service name so BusyBox ignores the host's DNS search suffix. Compare the
+# distinct answers and retain the response for diagnostics if they differ from the previous address.
 DNS_IPS=''
-if DNS_RESPONSE=$(docker exec "$DB" nslookup -type=a webapp 2>&1); then
+if DNS_RESPONSE=$(docker exec "$DB" nslookup -type=a webapp. 2>&1); then
   DNS_IPS=$(awk '
     /^Name:[[:space:]]/ { answer = 1; next }
     answer && /^Address([[:space:]]+[0-9]+)?:[[:space:]]/ { print $NF }
