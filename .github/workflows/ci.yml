@@ -77,6 +77,7 @@ jobs:
           agent/cadenway-agent.sh agent/tests/e2e.sh ansible/tests/run.sh
           ansible/roles/backup/files/cadenway-backup.sh
           ansible/roles/backup/files/cadenway-restore.sh ansible/roles/backup/tests/e2e.sh
+          ansible/roles/backup/tests/storage_e2e.sh
 
   agent:
     name: GitOps agent and backups end to end

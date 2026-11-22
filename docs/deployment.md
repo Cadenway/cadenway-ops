@@ -159,6 +159,28 @@ bytes separately.
 `ansible/roles/backup/tests/e2e.sh` covers PostgreSQL backup and restore with SOPS 3.13.3 and a
 disposable S3 endpoint. It exercises recovery of deleted objects on a versioned application bucket.
 
+To replay the Storage API end to end, build the test runner and point it at a locally built
+Storage image. Run the following from this repository with `storage-service:local` replaced by
+your local Storage image. Load the pinned PostgreSQL, SeaweedFS, NATS and NATS CLI images listed
+in the test scripts into the local Docker engine before running the recipe.
+
+```sh
+docker build -t cadenway-backup-e2e:local \
+  -f ansible/roles/backup/tests/Dockerfile ansible/roles/backup
+storage_image=$(docker image inspect --format '{{.Id}}' storage-service:local)
+docker run --rm --init --network none \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD/ansible/roles/backup:/backup:ro" \
+  -e CADENWAY_E2E_PREPARED=1 \
+  -e "CADENWAY_E2E_STORAGE_IMAGE=$storage_image" cadenway-backup-e2e:local
+```
+
+This mode verifies the production migrations, presigned uploads, API completion, encrypted dump,
+deletion, restore, and downloads after Storage restarts. It compares the restored bytes and S3
+versions and repeats the restore to check that it creates no extra versions. The test uses
+synthetic data in disposable containers that share the runner's loopback network. CI runs the
+default backup suite without the Storage image input.
+
 NATS JetStream streams, Meilisearch indexes and Traefik certificates are not backed up: the outbox
 replays events, search-service rebuilds its index, Let's Encrypt issues certificates again.
 

@@ -6,17 +6,53 @@
 #     sh -c "apk add --no-cache bash >/dev/null && bash /backup/tests/e2e.sh"
 #
 # CADENWAY_E2E_PREPARED=1 reuses installed dependencies and cached service images.
+# Set CADENWAY_E2E_STORAGE_IMAGE to a local image ID in a prepared, network-isolated runner
+# to select the real Storage API scenario. See docs/deployment.md for the invocation.
 # Run only inside a disposable container: this fixture writes its own /etc/cadenway configuration.
 set -euo pipefail
-pull_policy=()
-if [[ ${CADENWAY_E2E_PREPARED:-0} == 1 ]]; then
-  pull_policy=(--pull never)
-else
+
+verify_sops() {
+  echo 'e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b  /usr/local/bin/sops' | sha256sum -c -
+}
+
+install_runner_dependencies() {
   apk add --quiet --no-cache bash jq curl age rclone util-linux coreutils python3 py3-boto3 >/dev/null
   curl -fsSL -o /usr/local/bin/sops https://github.com/getsops/sops/releases/download/v3.13.3/sops-v3.13.3.linux.amd64
   chmod +x /usr/local/bin/sops
+  verify_sops
+}
+
+if [[ $# == 1 && $1 == --prepare-runner ]]; then
+  install_runner_dependencies
+  exit 0
 fi
-echo 'e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b  /usr/local/bin/sops' | sha256sum -c -
+if [[ $# != 0 ]]; then
+  echo 'Usage: bash /backup/tests/e2e.sh [--prepare-runner]' >&2
+  exit 2
+fi
+
+if [[ -v CADENWAY_E2E_STORAGE_IMAGE ]]; then
+  if [[ ! $CADENWAY_E2E_STORAGE_IMAGE =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo 'CADENWAY_E2E_STORAGE_IMAGE must be a complete local Docker image ID (sha256:…).' >&2
+    exit 2
+  fi
+  if ! docker image inspect "$CADENWAY_E2E_STORAGE_IMAGE" >/dev/null 2>&1; then
+    echo 'CADENWAY_E2E_STORAGE_IMAGE is not available in the local Docker engine.' >&2
+    exit 2
+  fi
+  if [[ ${CADENWAY_E2E_PREPARED:-0} != 1 || $(docker inspect --format '{{.HostConfig.NetworkMode}}' "$HOSTNAME") != none ]]; then
+    echo 'The real Storage scenario requires a prepared runner with --network none.' >&2
+    exit 2
+  fi
+fi
+
+pull_policy=()
+if [[ ${CADENWAY_E2E_PREPARED:-0} == 1 ]]; then
+  pull_policy=(--pull never)
+  verify_sops
+else
+  install_runner_dependencies
+fi
 export SOPS_DISABLE_VERSION_CHECK=1
 echo "Using $(/usr/local/bin/sops --version)"
 python3 -B /backup/tests/test_restore_objects.py
@@ -32,7 +68,7 @@ readonly TEST_DIR
 readonly TEST_ENV="test-${suffix,,}"
 readonly PROJECT="cadenway-$TEST_ENV"
 readonly SERVER="$PROJECT-postgres" TASK="$PROJECT-task" RELAY="$PROJECT-relay"
-readonly STORAGE="$PROJECT-storage" FILES_S3="$PROJECT-files-s3"
+readonly STORAGE="$PROJECT-storage" FILES_S3="$PROJECT-files-s3" BROKER="$PROJECT-nats"
 readonly BUCKET_DIR="/data/backups/$TEST_ENV"
 readonly BACKUP_KEY="$TEST_DIR/backup.key"
 readonly PG='postgres:18.6-alpine@sha256:9ba53c7d41ea093baf5c1ba635ba5434c4f979880527d49bb7d9237d3193085b'
@@ -44,14 +80,101 @@ mkdir -p /run/lock /etc/cadenway "$BUCKET_DIR"
 # Registered with trap below.
 # shellcheck disable=SC2329
 cleanup() {
-  touch "$TEST_DIR/release-restore"
-  command docker rm -fv "$FILES_S3" "$STORAGE" "$SERVER" "$TASK" "$RELAY" >/dev/null 2>&1 || true
+  local status=$? name remaining
+  local -a containers=("$FILES_S3" "$STORAGE" "$SERVER" "$TASK" "$RELAY" "$BROKER") filters=()
+  trap - EXIT
+  trap '' INT TERM
+  touch "$TEST_DIR/release-restore" || true
+  command docker rm -fv "${containers[@]}" >/dev/null 2>&1 || true
+  for name in "${containers[@]}"; do filters+=(--filter "name=^/$name$"); done
+  if ! remaining=$(command docker ps -a "${filters[@]}" --format '{{.Names}}'); then
+    echo 'Could not verify backup fixture container cleanup.' >&2
+    if ((status == 0)); then status=1; fi
+  elif [[ -n $remaining ]]; then
+    printf 'Backup fixture containers still present after cleanup:\n%s\n' "$remaining" >&2
+    if ((status == 0)); then status=1; fi
+  fi
+  exit "$status"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-docker run -d "${pull_policy[@]}" --network none --name "$SERVER" -e POSTGRES_HOST_AUTH_METHOD=trust \
-  --label "com.docker.compose.project=$PROJECT" --label com.docker.compose.service=postgres \
-  "$PG" >/dev/null
+poll() {
+  for _ in {1..150}; do
+    "$@" && return 0
+    sleep 0.2
+  done
+  return 1
+}
+# Passed by name to poll and check.
+# shellcheck disable=SC2329
+healthy() { [[ $(docker inspect --format '{{.State.Health.Status}}' "$1") == healthy ]]; }
+sql() { docker exec -i "$SERVER" psql -U postgres -v ON_ERROR_STOP=1 -tAq "$@"; }
+started_at() { docker inspect --format '{{.State.StartedAt}}' "$1"; }
+temporary_archives() { find /var/lib -maxdepth 1 -type d -name 'cadenway-restore*'; }
+candidate_databases() { sql -c "SELECT datname FROM pg_database WHERE starts_with(datname, 'cw_restore_candidate_')"; }
+storage_stamp() {
+  basename "$(dirname "$(find "$BUCKET_DIR" -type f -name storage.dump.age | sort | tail -1)")"
+}
+storage_db_id() { sql -c "SELECT oid FROM pg_database WHERE datname = 'storage'"; }
+storage_restore() { cadenway-restore "$TEST_ENV" "$1" "$BACKUP_KEY" storage; }
+storage_fixture() { python3 -B /backup/tests/storage_fixture.py "$@"; }
+
+# Keep the application bucket separate from the rclone bucket that stores encrypted database dumps.
+start_files_s3() {
+  docker run -d "${pull_policy[@]}" --network "container:$HOSTNAME" --name "$FILES_S3" \
+    -e "AWS_ACCESS_KEY_ID=$STORAGE_RESTORE_S3_ACCESS_KEY_ID" \
+    -e "AWS_SECRET_ACCESS_KEY=$STORAGE_RESTORE_S3_SECRET_ACCESS_KEY" \
+    "$SEAWEEDFS" server -s3 -s3.port=8333 -ip.bind=127.0.0.1 -ip=127.0.0.1 >/dev/null
+  if ! poll storage_fixture ready 2>"$TEST_DIR/files-s3.log"; then
+    cat "$TEST_DIR/files-s3.log" >&2
+    return 1
+  fi
+}
+
+start_postgres() {
+  docker run -d "${pull_policy[@]}" --network "$1" --name "$SERVER" -e POSTGRES_HOST_AUTH_METHOD=trust \
+    --label "com.docker.compose.project=$PROJECT" --label com.docker.compose.service=postgres \
+    "$PG" >/dev/null
+  poll docker exec "$SERVER" pg_isready -h 127.0.0.1 -U postgres -q
+}
+
+prepare_backups() {
+  local databases=$1 recipient config_dir
+  # The S3 endpoint exposes only its own container's loopback and the credentials are disposable.
+  rclone serve s3 /data --addr 127.0.0.1:9000 --auth-key fixture,fixture-only >"$TEST_DIR/backup-s3.log" 2>&1 &
+  poll curl --silent --max-time 2 -o /dev/null http://127.0.0.1:9000/
+  age-keygen -o /etc/cadenway/age.key 2>/dev/null
+  age-keygen -o "$BACKUP_KEY" 2>/dev/null
+  recipient=$(age-keygen -y "$BACKUP_KEY")
+  cat >/etc/cadenway/backup.env <<EOF
+CADENWAY_ENVIRONMENTS=$TEST_ENV
+CADENWAY_BACKUP_DATABASES="$databases"
+CADENWAY_BACKUP_RECIPIENT=$recipient
+CADENWAY_BACKUP_RETENTION_DAYS=30
+EOF
+  config_dir="/opt/cadenway/envs/$TEST_ENV/environments/$TEST_ENV"
+  mkdir -p "$config_dir"
+  printf '%s\n' BACKUP_S3_ENDPOINT=http://127.0.0.1:9000 BACKUP_S3_REGION=us-east-1 \
+    BACKUP_S3_BUCKET=backups BACKUP_S3_ACCESS_KEY_ID=fixture BACKUP_S3_SECRET_ACCESS_KEY=fixture-only \
+    "STORAGE_S3_ENDPOINT=$STORAGE_S3_ENDPOINT" "STORAGE_S3_REGION=$STORAGE_S3_REGION" \
+    "STORAGE_S3_BUCKET=$STORAGE_S3_BUCKET" STORAGE_S3_FORCE_PATH_STYLE=true \
+    "STORAGE_RESTORE_S3_ACCESS_KEY_ID=$STORAGE_RESTORE_S3_ACCESS_KEY_ID" \
+    "STORAGE_RESTORE_S3_SECRET_ACCESS_KEY=$STORAGE_RESTORE_S3_SECRET_ACCESS_KEY" \
+    ALERT_WEBHOOK_URL= |
+    sops encrypt --age "$(age-keygen -y /etc/cadenway/age.key)" --input-type dotenv --output-type dotenv \
+      --filename-override secrets.sops.env \
+      >"$config_dir/secrets.sops.env"
+}
+
+if [[ -v CADENWAY_E2E_STORAGE_IMAGE ]]; then
+  # shellcheck source=ansible/roles/backup/tests/storage_e2e.sh
+  source /backup/tests/storage_e2e.sh
+  exit 0
+fi
+
+start_postgres none
 
 # Use cooperative PID 1 shutdown and a real Docker healthcheck for both workloads.
 start_workload() {
@@ -66,25 +189,10 @@ TEST_TASK=$(start_workload "$TASK" task-service)
 TEST_RELAY=$(start_workload "$RELAY" task-service-relay)
 export SERVER TEST_DIR TEST_TASK TEST_RELAY
 
-poll() {
-  for _ in {1..150}; do
-    "$@" && return 0
-    sleep 0.2
-  done
-  return 1
-}
-# Passed by name to poll and check.
-# shellcheck disable=SC2329
-healthy() { [[ $(docker inspect --format '{{.State.Health.Status}}' "$1") == healthy ]]; }
-poll docker exec "$SERVER" pg_isready -h 127.0.0.1 -U postgres -q
 poll healthy "$TASK"
 poll healthy "$RELAY"
-sql() { docker exec -i "$SERVER" psql -U postgres -v ON_ERROR_STOP=1 -tAq "$@"; }
 app() { docker exec -i "$SERVER" psql -U task_app -d task -v ON_ERROR_STOP=1 -tAq "$@" 2>&1; }
 database_id() { sql -c "SELECT oid FROM pg_database WHERE datname = 'task'"; }
-started_at() { docker inspect --format '{{.State.StartedAt}}' "$1"; }
-temporary_archives() { find /var/lib -maxdepth 1 -type d -name 'cadenway-restore*'; }
-candidate_databases() { sql -c "SELECT datname FROM pg_database WHERE starts_with(datname, 'cw_restore_candidate_')"; }
 # Passed by name to fails.
 # shellcheck disable=SC2329
 can_read_migration_journal() { app -c 'SELECT count(*) FROM drizzle.__drizzle_migrations' >/dev/null; }
@@ -114,30 +222,7 @@ payload_fingerprint() {
 }
 FINGERPRINT=$(payload_fingerprint)
 
-# The S3 endpoint exposes only its own container's loopback and the credentials are disposable.
-rclone serve s3 /data --addr 127.0.0.1:9000 --auth-key fixture,fixture-only >/tmp/s3.log 2>&1 &
-sleep 2
-age-keygen -o /etc/cadenway/age.key 2>/dev/null
-age-keygen -o "$BACKUP_KEY" 2>/dev/null
-RECIPIENT=$(age-keygen -y "$BACKUP_KEY")
-cat >/etc/cadenway/backup.env <<EOF
-CADENWAY_ENVIRONMENTS=$TEST_ENV
-CADENWAY_BACKUP_DATABASES="task missing"
-CADENWAY_BACKUP_RECIPIENT=$RECIPIENT
-CADENWAY_BACKUP_RETENTION_DAYS=30
-EOF
-config_dir="/opt/cadenway/envs/$TEST_ENV/environments/$TEST_ENV"
-mkdir -p "$config_dir"
-printf '%s\n' BACKUP_S3_ENDPOINT=http://127.0.0.1:9000 BACKUP_S3_REGION=us-east-1 \
-  BACKUP_S3_BUCKET=backups BACKUP_S3_ACCESS_KEY_ID=fixture BACKUP_S3_SECRET_ACCESS_KEY=fixture-only \
-  "STORAGE_S3_ENDPOINT=$STORAGE_S3_ENDPOINT" "STORAGE_S3_REGION=$STORAGE_S3_REGION" \
-  "STORAGE_S3_BUCKET=$STORAGE_S3_BUCKET" STORAGE_S3_FORCE_PATH_STYLE=true \
-  "STORAGE_RESTORE_S3_ACCESS_KEY_ID=$STORAGE_RESTORE_S3_ACCESS_KEY_ID" \
-  "STORAGE_RESTORE_S3_SECRET_ACCESS_KEY=$STORAGE_RESTORE_S3_SECRET_ACCESS_KEY" \
-  ALERT_WEBHOOK_URL= |
-  sops encrypt --age "$(age-keygen -y /etc/cadenway/age.key)" --input-type dotenv --output-type dotenv \
-    --filename-override secrets.sops.env \
-    >"$config_dir/secrets.sops.env"
+prepare_backups 'task missing'
 
 old_dir="$BUCKET_DIR/20200101T000000Z"
 mkdir -p "$old_dir"
@@ -379,11 +464,7 @@ check 'cold restore preserves full archive contents' test "$(payload_fingerprint
 check 'cold restore leaves no staging database' test -z "$(candidate_databases)"
 check 'cold restore leaves no temporary archive' test -z "$(temporary_archives)"
 
-# Keep the application bucket separate from the rclone bucket that stores encrypted database dumps.
-docker run -d "${pull_policy[@]}" --network "container:$HOSTNAME" --name "$FILES_S3" \
-  -e "AWS_ACCESS_KEY_ID=$STORAGE_RESTORE_S3_ACCESS_KEY_ID" \
-  -e "AWS_SECRET_ACCESS_KEY=$STORAGE_RESTORE_S3_SECRET_ACCESS_KEY" \
-  "$SEAWEEDFS" server -s3 -s3.port=8333 -ip.bind=127.0.0.1 -ip=127.0.0.1 >/dev/null
+start_files_s3
 TEST_STORAGE=$(start_workload "$STORAGE" storage-service)
 export TEST_STORAGE
 poll healthy "$STORAGE"
@@ -396,11 +477,6 @@ export FIXTURE_POST_DUMP_KEY="org/$FIXTURE_ORGANIZATION/018b6300-0000-7000-8000-
 readonly MISSING_KEY="org/$FIXTURE_ORGANIZATION/018b6300-0000-7000-8000-000000000005"
 readonly PURGED_KEY="org/$FIXTURE_ORGANIZATION/018b6300-0000-7000-8000-000000000006"
 
-storage_fixture() { python3 /backup/tests/storage_fixture.py "$@"; }
-if ! poll storage_fixture ready 2>"$TEST_DIR/files-s3.log"; then
-  cat "$TEST_DIR/files-s3.log" >&2
-  exit 1
-fi
 storage_fixture seed
 
 sql <<'SQL'
@@ -452,12 +528,7 @@ INSERT INTO profile_media_uploads VALUES
   ('deleted-owner', 'prepared', '018b6300-0000-7000-8000-000000000009', 15, 'avatar', '018b6300-0000-7000-8000-000000000008');
 SQL
 
-storage_stamp() {
-  basename "$(dirname "$(find "$BUCKET_DIR" -type f -name storage.dump.age | sort | tail -1)")"
-}
-storage_db_id() { sql -c "SELECT oid FROM pg_database WHERE datname = 'storage'"; }
 storage_app() { docker exec "$SERVER" psql -U storage_app -d storage -v ON_ERROR_STOP=1 -tAq -c "$1"; }
-storage_restore() { cadenway-restore "$TEST_ENV" "$1" "$BACKUP_KEY" storage; }
 check_storage_ready() {
   check 'Storage service healthy' poll healthy "$STORAGE"
   check 'Storage candidate cleaned up' test -z "$(candidate_databases)"

@@ -1,5 +1,6 @@
 """Drive the disposable versioned S3 bucket used by the backup integration test."""
 
+import hashlib
 import json
 import os
 import subprocess
@@ -12,14 +13,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 BUCKET = os.environ["STORAGE_S3_BUCKET"]
-ATTACHMENT = os.environ["FIXTURE_ATTACHMENT_KEY"]
-POST_DUMP = os.environ["FIXTURE_POST_DUMP_KEY"]
 POST_DUMP_BYTES = b"uploaded after the dump"
-REFERENCED = {
-    ATTACHMENT: b"original attachment",
-    os.environ["FIXTURE_INTAKE_KEY"]: b"original intake",
-    f"profile-media/candidate/{os.environ['FIXTURE_PROFILE_ID']}": b"original avatar",
-}
 S3 = boto3.client(
     "s3",
     endpoint_url=os.environ["STORAGE_S3_ENDPOINT"],
@@ -34,6 +28,14 @@ S3 = boto3.client(
         read_timeout=5,
     ),
 )
+
+
+def synthetic_references():
+    return {
+        os.environ["FIXTURE_ATTACHMENT_KEY"]: b"original attachment",
+        os.environ["FIXTURE_INTAKE_KEY"]: b"original intake",
+        f"profile-media/candidate/{os.environ['FIXTURE_PROFILE_ID']}": b"original avatar",
+    }
 
 
 def put(key, data):
@@ -53,10 +55,9 @@ def ready():
     S3.list_buckets()
 
 
-def seed_attachment():
-    organization_prefix = ATTACHMENT.rsplit("/", 1)[0]
+def seed_attachment(attachment, data):
+    organization_prefix = attachment.rsplit("/", 1)[0]
     staging = f"{organization_prefix}/018b6300-0000-7000-8000-000000000010"
-    data = REFERENCED[ATTACHMENT]
     content_type = "text/plain"
     capability = S3.generate_presigned_post(
         BUCKET,
@@ -98,7 +99,7 @@ def seed_attachment():
     source = S3.head_object(Bucket=BUCKET, Key=staging)
     copy_input = {
         "Bucket": BUCKET,
-        "Key": ATTACHMENT,
+        "Key": attachment,
         "CopySource": {"Bucket": BUCKET, "Key": staging},
         "CopySourceIfMatch": source["ETag"],
     }
@@ -113,10 +114,10 @@ def seed_attachment():
         S3.meta.events.register("before-sign.s3.CopyObject", add_copy_precondition)
 
     copied = S3.copy_object(**copy_input)
-    candidate = S3.head_object(Bucket=BUCKET, Key=ATTACHMENT)
+    candidate = S3.head_object(Bucket=BUCKET, Key=attachment)
     assert candidate["VersionId"] == copied["VersionId"]
     assert candidate["ETag"] == copied["CopyObjectResult"]["ETag"]
-    assert download(ATTACHMENT) == data
+    assert download(attachment) == data
     try:
         S3.copy_object(**copy_input)
     except ClientError as error:
@@ -125,54 +126,70 @@ def seed_attachment():
         raise AssertionError("conditional copy overwrote the existing attachment")
 
 
-def seed():
+def create_bucket():
     S3.create_bucket(Bucket=BUCKET)
     S3.put_bucket_versioning(
         Bucket=BUCKET, VersioningConfiguration={"Status": "Enabled"}
     )
     assert S3.get_bucket_versioning(Bucket=BUCKET)["Status"] == "Enabled"
-    seed_attachment()
-    for key, data in REFERENCED.items():
-        if key != ATTACHMENT:
+
+
+def seed():
+    create_bucket()
+    attachment = os.environ["FIXTURE_ATTACHMENT_KEY"]
+    for key, data in synthetic_references().items():
+        if key == attachment:
+            seed_attachment(key, data)
+        else:
             put(key, data)
+
+
+def assert_hidden(key):
+    try:
+        download(key)
+    except HTTPError as error:
+        assert error.code == 404, f"unexpected download failure for {key}: {error.code}"
+    else:
+        raise AssertionError(
+            f"current download still available for deleted object {key}"
+        )
 
 
 def delete_after_dump():
     history = {}
-    for key, data in REFERENCED.items():
+    for key, data in synthetic_references().items():
         version_id = S3.head_object(Bucket=BUCKET, Key=key)["VersionId"]
         delete = S3.delete_object(Bucket=BUCKET, Key=key)
         assert delete["DeleteMarker"], f"missing delete marker for {key}"
-        try:
-            download(key)
-        except HTTPError as error:
-            assert error.code == 404, (
-                f"unexpected download failure for {key}: {error.code}"
-            )
-        else:
-            raise AssertionError(
-                f"current download still available for deleted object {key}"
-            )
+        assert_hidden(key)
         assert download(key, version_id) == data, f"historical download lost for {key}"
         history[key] = {"version": version_id, "marker": delete["VersionId"]}
     print(
-        json.dumps({"removed": history, "post_dump": put(POST_DUMP, POST_DUMP_BYTES)})
+        json.dumps(
+            {
+                "removed": history,
+                "post_dump": put(os.environ["FIXTURE_POST_DUMP_KEY"], POST_DUMP_BYTES),
+            }
+        )
     )
 
 
-def version_history():
+def version_history(keys=()):
     entries = []
     for page in S3.get_paginator("list_object_versions").paginate(Bucket=BUCKET):
         for kind in ("Versions", "DeleteMarkers"):
             for item in page.get(kind, []):
-                entries.append((item["Key"], kind, item["VersionId"], item["IsLatest"]))
+                if not keys or item["Key"] in keys:
+                    entries.append(
+                        (item["Key"], kind, item["VersionId"], item["IsLatest"])
+                    )
     return sorted(entries)
 
 
 def verify_restored():
     before = json.load(sys.stdin)
     entries = version_history()
-    for key, data in REFERENCED.items():
+    for key, data in synthetic_references().items():
         previous = before["removed"][key]
         assert (key, "Versions", previous["version"], False) in entries, (
             f"lost S3 version for {key}"
@@ -184,30 +201,72 @@ def verify_restored():
             f"extra S3 versions for {key}"
         )
         assert download(key) == data, f"incorrect restored download for {key}"
-    assert (POST_DUMP, "Versions", before["post_dump"], True) in entries, (
+    post_dump = os.environ["FIXTURE_POST_DUMP_KEY"]
+    assert (post_dump, "Versions", before["post_dump"], True) in entries, (
         "new version overwritten"
     )
-    assert download(POST_DUMP) == POST_DUMP_BYTES, "new upload changed"
+    assert download(post_dump) == POST_DUMP_BYTES, "new upload changed"
 
 
-def history():
-    print(json.dumps(version_history()))
+def history(*keys):
+    print(json.dumps(version_history(keys)))
 
 
 def conflict():
+    attachment = os.environ["FIXTURE_ATTACHMENT_KEY"]
     data = b"changed attachment!"
-    assert len(data) == len(REFERENCED[ATTACHMENT])
-    put(ATTACHMENT, data)
-    assert download(ATTACHMENT) == data
+    assert len(data) == len(synthetic_references()[attachment])
+    put(attachment, data)
+    assert download(attachment) == data
+
+
+def hide(*keys):
+    for key in keys:
+        previous = version_history((key,))
+        assert any(kind == "Versions" for _, kind, _, _ in previous)
+        if not any(
+            kind == "DeleteMarkers" and latest for _, kind, _, latest in previous
+        ):
+            assert S3.delete_object(Bucket=BUCKET, Key=key)["DeleteMarker"]
+        assert_hidden(key)
+        assert any(
+            kind == "DeleteMarkers" and latest
+            for _, kind, _, latest in version_history((key,))
+        )
+    print("PASS both S3 downloads are hidden from current reads by delete markers")
+
+
+def verify_recovered_versions(*keys):
+    before = [tuple(entry) for entry in json.load(sys.stdin)]
+    after = version_history(keys)
+    for key in keys:
+        previous = [entry for entry in before if entry[0] == key]
+        recovered = [entry for entry in after if entry[0] == key]
+        assert len(recovered) == len(previous) + 1
+        assert all((*entry[:3], False) in recovered for entry in previous)
+        assert (
+            sum(kind == "Versions" and latest for _, kind, _, latest in recovered) == 1
+        )
+    print(
+        "PASS restoration retained the previous versions and markers and added one active version per file"
+    )
+
+
+def digest(key):
+    print(hashlib.sha256(download(key)).hexdigest())
 
 
 if __name__ == "__main__":
     checks = {
         "ready": ready,
+        "create-bucket": create_bucket,
         "seed": seed,
         "delete-after-dump": delete_after_dump,
         "verify-restored": verify_restored,
         "history": history,
         "conflict": conflict,
+        "hide": hide,
+        "verify-recovered-versions": verify_recovered_versions,
+        "digest": digest,
     }
-    checks[sys.argv[1]]()
+    checks[sys.argv[1]](*sys.argv[2:])
