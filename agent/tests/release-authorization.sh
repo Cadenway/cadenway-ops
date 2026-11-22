@@ -8,6 +8,8 @@ trap 'rm -rf "$test_root"' EXIT
 source_repo=$test_root/source
 state=$test_root/state
 trace=$test_root/trace
+export CADENWAY_AGENT_CONFIG=/dev/null CADENWAY_REPO_URL=$source_repo
+export CADENWAY_ENVIRONMENTS=staging
 mkdir -p "$state"/{edge,prod}
 
 git init --quiet --initial-branch=main "$source_repo"
@@ -38,8 +40,6 @@ signed_commit production 'signed production'
 production=$(git -C "$source_repo" rev-parse HEAD)
 
 run_agent() (
-  export CADENWAY_AGENT_CONFIG=/dev/null
-  export CADENWAY_REPO_URL=$source_repo
   export CADENWAY_ENVIRONMENTS='staging prod'
   export CADENWAY_ROOT=$test_root/agent CADENWAY_SETTINGS_DIR=$test_root
   export CADENWAY_STATE_DIR=$state CADENWAY_LOCK_FILE=$test_root/lock CADENWAY_SECRETS_DIR=$test_root/run
@@ -117,14 +117,13 @@ printf 'edge %s\nprod %s\n' "$later" "$later" | diff - "$trace"
 echo 'PASS the staging signer cannot approve co-hosted infrastructure'
 
 (
-  export CADENWAY_AGENT_CONFIG=/dev/null CADENWAY_REPO_URL=$source_repo
-  export CADENWAY_ENVIRONMENTS=staging
   # shellcheck source=/dev/null
   source "$agent"
   # shellcheck disable=SC2329
   env_compose() {
     printf '%s\n' '{"services":{"gateway":{"image":"fixture:verified"}}}'
   }
+  # shellcheck disable=SC2329
   docker() {
     [[ $1 == image && $2 == inspect && $5 == fixture:verified ]] || return 1
     printf '%s\n' "$fixture_image_labels"
