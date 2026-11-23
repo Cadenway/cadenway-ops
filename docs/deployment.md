@@ -208,7 +208,8 @@ service's migrator role before stopping the running application and its workers.
 cluster administration connections handle creation and cutover. When the live database exists,
 its Drizzle migration history must match the archive. Use a backup compatible with the running
 application version. The restore then switches the database names in one transaction and verifies
-that the previously running containers become healthy. Containers already stopped stay stopped.
+that all previously running containers are healthy after the last companion has started.
+Containers already stopped stay stopped.
 When several databases are requested, each is restored and switched independently.
 
 After a successful switch, the former database remains under the reported

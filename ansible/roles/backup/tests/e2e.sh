@@ -430,6 +430,15 @@ docker() {
         return 0
       fi
       ;;
+    late-exit:start)
+      if [[ ! -e $TEST_DIR/late-exit-failure ]] && targets "$TEST_RELAY" "$@"; then
+        command docker "$@" || return
+        remember_candidate || return
+        command docker stop --time 30 "$TEST_TASK" >/dev/null || return
+        touch "$TEST_DIR/late-exit-failure"
+        return 0
+      fi
+      ;;
     interrupt-cutover:start)
       if targets "$TEST_TASK" "$@"; then
         remember_candidate || return
@@ -507,7 +516,7 @@ mkdir -p "$pending_rollout"
 reject_restore 'an outstanding GitOps rollout prevents a new restore' "$STAMP"
 check 'unfinished rollout is diagnosed' grep -Fq 'GitOps has an outstanding rollout' "$TEST_DIR/restore.log"
 rmdir -- "$pending_rollout"
-for fault in stop commit start health; do
+for fault in stop commit start health late-exit; do
   TEST_RESTORE_FAULT=$fault reject_restore "$fault failure reported" "$STAMP"
   check "$fault failure injected" test -e "$TEST_DIR/$fault-failure"
   check_active_database

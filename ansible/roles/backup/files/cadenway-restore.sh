@@ -180,6 +180,11 @@ stop_group() {
   done
 }
 
+workload_status() {
+  docker inspect --format '{{if and (eq .State.Status "running") .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+    "$1"
+}
+
 # Wait for the configured health check. Containers without a check must at least stay running.
 start_group() {
   local id state deadline=$((SECONDS + 120))
@@ -187,8 +192,7 @@ start_group() {
   docker start "$@" >/dev/null || return 1
   for id in "$@"; do
     while :; do
-      state=$(docker inspect --format '{{if and .State.Running .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
-        "$id") || return 1
+      state=$(workload_status "$id") || return 1
       case $state in
         healthy | running) break ;;
         starting) ;;
@@ -197,6 +201,15 @@ start_group() {
       ((SECONDS < deadline)) || return 1
       sleep 1
     done
+  done
+}
+
+# A workload may exit or lose readiness while a later workload starts.
+group_healthy() {
+  local id state
+  for id in "$@"; do
+    state=$(workload_status "$id") || return 1
+    [[ $state == healthy || $state == running ]] || return 1
   done
 }
 
@@ -415,7 +428,8 @@ recover_restore() {
 
   if [[ $phase == committed ]]; then
     [[ $locations == "$restored_layout" ]] || return 1
-    start_group "${owners[@]}" && start_group "${companions[@]}" || return 1
+    start_group "${owners[@]}" && start_group "${companions[@]}" &&
+      group_healthy "${owners[@]}" "${companions[@]}" || return 1
   else
     if [[ $rebuild_memberships == true && $locations == "${original_layout:+$original_layout }candidate=$candidate_oid:open" ]]; then
       set_candidate_connections "$postgres" "$candidate" false || return 1
@@ -451,7 +465,8 @@ SQL
     esac
     # A cold rollback restores an absent live database, with its associated workloads stopped.
     if [[ -n $original_oid ]]; then
-      start_group "${owners[@]}" && start_group "${companions[@]}" || return 1
+      start_group "${owners[@]}" && start_group "${companions[@]}" &&
+        group_healthy "${owners[@]}" "${companions[@]}" || return 1
     else
       stop_group 60 "${companions[@]}" && stop_group 30 "${owners[@]}" || return 1
     fi
@@ -614,7 +629,8 @@ SQL
     echo "$ENVIRONMENT: could not verify the cutover of $db_name" >&2
     return 1
   fi
-  if ! start_group "${owners[@]}" || ! start_group "${companions[@]}"; then
+  if ! start_group "${owners[@]}" || ! start_group "${companions[@]}" ||
+    ! group_healthy "${owners[@]}" "${companions[@]}"; then
     echo "$ENVIRONMENT: restored $db_name did not start with healthy services; recovering the prior state" >&2
     return 1
   fi
