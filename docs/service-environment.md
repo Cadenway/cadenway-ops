@@ -85,7 +85,11 @@ merge; replace its `…_PRIVATE_JWK` and merge; then remove the old public key.
 
 Every backend keeps what it has today (`PORT`, and `DATABASE_URL`, `NATS_URL` or `REDIS_URL`).
 `NODE_ENV`, `LOG_LEVEL` and `LOG_PRETTY` have defaults fit for a server and stay unset.
-`OTEL_EXPORTER_OTLP_ENDPOINT` stays unset until an environment has a collector.
+`OTEL_EXPORTER_OTLP_ENDPOINT` enables export from the API gateway and Task API when set.
+After the [staging collector](../compose/observability/README.md) is running, set
+`cadenway_environment_settings.staging.otel_exporter_otlp_endpoint` to
+`http://cadenway-staging-otel:4318` in the operator inventory and render the host environment
+with the agent role. The Compose definitions accept an empty value, which disables export.
 
 ### Every service
 

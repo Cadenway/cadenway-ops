@@ -1,0 +1,68 @@
+# Apply only after the staging network exists. This independent project is optional.
+- name: Install staging observability
+  hosts: cadenway
+  become: true
+  tasks:
+    - name: Check that this host runs staging
+      ansible.builtin.assert:
+        that:
+          - "'staging' in cadenway_environments"
+        quiet: true
+
+    - name: Create the observability directory
+      ansible.builtin.file:
+        path: /opt/cadenway/observability-staging
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Install observability configuration
+      ansible.builtin.copy:
+        src: '../../compose/observability/{{ item }}'
+        dest: '/opt/cadenway/observability-staging/{{ item }}'
+        owner: root
+        group: root
+        mode: '0644'
+      loop: [compose.yaml, collector.yaml, prometheus.yaml, tempo.yaml]
+      notify: Restart staging observability
+
+    - name: Install the observability service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/cadenway-observability-staging.service
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Cadenway staging observability
+          Requires=docker.service
+          After=docker.service
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          Restart=on-failure
+          RestartSec=30
+          WorkingDirectory=/opt/cadenway/observability-staging
+          ExecStartPre=/usr/bin/docker network inspect cadenway-staging_internal
+          ExecStart=/usr/bin/docker compose up -d
+          ExecStop=/usr/bin/docker compose stop
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Restart staging observability
+
+    - name: Enable the observability service
+      ansible.builtin.systemd:
+        name: cadenway-observability-staging.service
+        enabled: true
+        state: started
+        daemon_reload: true
+
+  handlers:
+    - name: Restart staging observability
+      ansible.builtin.systemd:
+        name: cadenway-observability-staging.service
+        state: restarted
+        daemon_reload: true

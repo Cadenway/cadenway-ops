@@ -4,6 +4,9 @@
 
 ## How a release reaches a server
 
+Use the [staging reliability runbook](runbooks/staging-reliability.md) to exercise a release,
+its rollback, backup restoration and the API performance baseline.
+
 1. A pull request merged on a service's `main` updates its release pull request (release-please).
 2. Merging the release pull request tags `vX.Y.Z`; the service's `release.yml` builds the image
    `ghcr.io/<org>/cadenway-<service>:X.Y.Z` (linux/amd64) and calls its `deploy.yml`.

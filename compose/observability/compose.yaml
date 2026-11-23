@@ -1,0 +1,53 @@
+name: cadenway-observability-staging
+
+services:
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.137.0@sha256:37d8591ba6555f3c65586ea61960cc1d2e5f75f1980b2742a113e08f64bc359a
+    command: ['--config=/etc/otelcol-contrib/config.yaml']
+    volumes:
+      - ./collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    networks:
+      internal:
+        aliases: [cadenway-staging-otel]
+    restart: unless-stopped
+    mem_limit: 256m
+
+  prometheus:
+    image: prom/prometheus:v3.6.0@sha256:d9a702d3f7f398540e7190c4d80dbb8a0dc95c1e481e8ebd8a08e5bcf83cf735
+    command: ['--config.file=/etc/prometheus/prometheus.yml', '--storage.tsdb.path=/prometheus']
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks: [internal]
+    restart: unless-stopped
+    mem_limit: 512m
+    healthcheck:
+      test: ['CMD', '/bin/promtool', 'check', 'healthy']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  tempo:
+    image: grafana/tempo:2.9.0@sha256:b025a4a4db0a58cc94e2abfab59751f92d74ab8cc024d2e6025ba7efb87bbaff
+    command: ['-config.file=/etc/tempo.yaml']
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    networks: [internal]
+    restart: unless-stopped
+    mem_limit: 512m
+    healthcheck:
+      test: ['CMD', '/busybox/wget', '-qO-', 'http://localhost:3200/ready']
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+networks:
+  internal:
+    external: true
+    name: ${CADENWAY_OBSERVABILITY_NETWORK:-cadenway-staging_internal}
+
+volumes:
+  prometheus-data: {}
+  tempo-data: {}

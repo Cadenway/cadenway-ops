@@ -3,6 +3,7 @@
 # Environments this host runs, in order; one or several (staging and prod can share a VPS).
 cadenway_environments: []
 # Per environment: `domain` (required), `public_scheme` (default https).
+# Staging also accepts `otel_exporter_otlp_endpoint` after the collector is running.
 cadenway_environment_settings: {}
 # Repository and branch the agent applies; reached over SSH with the host's read-only deploy key.
 cadenway_repo_url: ''
