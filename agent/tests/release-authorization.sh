@@ -264,6 +264,43 @@ echo 'PASS a daemon with containers from another environment and a conflicting h
 echo 'PASS a failed database restore recovery prevents reconciliation'
 
 (
+  configure_paths pending-release "$test_root/pending-state"
+  # shellcheck source=/dev/null
+  source "$agent"
+  # shellcheck disable=SC2329
+  confirm_host_assignment() { return 0; }
+  # shellcheck disable=SC2329
+  fetch_release() { printf '%s\n' "$staging"; }
+  # shellcheck disable=SC2329
+  reconcile_edge() { return 0; }
+  # shellcheck disable=SC2329
+  apply_environment() {
+    local env=$1 commit=$2 platform=${3:-true}
+    printf '%s %s\n' "$commit" "$platform" >>"$trace"
+    if [[ $commit == "$staging" ]]; then
+      if [[ $interrupted == true ]]; then
+        mkdir -p "$STATE_DIR/$env/rollout"
+      fi
+      return "$TRANSIENT"
+    fi
+  }
+  mkdir -p "$STATE_DIR/staging"
+  printf '%s\n' "$baseline" >"$STATE_DIR/staging/applied"
+  for interrupted in false true; do
+    : >"$trace"
+    if main; then
+      echo 'the pending release should still report failure' >&2
+      exit 1
+    fi
+    {
+      printf '%s true\n' "$staging"
+      if [[ $interrupted == false ]]; then printf '%s false\n' "$baseline"; fi
+    } | diff - "$trace"
+  done
+)
+echo 'PASS a pending release repairs the applied applications only after journal recovery'
+
+(
   # shellcheck source=/dev/null
   source "$agent"
   # shellcheck disable=SC2329

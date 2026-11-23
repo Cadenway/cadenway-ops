@@ -47,8 +47,9 @@ state with the applied Compose fingerprints and replica counts. A healthy check
 keeps the application containers. A missing, unhealthy or mismatched workload
 can be repaired under the same applied commit. This path reuses available images
 and skips migrations. Healthy peers remain in place. If a newer application release
-has been rejected, the agent repairs the last applied applications and keeps any
-infrastructure already installed by the rejected release.
+is rejected or awaiting a retry, the agent can repair the last applied applications
+after resolving the rollout journal. It retains infrastructure already installed
+by the newer release and preserves the outcome of that release.
 
 The agent creates candidates with the normal Compose configuration and withholds
 their internal service DNS aliases until readiness. They can still reach their

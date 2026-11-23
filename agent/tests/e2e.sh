@@ -288,6 +288,18 @@ run_agent
 check 'said once' '[[ $OUT != *"retrying every minute"* ]]'
 check 'web still serving' '[[ $(web | wc -l) == 1 ]]'
 
+echo '=== 9a. a pending release does not prevent repairing the applied application'
+PREVIOUS_WEB=$(web | cut -d" " -f1)
+PREVIOUS_PLATFORM=$(containers db)
+APPLIED_RELEASE=$(cat /var/lib/cadenway-agent/test/applied)
+docker rm --force "$PREVIOUS_WEB" >/dev/null
+run_agent
+check 'the pending release keeps its retry without recording a failure' \
+  '[[ $RESULT != 0 && $OUT != *"retrying every minute"* ]] && head_is retrying && ! head_is failed'
+check 'the same applied commit recovers the application without replacing the platform' \
+  '[[ $(web | wc -l) == 1 && $(web) == *busybox:1.37.0* && $(web | cut -d" " -f1) != "$PREVIOUS_WEB" &&
+    $(cat /var/lib/cadenway-agent/test/applied) == "$APPLIED_RELEASE" && $(containers db) == "$PREVIOUS_PLATFORM" ]]'
+
 echo '=== 10. unhealthy first container: removed, not left looking applied'
 write_other false
 versions 1.37.0 1.37.0

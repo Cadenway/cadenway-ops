@@ -881,7 +881,7 @@ apply_environment() {
   local env=$1 commit=$2
   local worktree=$ROOT/envs/$env state=$STATE_DIR/$env
   local applied failed start=$SECONDS file service version missing code owner replicas result=0
-  local mode=release repair_platform=true hashes hash inventory workload infrastructure_expected='' workloads=''
+  local mode=release repair_platform=${3:-true} hashes hash inventory workload infrastructure_expected='' workloads=''
   local ALERT_WEBHOOK_URL=''
   local -a deployables=() infrastructure=() changed=()
   local -A companion_targets=() owners_applied=() workload_hashes=()
@@ -1134,7 +1134,7 @@ confirm_host_assignment() {
 }
 
 main() {
-  local commit env status=0
+  local commit env applied state result=0 status=0
   local -a environments=()
   exec 9>"$LOCK_FILE"
   flock -n 9 || {
@@ -1193,7 +1193,19 @@ main() {
     return 1
   fi
   reconcile_edge "$commit" || status=1
-  apply_environment "$env" "$commit" || status=1
+  apply_environment "$env" "$commit" || result=$?
+  if ((result != 0)); then
+    status=1
+    state=$STATE_DIR/$env
+    applied=$(read_state "$state/applied")
+    # A pending release can fail before replacing missing workloads. Recover their applied
+    # versions while keeping any infrastructure prepared by the newer release and its retry.
+    if ((result == TRANSIENT)) && [[ -n $applied && $applied != "$commit" &&
+      $commit != "$(read_state "$state/failed")" && ! -d $state/rollout ]]; then
+      apply_environment "$env" "$applied" false ||
+        log "$env: the applied application workloads could not be repaired"
+    fi
+  fi
   return "$status"
 }
 
