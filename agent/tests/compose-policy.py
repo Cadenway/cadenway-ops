@@ -85,6 +85,47 @@ class ComposePolicyTest(unittest.TestCase):
                 self.write_task(settings, model)
                 self.assert_rejected("variable IDENTITY_PASSWORD_PEPPER is outside the service grant")
 
+    def test_accepts_owned_service_modes_and_literal_hosted_storage_transfer(self):
+        modes = {
+            "document-service": ("DOCUMENT_ACCESS_MODE", "${DOCUMENT_ACCESS_MODE:-task-authorized}"),
+            "realtime-gateway": (
+                "REALTIME_PAGED_RECIPIENTS_ENABLED",
+                "${REALTIME_PAGED_RECIPIENTS_ENABLED:-false}",
+            ),
+            "storage-service": ("STORAGE_UPLOAD_TRANSFER_MODE", "presigned-post"),
+            "task-service": (
+                "TASK_MEMBERSHIP_AUTHORITY_MODE",
+                "${TASK_MEMBERSHIP_AUTHORITY_MODE:-required}",
+            ),
+        }
+        versions = []
+        for owner, (name, value) in modes.items():
+            version = owner.replace("-", "_").upper() + "_VERSION"
+            versions.append(f"{version}=1.2.3")
+            fixture = {
+                "services": {
+                    owner: {
+                        "image": f"ghcr.io/${{GHCR_OWNER}}/cadenway-{owner}:${{{version}}}",
+                        "networks": ["internal"],
+                        "environment": {name: value},
+                    },
+                },
+                "networks": {"internal": {}},
+            }
+            (self.services / f"{owner}.yaml").write_text(json.dumps(fixture), encoding="utf-8")
+        self.versions.write_text("\n".join(versions) + "\n", encoding="utf-8")
+
+        result = self.run_policy(shared_host_quotas=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for owner, (name, value) in modes.items():
+            with self.subTest(owner=owner):
+                document = json.loads((self.output / f"{owner}.yaml").read_text(encoding="utf-8"))
+                self.assertEqual(document["services"][owner]["environment"][name], value)
+
+    def test_denies_a_different_services_mode(self):
+        self.write_task("    environment: {MODE: '${DOCUMENT_ACCESS_MODE}'}\n")
+        self.assert_rejected("variable DOCUMENT_ACCESS_MODE is outside the service grant")
+
     def test_denies_bypasses_around_normal_variable_resolution(self):
         fixtures = (
             ("    env_file: /etc/example/settings\n", ""),

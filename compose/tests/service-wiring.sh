@@ -179,6 +179,10 @@ for (const [receiver, senders] of Object.entries({
 }
 const taskDocumentKey = JSON.parse(services['task-service'].environment.DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS);
 const documentPrivateKey = JSON.parse(services['document-service'].environment.INTERNAL_TOKEN_PRIVATE_JWK);
+if (services['task-service'].environment.TASK_MEMBERSHIP_AUTHORITY_MODE !== 'required' ||
+    services['document-service'].environment.DOCUMENT_ACCESS_MODE !== 'task-authorized') {
+  fail('Task and Document authority modes');
+}
 if (taskDocumentKey.kty !== 'OKP' || taskDocumentKey.d !== undefined ||
     taskDocumentKey.x !== documentPrivateKey.x || taskDocumentKey.kid !== documentPrivateKey.kid) {
   fail('task Document public key');
@@ -220,6 +224,8 @@ if (billing.BILLING_USAGE_ENABLED !== 'false' || billing.ORGANIZATION_SERVICE_UR
   fail('Billing is inactive by default');
 }
 const storage = services['storage-service'].environment;
+if (storage.STORAGE_UPLOAD_TRANSFER_MODE !== 'presigned-post' ||
+    storage.STORAGE_UPLOAD_TRANSFER_URL) fail('default Storage upload mode');
 if (services['organization-service'].environment.ORGANIZATION_SEAT_ENTITLEMENT_EVENTS_ENABLED !== 'false' ||
     storage.STORAGE_BILLING_ENTITLEMENTS_ENABLED !== 'false') {
   fail('Billing entitlement projections are inactive by default');
@@ -240,5 +246,29 @@ console.log('wired');
 JS
 ) || true
 check 'trusted issuers, private keys, addresses, SMTP, S3, Meilisearch and WebAuthn' '[[ $OUT == wired ]]'
+
+echo '=== 4. explicit limited and one-shot modes'
+TASK_MEMBERSHIP_AUTHORITY_MODE=limited DOCUMENT_ACCESS_MODE=search-only DOCUMENT_TASK_SERVICE_URL= \
+  STORAGE_UPLOAD_TRANSFER_MODE=local-one-shot \
+  STORAGE_UPLOAD_TRANSFER_URL=http://upload.cadenway.localhost/internal/v1/upload-transfers \
+  docker compose --env-file "$MOUNT/.env" -f compose.yaml -f compose.local.yaml --profile full \
+  config --format json >"$WORK/config.json" 2>"$WORK/warnings"
+OUT=$(node_run --input-type=module - <<'JS'
+import { readFileSync } from 'node:fs';
+
+const { services } = JSON.parse(readFileSync('/work/config.json', 'utf8'));
+const task = services['task-service'].environment;
+const document = services['document-service'].environment;
+const storage = services['storage-service'].environment;
+if (task.TASK_MEMBERSHIP_AUTHORITY_MODE !== 'limited' ||
+    document.DOCUMENT_ACCESS_MODE !== 'search-only' || document.TASK_SERVICE_URL ||
+    storage.STORAGE_UPLOAD_TRANSFER_MODE !== 'local-one-shot' ||
+    storage.STORAGE_UPLOAD_TRANSFER_URL !== 'http://upload.cadenway.localhost/internal/v1/upload-transfers') {
+  throw new Error('incorrect explicit authority or transfer mode');
+}
+console.log('wired');
+JS
+) || true
+check 'explicit authority and upload modes' '[[ $OUT == wired ]]'
 
 exit "$FAILED"

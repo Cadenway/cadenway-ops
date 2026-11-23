@@ -42,6 +42,14 @@ The same host lock serializes releases with database restores. The agent resolve
 an interrupted restore before processing any application rollout for that environment.
 An unresolved journal stops reconciliation until safe recovery succeeds.
 
+When the desired application commit is already applied, the agent compares Docker
+state with the applied Compose fingerprints and replica counts. A healthy check
+keeps the application containers. A missing, unhealthy or mismatched workload
+can be repaired under the same applied commit. This path reuses available images
+and skips migrations. Healthy peers remain in place. If a newer application release
+has been rejected, the agent repairs the last applied applications and keeps any
+infrastructure already installed by the rejected release.
+
 The agent creates candidates with the normal Compose configuration and withholds
 their internal service DNS aliases until readiness. They can still reach their
 internal dependencies. Public candidates keep their edge endpoint throughout
@@ -57,10 +65,11 @@ or host-backed files fail before they can replace a running release.
 An environment releases application services as a batch. The agent keeps the last
 containers until the replacements have passed readiness, then promotes the candidates,
 stops the obsolete containers and records the applied commit. The journal under the
-agent state directory contains only the commit, fingerprints, container IDs and
-network names and aliases. Before the applied marker is replaced, the next run
+agent state directory contains the commit, workload fingerprints and replica counts,
+container IDs, network names and aliases. Before the applied marker is replaced, the next run
 removes uncommitted candidates and restarts suspended containers. After that point,
-the next run finishes retiring obsolete containers.
+the next run finishes retiring obsolete containers. Repairs keep the applied SHA and
+use their own completion marker in the rollout journal.
 
 The agent resolves local journals under the shared host lock before contacting
 Git or checking a release signature. Recovery of an interrupted first release

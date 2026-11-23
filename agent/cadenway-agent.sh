@@ -5,7 +5,7 @@
 # outside. One host runs one environment (CADENWAY_ENVIRONMENTS) as the Compose project
 # cadenway-<env> with its own definitions, behind the Traefik of the cadenway-edge project.
 #
-# For each environment, on a new commit:
+# For each environment, on a new commit or when the applied workloads drift:
 #   1. check out the commit, validate its service definitions, decrypt its secrets into /run (tmpfs);
 #   2. check for missing settings, pull and bring infrastructure services up (idempotent);
 #   3. for every deployable whose version is set and whose fingerprint changed or whose container is
@@ -46,6 +46,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly SCRIPT_DIR
 # Exit status of a failure worth retrying on the next tick (sysexits EX_TEMPFAIL).
 readonly TRANSIENT=75
+readonly CONTAINER_HEALTH_FORMAT='{{if and (eq .State.Status "running") .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}'
 # Companions are defined in their owner's Compose file and share its release and database.
 declare -Ar COMPANION_OWNERS=(
   [task-service-relay]=task-service
@@ -119,21 +120,89 @@ checkout() {
 
 read_state() { cat "$1" 2>/dev/null || true; }
 
+# Inspect only service labels, hashes and health. Limit each inspection to one Compose project
+# and exclude one-off commands. The output is safe to keep in memory and contains no environment.
+workload_inventory() {
+  local project=$1 inventory
+  local -a ids=()
+  inventory=$(docker ps --all --quiet --no-trunc \
+    --filter "label=com.docker.compose.project=$project" \
+    --filter 'label=com.docker.compose.oneoff=False') || return 1
+  [[ -n $inventory ]] || return 0
+  mapfile -t ids <<<"$inventory"
+  docker inspect --format \
+    '{{.Id}} {{index .Config.Labels "com.docker.compose.service"}} {{index .Config.Labels "com.docker.compose.config-hash"}} '"$CONTAINER_HEALTH_FORMAT" \
+    "${ids[@]}"
+}
+
+# Expectations list the Compose service, replica count and configuration hash. Include zero
+# replicas for disabled companions, since a manually restarted companion must be stopped again.
+workloads_match() {
+  local expected=$1 inventory=$2 service replicas hash id status
+  local -A desired_count=() desired_hash=() running_count=()
+  while read -r service replicas hash; do
+    [[ $service =~ ^[a-zA-Z0-9_-]+$ && $replicas =~ ^[0-9]+$ ]] || return 1
+    desired_count[$service]=$replicas
+    desired_hash[$service]=$hash
+  done <<<"$expected"
+  while read -r id service hash status; do
+    [[ -z $id || ! $service =~ ^[a-zA-Z0-9_-]+$ || ! -v desired_count[$service] ]] && continue
+    [[ $hash == "${desired_hash[$service]}" && $status =~ ^(healthy|running)$ ]] || return 1
+    running_count[$service]=$((${running_count[$service]:-0} + 1))
+  done <<<"$inventory"
+  for service in "${!desired_count[@]}"; do
+    [[ ${running_count[$service]:-0} == "${desired_count[$service]}" ]] || return 1
+  done
+}
+
+# Restart only running, unhealthy infrastructure containers with the expected configuration.
+# Compose handles missing/stopped containers and mismatched definitions without restarting peers.
+restart_unhealthy() {
+  local expected=$1 inventory=$2 service replicas hash id status
+  local -A desired_hash=()
+  while read -r service replicas hash; do
+    [[ $service =~ ^[a-zA-Z0-9_-]+$ && $replicas == 1 ]] || return 1
+    desired_hash[$service]=$hash
+  done <<<"$expected"
+  while read -r id service hash status; do
+    [[ $status == unhealthy && $service =~ ^[a-zA-Z0-9_-]+$ &&
+      -v desired_hash[$service] && $hash == "${desired_hash[$service]}" ]] || continue
+    docker restart "$id" >/dev/null || return 1
+  done <<<"$inventory"
+}
+
 # Reads one variable from a dotenv file without sourcing it.
 dotenv_value() {
   local file=$1 name=$2
   sed -n "s/^${name}=//p" "$file" | tail -n 1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"
 }
 
-# The single Traefik of the host; Compose recreates it only when its definition changed.
-apply_edge() {
-  local commit=$1 worktree=$ROOT/edge applied
-  applied=$(read_state "$STATE_DIR/edge/applied")
-  [[ $applied == "$commit" ]] && return 0
-  checkout "$worktree" "$commit" || return 1
+# The edge uses its own project and the host-owned public configuration.
+edge_compose() {
+  local worktree=$ROOT/edge
   docker compose -p cadenway-edge --project-directory "$worktree/compose" \
     -f "$worktree/compose/edge.yaml" --env-file "$SETTINGS_DIR/edge.env" \
-    up -d --wait --wait-timeout 120 --remove-orphans || return 1
+    "$@"
+}
+
+apply_edge() {
+  local commit=$1 worktree=$ROOT/edge applied hashes expected inventory
+  applied=$(read_state "$STATE_DIR/edge/applied")
+  if [[ $applied == "$commit" ]]; then
+    # A missing or replaced checkout needs the same recovery as it does on a new release.
+    if [[ $(git -C "$worktree" rev-parse HEAD 2>/dev/null) != "$commit" ]]; then
+      checkout "$worktree" "$commit" || return 1
+    fi
+    hashes=$(edge_compose config --hash '*') || return 1
+    expected=$(awk 'NF == 2 { print $1, 1, $2 }' <<<"$hashes")
+    [[ -n $expected ]] || return 1
+    inventory=$(workload_inventory cadenway-edge) || return 1
+    workloads_match "$expected" "$inventory" && return 0
+    restart_unhealthy "$expected" "$inventory" || return 1
+  else
+    checkout "$worktree" "$commit" || return 1
+  fi
+  edge_compose up -d --wait --wait-timeout 120 --remove-orphans || return 1
   mkdir -p "$STATE_DIR/edge"
   printf '%s\n' "$commit" >"$STATE_DIR/edge/applied"
 }
@@ -250,7 +319,7 @@ service_containers() {
 }
 
 container_health() {
-  docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$1"
+  docker inspect --format "$CONTAINER_HEALTH_FORMAT" "$1"
 }
 
 # Waits until every given container reports `healthy` or, for owners without a healthcheck,
@@ -473,34 +542,42 @@ prepare_candidates() {
 # every container runs that configuration and is healthy. Returns 1 when the desired state fails
 # (migrations, health), TRANSIENT when its image cannot be pulled.
 apply_service() {
-  local env=$1 service=$2 record desired hash container inventory
+  local env=$1 service=$2 mode=$3 record desired hash container inventory kept=''
   local rollout=$STATE_DIR/$env/rollout
-  local -a running
+  local -a existing=() obsolete=() pull_policy=()
   record=$STATE_DIR/$env/services/$service
   desired=$(fingerprint "$env" "$service") || return 1
   hash=${desired%% *}
-  inventory=$(service_containers "$env" "$service") || return 1
-  mapfile -t running < <(printf '%s' "$inventory")
-  if ((${#running[@]})) && [[ $(read_state "$record") == "$desired" ]]; then
-    local unchanged=true
-    for container in "${running[@]}"; do
-      [[ $(docker inspect --format '{{index .Config.Labels "com.docker.compose.config-hash"}}' \
-        "$container") == "$hash" ]] || unchanged=false
-      [[ $(container_health "$container") =~ ^(healthy|running)$ ]] || unchanged=false
+  inventory=$(service_containers "$env" "$service" all) || return 1
+  mapfile -t existing < <(printf '%s' "$inventory")
+  if [[ $(read_state "$record") == "$desired" ]]; then
+    for container in "${existing[@]}"; do
+      if [[ -z $kept && $(container_health "$container") =~ ^(healthy|running)$ &&
+        $(docker inspect --format '{{index .Config.Labels "com.docker.compose.config-hash"}}' \
+          "$container") == "$hash" ]]; then
+        kept=$container
+      else
+        obsolete+=("$container")
+      fi
     done
-    [[ $unchanged == true ]] && return 0
+    if [[ -n $kept ]]; then
+      if ((${#obsolete[@]})); then
+        printf '%s\n' "${obsolete[@]}" >"$rollout/obsolete/$service" || return 1
+      fi
+      return 0
+    fi
   fi
 
-  env_compose "$env" pull --quiet "$service" || {
+  [[ $mode != repair ]] || pull_policy=(--policy missing)
+  env_compose "$env" pull --quiet "${pull_policy[@]}" "$service" || {
     log "$env/$service: the image cannot be pulled"
     return "$TRANSIENT"
   }
   require_compose_owned_routing "$env" "$service" || return 1
-  migrate "$env" "$service" || {
+  [[ $mode == repair ]] || migrate "$env" "$service" || {
     log "$env/$service: the migrations failed"
     return 1
   }
-  inventory=$(service_containers "$env" "$service" all) || return 1
   printf '%s' "$inventory" >"$rollout/obsolete/$service" || return 1
   prepare_candidates "$env" "$service" 1 no || {
     log "$env/$service: the new container could not be prepared"
@@ -540,9 +617,9 @@ companion_replicas() {
 # Reconciles a companion after its owner applied. Keep healthy matching replicas on scale changes.
 # Start replacement candidates together and wait for all of them before touching older instances.
 apply_companion() {
-  local env=$1 service=$2 replicas=$3 inventory record desired hash id count
+  local env=$1 service=$2 replicas=$3 mode=$4 inventory record desired hash id count
   local rollout=$STATE_DIR/$env/rollout
-  local -a before=() kept=() obsolete=()
+  local -a before=() kept=() obsolete=() pull_policy=()
   inventory=$(service_containers "$env" "$service" all) || return 1
   mapfile -t before < <(printf '%s' "$inventory")
   if ((replicas == 0)); then
@@ -571,7 +648,8 @@ apply_companion() {
   count=$((replicas - ${#kept[@]}))
   printf '%s\n' "${obsolete[@]}" >"$rollout/obsolete/$service" || return 1
   if ((count > 0)); then
-    env_compose "$env" pull --quiet "$service" || return "$TRANSIENT"
+    [[ $mode != repair ]] || pull_policy=(--policy missing)
+    env_compose "$env" pull --quiet "${pull_policy[@]}" "$service" || return "$TRANSIENT"
     require_compose_owned_routing "$env" "$service" || return 1
     prepare_companion_owner "$env" "$service" || return 1
     prepare_candidates "$env" "$service" "$count" yes || return 1
@@ -615,16 +693,21 @@ prepare_companion_owner() {
     dedicated=$(docker inspect --format \
       '{{range .Config.Env}}{{if eq . "'"$mode"'"}}yes{{end}}{{end}}' "$id") || return 1
     if [[ $dedicated != yes ]]; then
-      promote_service "$env" "$owner" || return 1
+      if [[ -f $rollout/baseline/$owner ]]; then
+        promote_service "$env" "$owner" || return 1
+      fi
       suspend_container "$rollout" "$id" 30 || return 1
     fi
   done
 }
 
 begin_release() {
-  local rollout=$STATE_DIR/$1/rollout
-  mkdir -p "$rollout"/{baseline,migrations,networks,obsolete,records} &&
-    printf '%s\n' "$2" >"$rollout/commit"
+  local rollout=$STATE_DIR/$1/rollout mode=$3
+  mkdir -p "$rollout"/{baseline,migrations,networks,obsolete,records} || return 1
+  if [[ $mode == repair ]]; then
+    touch "$rollout/repair" || return 1
+  fi
+  printf '%s\n' "$2" >"$rollout/commit"
 }
 
 rollback_release() {
@@ -646,7 +729,9 @@ rollback_release() {
     for id in "${previous[@]}"; do
       docker start "$id" >/dev/null || return 1
     done
-    if ! wait_healthy no "${previous[@]}"; then
+    # A repair may have replaced an already unhealthy container. Restoring its original state
+    # must allow another repair attempt even if it has not recovered its readiness.
+    if [[ ! -f $rollout/repair ]] && ! wait_healthy no "${previous[@]}"; then
       log "$env: a restored container is not ready; retaining the rollback journal"
       return 1
     fi
@@ -669,7 +754,15 @@ finish_release() {
       fi
     done
   done
-  rm -f "$state/failed" "$state/retrying"
+  if [[ -f $rollout/workloads ]]; then
+    cp "$rollout/workloads" "$state/workloads.next" &&
+      mv -f "$state/workloads.next" "$state/workloads" || return 1
+  fi
+  if [[ -f $rollout/repair ]]; then
+    rm -f "$state/repairing"
+  else
+    rm -f "$state/failed" "$state/retrying" "$state/repairing"
+  fi
 }
 
 # The applied marker is the application's commit point. Before it, recover by removing
@@ -681,7 +774,10 @@ recover_release() {
   cleanup_migrations "$env" || return 1
   pending=$(read_state "$rollout/commit")
   applied=$(read_state "$state/applied")
-  if [[ -n $pending && $pending == "$applied" ]]; then
+  # A repair deliberately reuses the applied SHA. Its own marker is the commit point, so a
+  # crash before promotion cannot be mistaken for completion and retire the previous containers.
+  if [[ -n $pending && $pending == "$applied" &&
+    ( ! -f $rollout/repair || -f $rollout/repaired ) ]]; then
     finish_release "$env" || return 1
   else
     rollback_release "$env" "$applied" || return 1
@@ -704,6 +800,10 @@ commit_release() {
       suspend_container "$rollout" "$id" "$grace" || return 1
     done
   done
+  if [[ -f $rollout/repair ]]; then
+    touch "$rollout/repaired"
+    return
+  fi
   printf '%s\n' "$commit" >"$state/applied.next" &&
     mv -f "$state/applied.next" "$state/applied"
 }
@@ -759,22 +859,56 @@ missing_variables() {
   } | sort -u
 }
 
+applied_workloads_healthy() {
+  local env=$1 applied=$2 repair_platform=$3 manifest inventory scope workload expected=''
+  manifest=$(read_state "$STATE_DIR/$env/workloads")
+  [[ ${manifest%%$'\n'*} == "$applied" && $manifest == *$'\n'* ]] || return 1
+  while read -r scope workload; do
+    case $scope in
+      application) expected+="$workload"$'\n' ;;
+      platform) [[ $repair_platform == false ]] || expected+="$workload"$'\n' ;;
+      *) return 1 ;;
+    esac
+  done <<<"${manifest#*$'\n'}"
+  [[ -n $expected ]] || return 1
+  inventory=$(workload_inventory "cadenway-$env") || return 1
+  workloads_match "${expected%$'\n'}" "$inventory"
+}
+
 # Applies one recovered environment at an approved commit. Returns 0 when applied, 1 when the
 # commit failed (recorded, not retried), TRANSIENT when it will be tried again on the next tick.
 apply_environment() {
   local env=$1 commit=$2
   local worktree=$ROOT/envs/$env state=$STATE_DIR/$env
   local applied failed start=$SECONDS file service version missing code owner replicas result=0
+  local mode=release repair_platform=true hashes hash inventory workload infrastructure_expected='' workloads=''
   local ALERT_WEBHOOK_URL=''
   local -a deployables=() infrastructure=() changed=()
-  local -A companion_targets=() owners_applied=()
+  local -A companion_targets=() owners_applied=() workload_hashes=()
   mkdir -p "$state" || return "$TRANSIENT"
   applied=$(read_state "$state/applied")
   failed=$(read_state "$state/failed")
-  [[ $commit == "$applied" ]] && return 0
   if [[ $commit == "$failed" ]]; then
     log "$env: ${commit:0:12} failed before; waiting for a new commit"
-    return 0
+    [[ -n $applied ]] || return 0
+    commit=$applied
+    # Infrastructure may already have changed before the newer application batch failed.
+    # Repair the last approved application workloads without rolling back database or broker images.
+    repair_platform=false
+  fi
+  if [[ $commit == "$applied" ]]; then
+    if applied_workloads_healthy "$env" "$applied" "$repair_platform"; then
+      [[ ! -f $state/repairing ]] || rm -f "$state/repairing"
+      return
+    fi
+    if [[ $env == prod ]] && {
+      ! authorized_commit "$applied" "$PRODUCTION_SIGNERS" '' ||
+        authorized_commit "$applied" "$RELEASE_SIGNERS" ''
+    }; then
+      log 'production: the applied commit is no longer authorized for repair'
+      return 1
+    fi
+    mode=repair
   fi
   if ! docker network inspect "cadenway-edge-$env" >/dev/null 2>&1; then
     log "$env: the edge network cadenway-edge-$env does not exist yet; waiting for the edge"
@@ -834,8 +968,39 @@ apply_environment() {
     mapfile -t infrastructure < <(env_compose "$env" config --services |
       grep -vxF -f <(basename -s .yaml "$worktree/environments/$env/services"/*.yaml) |
       grep -vxF -f <(printf '%s\n' "${!COMPANION_OWNERS[@]}"))
-    if ((${#infrastructure[@]} == 0)); then
+    if ((${#infrastructure[@]} == 0)) || ! hashes=$(env_compose "$env" config --hash '*'); then
       result=1
+    fi
+  fi
+
+  if ((result == 0)); then
+    while read -r service hash; do
+      [[ $service =~ ^[a-zA-Z0-9_-]+$ ]] || continue
+      workload_hashes[$service]=$hash
+    done <<<"$hashes"
+    for service in "${infrastructure[@]}"; do
+      workload="$service 1 ${workload_hashes[$service]}"
+      infrastructure_expected+="$workload"$'\n'
+      workloads+="platform $workload"$'\n'
+    done
+    infrastructure_expected=${infrastructure_expected%$'\n'}
+    for service in "${deployables[@]}"; do
+      workloads+="application $service 1 ${workload_hashes[$service]}"$'\n'
+    done
+    for service in "${!companion_targets[@]}"; do
+      workloads+="application $service ${companion_targets[$service]} ${workload_hashes[$service]:-}"$'\n'
+    done
+    if [[ $mode == repair ]]; then
+      if [[ $repair_platform == true ]]; then
+        if ! inventory=$(workload_inventory "cadenway-$env"); then
+          result=$TRANSIENT
+        elif ! workloads_match "$infrastructure_expected" "$inventory" &&
+          { ! restart_unhealthy "$infrastructure_expected" "$inventory" ||
+            ! env_compose "$env" up -d --wait --wait-timeout 120 --pull missing "${infrastructure[@]}"; }; then
+          result=$TRANSIENT
+          log "$env: the infrastructure services could not be repaired"
+        fi
+      fi
     elif ! env_compose "$env" pull --quiet "${infrastructure[@]}" ||
       ! env_compose "$env" up -d --wait --wait-timeout 120 "${infrastructure[@]}"; then
       result=$TRANSIENT
@@ -844,13 +1009,16 @@ apply_environment() {
   fi
 
   if ((result == 0)); then
-    begin_release "$env" "$commit" || result=$TRANSIENT
+    if ! begin_release "$env" "$commit" "$mode" ||
+      ! printf '%s\n%s\n' "$commit" "${workloads%$'\n'}" >"$state/rollout/workloads"; then
+      result=$TRANSIENT
+    fi
   fi
 
   if ((result == 0)); then
     # Stop disabled companions first. A rollback may re-enable background processing in the owner.
     for service in "${!companion_targets[@]}"; do
-      if [[ ${companion_targets[$service]} == 0 ]] && ! apply_companion "$env" "$service" 0; then
+      if [[ ${companion_targets[$service]} == 0 ]] && ! apply_companion "$env" "$service" 0 "$mode"; then
         log "$env/$service: unable to stop the companion before applying its owner"
         result=1
       fi
@@ -860,7 +1028,7 @@ apply_environment() {
   if ((result == 0)); then
     for service in "${deployables[@]}"; do
       code=0
-      apply_service "$env" "$service" || code=$?
+      apply_service "$env" "$service" "$mode" || code=$?
       if ((code == 0)); then
         owners_applied[$service]=1
         changed+=("$service")
@@ -883,7 +1051,7 @@ apply_environment() {
         continue
       fi
       code=0
-      apply_companion "$env" "$service" "$replicas" || code=$?
+      apply_companion "$env" "$service" "$replicas" "$mode" || code=$?
       if ((code == 0)); then
         changed+=("$service")
       elif ((code == TRANSIENT)); then
@@ -901,7 +1069,9 @@ apply_environment() {
     result=$TRANSIENT
     log "$env: cannot promote the release; trying again on the next tick"
   fi
-  if ((result == 1)); then
+  if ((result != 0)) && [[ $mode == repair ]]; then
+    result=$TRANSIENT
+  elif ((result == 1)); then
     printf '%s\n' "$commit" >"$state/failed" || result=$TRANSIENT
   fi
   if ! recover_release "$env"; then
@@ -913,11 +1083,20 @@ apply_environment() {
   unset DOCKER_CONFIG
   case $result in
     0)
-      notify "cadenway $env: ${commit:0:12} applied in $((SECONDS - start)) s; checked ${changed[*]:-no deployable} ($(git -C "$worktree" log -1 --format=%s))"
+      if [[ $mode == repair ]]; then
+        log "$env: reconciled workloads for ${commit:0:12} in $((SECONDS - start)) s"
+      else
+        notify "cadenway $env: ${commit:0:12} applied in $((SECONDS - start)) s; checked ${changed[*]:-no deployable} ($(git -C "$worktree" log -1 --format=%s))"
+      fi
       ;;
     "$TRANSIENT")
-      # Tried again every tick; said once per commit.
-      if [[ $(read_state "$state/retrying") != "$commit" ]]; then
+      # A failed repair must be retried without changing the disposition of an unapplied release.
+      if [[ $mode == repair ]]; then
+        if [[ $(read_state "$state/repairing") != "$commit" ]]; then
+          printf '%s\n' "$commit" >"$state/repairing"
+          notify "cadenway $env: workloads for ${commit:0:12} need repair. Retrying every minute"
+        fi
+      elif [[ $(read_state "$state/retrying") != "$commit" ]]; then
         printf '%s\n' "$commit" >"$state/retrying"
         notify "cadenway $env: ${commit:0:12} not fully applied (registry, network or start-up); retrying every minute"
       fi

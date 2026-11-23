@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end test of cadenway-agent against a real Docker daemon, with a throwaway ops repository.
-# Covers: first run, no-op run, rolling update, failed health check that keeps the old container,
+# Covers: first run, no-op run, same-commit repair, rolling update, failed health check that keeps the old container,
 # failed commit not retried, fix with a secret rotation, `$` kept in a secret, a config content
 # change, a missing secret, an unpullable image (retried, the others still deployed), an unhealthy
 # first container (removed), a concurrent run that leaves the running one alone, and the migrator
@@ -15,8 +15,7 @@
 #
 # CADENWAY_E2E_PREPARED=1 reuses runner dependencies and the pinned SOPS binary.
 #
-# It creates and removes the Compose projects cadenway-test and cadenway-edge: never run it on a
-# Cadenway host.
+# It requires empty cadenway-test and cadenway-edge projects and refuses existing resources.
 #
 # The assertions are strings evaluated by `check`, so they expand late on purpose.
 # shellcheck disable=SC2016,SC2034,SC2329
@@ -30,6 +29,46 @@ echo "e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b  /usr/loc
 export SOPS_DISABLE_VERSION_CHECK=1
 python3 /agent/tests/compose-policy.py
 bash /agent/tests/release-authorization.sh
+
+# The agent uses fixed project names for its edge and the configured environment. Refuse any
+# collision on a shared daemon before the fixture creates or later removes those resources.
+for project in cadenway-test cadenway-edge; do
+  label="label=com.docker.compose.project=$project"
+  containers=$(docker ps --all --quiet --filter "$label")
+  networks=$(docker network ls --quiet --filter "$label")
+  volumes=$(docker volume ls --quiet --filter "$label")
+  if [[ -n $containers || -n $networks || -n $volumes ]]; then
+    echo "The fixture requires an unused Docker Compose project: $project." >&2
+    exit 1
+  fi
+done
+if docker network inspect cadenway-edge-test >/dev/null 2>&1; then
+  echo 'The fixture network cadenway-edge-test already exists.' >&2
+  exit 1
+fi
+
+cleanup() {
+  local project label containers networks
+  local -a ids=()
+  for project in cadenway-test cadenway-edge; do
+    label="label=com.docker.compose.project=$project"
+    containers=$(docker ps --all --quiet --filter "$label")
+    if [[ -n $containers ]]; then
+      mapfile -t ids <<<"$containers"
+      docker rm --force "${ids[@]}" >/dev/null || true
+    fi
+  done
+  for project in cadenway-test cadenway-edge; do
+    label="label=com.docker.compose.project=$project"
+    networks=$(docker network ls --quiet --filter "$label")
+    if [[ -n $networks ]]; then
+      mapfile -t ids <<<"$networks"
+      docker network rm "${ids[@]}" >/dev/null || true
+    fi
+  done
+}
+trap cleanup EXIT
+
 mkdir -p /run/lock /etc/cadenway/env /src
 cp /agent/cadenway-agent.sh /usr/local/bin/cadenway-agent && chmod +x /usr/local/bin/cadenway-agent
 cp /agent/compose-policy.py /usr/local/bin/compose-policy.py
@@ -163,6 +202,15 @@ echo '=== 2. same commit again: no-op'
 run_agent
 check 'container untouched' '[[ $(web | cut -d" " -f1) == "$FIRST" ]]'
 
+echo '=== 2a. repair a missing workload under the same commit'
+DATABASE=$(containers db)
+docker rm --force "$FIRST" >/dev/null
+run_agent
+check 'the missing workload is restored under the previous applied commit' \
+  '[[ $RESULT == 0 && $(web | wc -l) == 1 && $(web | cut -d" " -f1) != "$FIRST" ]] && head_is applied'
+check 'healthy infrastructure is kept' '[[ $(containers db) == "$DATABASE" ]]'
+FIRST=$(web | cut -d" " -f1)
+
 echo '=== 3. new version: rolling update'
 versions 1.37.0 ''
 commit 'deploy 1.37.0'
@@ -172,17 +220,32 @@ check 'old container replaced' '[[ $(web | cut -d" " -f1) != "$FIRST" ]]'
 SECOND=$(web | cut -d" " -f1)
 
 echo '=== 4. broken definition: the old container keeps serving'
+OLD_PLATFORM=$(containers db)
 write_web false first
+sed -i '/^    command: .*sleep.*infinity/a\    environment: [FIXTURE_INFRA_REVISION=new]' "$R/compose/infra.yaml"
 commit 'break the healthcheck'
 run_agent
 check 'run reports a failure' '[[ $RESULT != 0 ]]'
 check 'old container still the only one' '[[ $(web | wc -l) == 1 && $(web | cut -d" " -f1) == "$SECOND" ]]'
 check 'commit recorded as failed' 'head_is failed'
 check 'worktree back on the applied commit' '[[ $(git -C /opt/cadenway/envs/test rev-parse HEAD) == $(cat /var/lib/cadenway-agent/test/applied) ]]'
+NEW_PLATFORM=$(containers db)
+check 'the infrastructure update remains after the application failure' '[[ -n $NEW_PLATFORM && $NEW_PLATFORM != "$OLD_PLATFORM" ]]'
 
 echo '=== 5. failed commit is not retried'
 run_agent
 check 'skipped' '[[ $OUT == *"failed before"* ]]'
+check 'the platform change alone does not trigger an application repair' \
+  '[[ $RESULT == 0 && $(containers db) == "$NEW_PLATFORM" && $OUT != *"reconciled workloads"* ]]'
+
+echo '=== 5a. repair the applied application and preserve the newer infrastructure'
+APPLIED_RELEASE=$(cat /var/lib/cadenway-agent/test/applied)
+docker rm --force "$SECOND" >/dev/null
+run_agent
+check 'only the application is repaired, with the rejection still recorded' \
+  '[[ $RESULT == 0 && $(web | wc -l) == 1 && $(web) == *busybox:1.37.0* && $(web | cut -d" " -f1) != "$SECOND" ]] && head_is failed'
+check 'the applied SHA and newer platform stay in place' \
+  '[[ $(cat /var/lib/cadenway-agent/test/applied) == "$APPLIED_RELEASE" && $(containers db) == "$NEW_PLATFORM" ]]'
 
 echo '=== 6. fix, and a rotated secret with a dollar sign'
 write_web true first
@@ -331,6 +394,33 @@ check 'a deployable without a database is migrated without it' \
 check 'never in a docker argument list' '! grep -qF grat0r /tmp/docker-arguments'
 check 'nor in the logs' '[[ $OUT != *grat0r* ]]'
 
+echo '=== 13a. same-commit data service recovery does not repeat migrations'
+PREVIOUS_DATA=$(data_id)
+PREVIOUS_WEB=$(web | cut -d" " -f1)
+docker stop "$PREVIOUS_DATA" >/dev/null
+run_agent
+check 'the stopped service is repaired without migrating or replacing healthy peers' \
+  '[[ $RESULT == 0 && -n $(data_id) && $(web | cut -d" " -f1) == "$PREVIOUS_WEB" && $OUT != *"$MIGRATED"* ]] && head_is applied'
+
+echo '=== 13b. an interrupted same-commit repair is rolled back before fetching'
+ROLLOUT=/var/lib/cadenway-agent/test/rollout
+mkdir -p "$ROLLOUT"/{baseline,migrations,networks,obsolete,records}
+PREVIOUS_DATA=$(docker inspect --format '{{.Id}}' "$(data_id)")
+printf '%s' "$PREVIOUS_DATA" >"$ROLLOUT/baseline/data-service"
+printf '%s' "$PREVIOUS_DATA" >"$ROLLOUT/obsolete/data-service"
+cat /var/lib/cadenway-agent/test/applied >"$ROLLOUT/commit"
+touch "$ROLLOUT/repair"
+INTERRUPTED=$(docker create --pull never --network none \
+  --label com.docker.compose.project=cadenway-test --label com.docker.compose.oneoff=False \
+  --label com.docker.compose.service=data-service busybox:1.37.0 sleep 120)
+mv -- "$R" "$R.offline"
+run_agent
+mv -- "$R.offline" "$R"
+check 'the uncommitted repair candidate is removed and the running release is kept' \
+  '[[ $RESULT != 0 && $OUT == *"cannot fetch its release ref"* && ! -d $ROLLOUT ]] && \
+    ! docker inspect "$INTERRUPTED" >/dev/null 2>&1 && \
+    [[ $(docker inspect --format "{{.State.Running}}" "$PREVIOUS_DATA") == true ]] && head_is applied'
+
 echo '=== 14. a missing migrator URL: refused before anything changes'
 BEFORE=$(data_id)
 data_secrets
@@ -425,6 +515,14 @@ commit 'scale task relay to two'
 run_agent
 check 'scale-up keeps the healthy replica' 'head_is applied && [[ $(relay_ids | wc -l) == 2 ]] && relay_ids | grep -Fxq "$RELAY"'
 check 'scale-up keeps the owner and runs no migration' '[[ $(task_id) == "$TASK" && $OUT != *"task fixture migration ran"* ]]'
+
+echo '=== 16a. repair a missing replica under the same commit'
+MISSING_RELAY=$(relay_ids | grep -vxF "$RELAY")
+docker rm --force "$MISSING_RELAY" >/dev/null
+run_agent
+check 'only the missing replica is replaced' \
+  '[[ $RESULT == 0 && $(task_id) == "$TASK" && $(relay_ids | wc -l) == 2 ]] && head_is applied && relay_ids | grep -Fxq "$RELAY"'
+check 'same-commit replica repair runs no migration' '[[ $OUT != *"task fixture migration ran"* ]]'
 RELAYS=$(relay_ids)
 
 echo '=== 17. a failed owner keeps its companions untouched'
@@ -673,7 +771,4 @@ check 'the interrupted migration is removed before fetching and the unrelated on
     [[ $(docker inspect --format "{{.State.Running}}" "$MANUAL_MIGRATION") == true ]]'
 docker rm -f "$MANUAL_MIGRATION" >/dev/null
 
-echo '=== cleanup'
-docker compose -p cadenway-test down -v --remove-orphans >/dev/null 2>&1 || true
-docker compose -p cadenway-edge -f /opt/cadenway/edge/compose/edge.yaml down -v >/dev/null 2>&1 || true
 exit $FAILED

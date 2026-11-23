@@ -139,9 +139,9 @@ and Linux cgroup enforcement on the host.
 
 For an existing daemon, activate an approved release that recreates historical application
 containers with the new limits. Confirm the effective limits on the running containers and on
-any retained rollback candidates before relying on the budget. Reapplying the same approval
-skips an already applied release, and local recovery can restart historical containers with
-their original limits.
+any retained rollback candidates before relying on the budget. Reconciliation of an already
+applied release retains healthy containers whose configuration matches the approved release.
+Local recovery can still restart historical containers with their original limits.
 
 The agent compiles included service definitions against its installed per-service policy before
 decryption. Only the public services can join the edge network. The policy expands the known route
@@ -229,6 +229,12 @@ reconciliation.
 
 An interruption while the archive loads, before cutover begins, leaves the active service in place.
 Check for an abandoned candidate database and temporary encrypted archive after such an interruption.
+
+Once Identity uses Organization's account-deletion reservations, suspend GitOps reconciliation
+during this maintenance window so it cannot restart paused workers. Pause Identity's deletion
+workers and drain in-flight attempts before restoring either database. Reconcile pending Identity
+attempt IDs with the restored Organization reservations and current ownership before resuming
+the workers and GitOps. Keep rollback images for both services that preserve this protocol.
 
 To recover Task with a fresh membership projection, run a Task-only restore:
 
