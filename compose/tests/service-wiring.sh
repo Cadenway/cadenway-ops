@@ -248,7 +248,7 @@ JS
 check 'trusted issuers, private keys, addresses, SMTP, S3, Meilisearch and WebAuthn' '[[ $OUT == wired ]]'
 
 echo '=== 4. explicit limited and one-shot modes'
-TASK_MEMBERSHIP_AUTHORITY_MODE=limited DOCUMENT_ACCESS_MODE=search-only DOCUMENT_TASK_SERVICE_URL= \
+TASK_MEMBERSHIP_AUTHORITY_MODE=limited DOCUMENT_ACCESS_MODE=search-only DOCUMENT_TASK_SERVICE_URL='' \
   STORAGE_UPLOAD_TRANSFER_MODE=local-one-shot \
   STORAGE_UPLOAD_TRANSFER_URL=http://upload.cadenway.localhost/internal/v1/upload-transfers \
   docker compose --env-file "$MOUNT/.env" -f compose.yaml -f compose.local.yaml --profile full \
