@@ -72,6 +72,26 @@ ensure_stream() {
   fi
 }
 
+# Whether every subject of an existing latch is still declared. Arguments: the latch's stream
+# information as JSON, the declared subjects separated by commas. Returns 0 when they all are, 1
+# when one is no longer declared, 2 when the information cannot be read.
+latch_keeps_subjects() {
+  current=$(printf '%s\n' "$1" | jq -er '.config.subjects[]') || return 2
+  for watched in $current; do
+    case ",$2," in *",$watched,"*) ;; *) return 1 ;; esac
+  done
+}
+
+# Creates the latch of ensure_latch ($latch, $subjects, $description) in its initializing
+# configuration (two messages), which no service trusts.
+add_latch() {
+  nats stream add "$latch" --defaults \
+    --subjects "$subjects" --description "$description" \
+    --storage file --retention limits --discard old --replicas 1 \
+    --max-age 0 --max-bytes=-1 --max-msgs=2 --max-msgs-per-subject=-1 \
+    --max-msg-size=-1 >/dev/null
+}
+
 # Creates or updates the advisory latch of a service: it keeps the last advisory the server
 # publishes when one of the listed durables gives a message up (after its last delivery or on a
 # terminate), with no age limit, until an operator purges it (docs/messaging.md#rebuild-advisories,
@@ -114,23 +134,34 @@ ensure_latch() {
   if info=$(nats stream info "$latch" --json 2>/dev/null); then
     max_msgs=$(printf '%s\n' "$info" | jq -r '.config.max_msgs')
     case $max_msgs in '' | *[!0-9-]*) return 1 ;; esac
+    kept=0
     if [ "$max_msgs" = 1 ]; then
+      latch_keeps_subjects "$info" "$subjects"
+      kept=$?
+    fi
+    [ "$kept" -le 1 ] || return 1
+    if [ "$max_msgs" = 1 ] && [ "$kept" = 0 ]; then
+      # Adding subjects in place keeps every advisory a service certified against.
       nats stream edit "$latch" --force \
         --subjects "$subjects" --description "$description" --discard old \
         --max-age 0 --max-bytes=-1 --max-msgs=1 --max-msgs-per-subject=-1 \
         --max-msg-size=-1 >/dev/null
       return
+    elif [ "$max_msgs" = 1 ]; then
+      # A live latch never loses a subject in place: an advisory raised while it was missing would
+      # leave the latch's creation time and sequence unchanged. Recreated, the latch has a new
+      # creation time, so the services that certified against it rebuild.
+      echo "nats-streams: $latch stops watching a durable; creating it again." >&2
+      nats stream rm "$latch" --force >/dev/null || return 1
+      add_latch || return 1
+    else
+      echo "nats-streams: $latch was left initializing; finishing it." >&2
     fi
-    echo "nats-streams: $latch was left initializing; finishing it." >&2
   else
     # Only a listing that succeeds and lacks the latch proves it missing.
     names=$(nats stream ls --names) || return 1
     printf '%s\n' "$names" | grep -Fxq "$latch" && return 1
-    nats stream add "$latch" --defaults \
-      --subjects "$subjects" --description "$description" \
-      --storage file --retention limits --discard old --replicas 1 \
-      --max-age 0 --max-bytes=-1 --max-msgs=2 --max-msgs-per-subject=-1 \
-      --max-msg-size=-1 >/dev/null || return 1
+    add_latch || return 1
   fi
   consumers=$(nats consumer ls EVENTS --names) || return 1
   if printf '%s\n' "$consumers" | grep -q "^${service}__"; then
