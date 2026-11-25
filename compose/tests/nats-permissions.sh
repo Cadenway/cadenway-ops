@@ -163,6 +163,28 @@ wait_healthy() {
   printf '%s\n' "$state"
 }
 
+# Checks every field @cadenway/nest-messaging checks before the gateway admits a socket
+# (isEmptyConsumerAdvisoryStream), and the subjects: a latch it does not recognize keeps every
+# socket out. Argument: what is checked, the start of the check titles.
+check_latch() {
+  OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.config | [.storage, .retention, .discard,
+    .max_msgs, .max_age, .max_bytes, .max_msg_size, .max_msgs_per_subject, (.sealed // false),
+    (.deny_delete // false), (.discard_new_per_subject // false), (.allow_msg_ttl // false),
+    (.allow_msg_schedules // false), (.allow_rollup_hdrs // false), (.mirror == null),
+    ((.sources // []) | length), (.subject_transform == null), (.republish == null)]
+    | map(tostring) | join(" ")')
+  check "$1 keeps one message, with no age or size limit, and nothing else" \
+    '[[ $OUT == "file limits old 1 0 -1 -1 -1 false false false false false false true 0 true true" ]]'
+  EXPECTED=$(for handler in $REALTIME_INVALIDATIONS; do
+    for kind in MAX_DELIVERIES MSG_TERMINATED; do
+      echo "\$JS.EVENT.ADVISORY.CONSUMER.$kind.EVENTS.realtime-gateway__$handler"
+    done
+  done | sort)
+  OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.config.subjects[]' | sort)
+  check "$1 captures the terminal advisories of the invalidation durables only" \
+    '[[ $OUT == "$EXPECTED" ]]'
+}
+
 check() { if eval "$2"; then echo "PASS $1"; else echo "FAIL $1"; echo "${OUT:-}" | tail -5; FAILED=1; fi; }
 FAILED=0
 OUT=''
@@ -221,6 +243,12 @@ done
 check 'each has its four subjects, granted to the service its name starts with' '[[ -z $OUT ]]'
 OUT=$(printf '%s\n' "${CREATES[@]}" | awk '$2 == "EVENTS_RESTRICTED" && $1 != "notification"')
 check 'only notification has a consumer on EVENTS_RESTRICTED (decision D7)' '[[ -z $OUT ]]'
+OUT=''
+for handler in $REALTIME_INVALIDATIONS; do
+  printf '%s\n' "${CREATES[@]}" | grep -q "^realtime-gateway EVENTS realtime-gateway__$handler " ||
+    OUT+=" $handler"
+done
+check 'each durable the realtime latch watches is a granted consumer of the gateway' '[[ -z $OUT ]]'
 OUT=$((${#CONSUMER_GRANTS[@]} - 4 * ${#CREATES[@]}))
 check 'and no user has any other consumer or acknowledgement subject' '[[ $OUT == 0 ]]'
 
@@ -236,23 +264,7 @@ check 'EVENTS_RESTRICTED on restricted.>, limits retention, one hour, 64 MiB' \
   '[[ $OUT == "restricted.> file limits 3600000000000 67108864" ]]'
 OUT=$(stream_field EVENTS_DLQ '[.config.subjects[0], .config.storage, .config.max_age] | join(" ")')
 check 'EVENTS_DLQ on dlq.>, thirty days' '[[ $OUT == "dlq.> file 2592000000000000" ]]'
-# Every field @cadenway/nest-messaging checks before the gateway admits a socket
-# (isEmptyConsumerAdvisoryStream): a latch it does not recognize keeps every socket out.
-OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.config | [.storage, .retention, .discard,
-  .max_msgs, .max_age, .max_bytes, .max_msg_size, .max_msgs_per_subject, (.sealed // false),
-  (.deny_delete // false), (.discard_new_per_subject // false), (.allow_msg_ttl // false),
-  (.allow_rollup_hdrs // false), (.mirror == null), ((.sources // []) | length),
-  (.subject_transform == null), (.republish == null)] | map(tostring) | join(" ")')
-check 'the realtime latch keeps one message, with no age or size limit, and nothing else' \
-  '[[ $OUT == "file limits old 1 0 -1 -1 -1 false false false false false true 0 true true" ]]'
-EXPECTED=$(for handler in $REALTIME_INVALIDATIONS; do
-  for kind in MAX_DELIVERIES MSG_TERMINATED; do
-    echo "\$JS.EVENT.ADVISORY.CONSUMER.$kind.EVENTS.realtime-gateway__$handler"
-  done
-done | sort)
-OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.config.subjects[]' | sort)
-check 'it captures the terminal advisories of the invalidation durables, and no other subject' \
-  '[[ $OUT == "$EXPECTED" ]]'
+check_latch 'the realtime latch, as created,'
 OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.state.messages')
 check 'and starts empty' '[[ $OUT == 0 ]]'
 OUT=$(as realtime-gateway request '$JS.API.STREAM.INFO.REALTIME_AUTHORIZATION_ADVISORIES' '')
@@ -414,6 +426,7 @@ check 'and the container is healthy' '[[ $OUT == "nats-streams healthy" ]]'
 compose restart nats-streams >/dev/null 2>&1
 OUT=$(wait_healthy)
 check 'a start with nothing to change is healthy too' '[[ $OUT == "nats-streams healthy" ]]'
+check_latch 'the realtime latch, edited at each start,'
 
 echo '=== 12. each granted consumer works for its owner, and for no other backend'
 # Each step uses the subject @cadenway/nest-messaging uses, sent as is, so a refusal names it. The
@@ -511,6 +524,21 @@ compose exec -T nats-streams nats stream purge REALTIME_AUTHORIZATION_ADVISORIES
   >/dev/null 2>&1
 OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.state.messages')
 check 'and an operator clears the latch from the nats-streams container' '[[ $OUT == 0 ]]'
+# Lost once the gateway has its consumers, the latch comes back closed, not empty.
+compose exec -T nats-streams nats stream rm REALTIME_AUTHORIZATION_ADVISORIES --force >/dev/null 2>&1
+# Within the check interval of nats-streams, a minute, as for the stream of section 10.
+for _ in $(seq 1 45); do
+  OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.state.messages')
+  [[ $OUT == 1 ]] && break
+  sleep 2
+done
+check 'a latch lost while the gateway consumes is created again closed, holding a marker' \
+  '[[ $OUT == 1 ]]'
+check_latch 'the latch created again'
+compose exec -T nats-streams nats stream purge REALTIME_AUTHORIZATION_ADVISORIES --force \
+  >/dev/null 2>&1
+OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.state.messages')
+check 'which an operator clears in the same way' '[[ $OUT == 0 ]]'
 OUT=$(as identity consumer info EVENTS "$held" --json)
 check 'the message is still held by identity' '[[ $OUT == *"\"num_ack_pending\": 1"* ]]'
 OUT=$(as identity pub "$ack" '+ACK')

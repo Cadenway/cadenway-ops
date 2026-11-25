@@ -168,6 +168,18 @@ environment, once the gateway release that has the relay runs there, add `<VARIA
 `secrets.sops.env` (edited with `sops`, like any setting specific to the environment); once the
 agent applies that commit, Compose recreates the gateway with it. Remove the line, or set `false`,
 to stop the relay: its durable stays on the broker until an operator removes it.
+
+`@cadenway/nest-messaging` creates a missing durable from the start of `EVENTS`, which keeps seven
+days: the first start of a relay in an environment sends the notices of the events still stored to
+the connected users, and a relay started again resumes from where it stopped. To start from new
+events only, create the durable with the `admin` user just before enabling the relay; the kit then
+uses it and aligns its acknowledgement wait and delivery limit:
+
+```bash
+docker compose exec nats-streams nats consumer add EVENTS realtime-gateway__<handler> \
+  --filter evt.<event> --pull --ack explicit --deliver new --defaults
+```
+
 `REALTIME_PAGED_RECIPIENTS_ENABLED` is a rollout switch of the gateway, not a relay: it is enabled
 only once every replica answers the paged recipient protocol, and keeps its default here.
 

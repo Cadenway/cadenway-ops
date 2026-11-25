@@ -274,18 +274,46 @@ Each replica of the gateway reads the stream information, its user's only right 
 about every second. It admits a socket, and answers ready, only while the stream exists with exactly
 that configuration and holds no message (`isEmptyConsumerAdvisoryStream` of
 `@cadenway/nest-messaging` checks every field). An advisory therefore takes every replica out of
-service until an operator, having reconciled what the lost event changed (the sessions,
-memberships or visibility it concerned), clears the latch:
+service until an operator clears the latch. The GitOps agent fails a gateway rollout meanwhile,
+since the new container never turns healthy: after clearing, apply any gateway change merged in
+the meantime with a new commit.
 
-```bash
-docker compose exec nats-streams nats stream view REALTIME_AUTHORIZATION_ADVISORIES
-docker compose exec nats-streams nats stream purge REALTIME_AUTHORIZATION_ADVISORIES --force
-```
+The latch is a flag, not a record: it keeps only the last advisory. The given-up messages
+themselves are the dead letters the [dead-letter worker](#dead-letters) copied from `EVENTS`, kept
+30 days. To clear it:
 
-`compose/nats/ensure-streams.sh` creates it, keeps its configuration and lists the invalidation
-consumers, the `relayInvalidationHandlers` of the gateway: a handler added, renamed or removed there
-changes that list and the grant in the same pull request, deployed before the release. No backend
-may purge or delete the stream.
+1. Note the last sequence of the latch: `nats stream info REALTIME_AUTHORIZATION_ADVISORIES`
+   (`Last Sequence`), and read its advisory with `nats stream view`.
+2. List every dead letter of the invalidation consumers, not only the latched one, with
+   `nats stream view EVENTS_DLQ --subject 'dlq.realtime-gateway__<handler>.>'` for each of them
+   (a wildcard covers whole tokens only), and reconcile what each changed: the sessions,
+   memberships or visibility it concerned, closing the affected sockets by restarting the gateway
+   if needed.
+3. Purge up to that sequence only, so that an advisory recorded during the reconciliation stays
+   latched: `nats stream purge REALTIME_AUTHORIZATION_ADVISORIES --seq <last sequence + 1> --force`.
+
+Run the commands in the `nats-streams` container (`docker compose exec nats-streams nats ...`),
+as the `admin` user. No backend may purge or delete the stream.
+
+`compose/nats/ensure-streams.sh` creates the stream empty while `EVENTS` has no consumer of the
+gateway, its first provisioning. A latch lost afterwards (removed by hand, or not recovered by the
+broker) may have held an advisory, and those published while it was missing are lost: the script
+creates it again closed, holding a marker (`io.cadenway.realtime.latch-recreated`), which an
+operator clears in the same way. The dead-letter worker of notification-service sees that marker
+on the advisory subject and logs it as an unreadable advisory. A broker that lost `EVENTS` and its
+consumers too starts the latch empty, like a new environment.
+
+### Changing the invalidation consumers
+
+The script lists the thirteen invalidation consumers, the `relayInvalidationHandlers` of the
+gateway, and the check of the kit requires the latch subjects to be exactly theirs: a running
+release whose list differs refuses every socket. A change to that list is therefore a cutover, not
+an addition. Grant any new consumer first, keeping the old list. The latch list is one declaration
+for every environment, while the gateway release reaches staging and then production separately:
+whenever the new list is merged, the environments whose gateway runs the other list refuse
+sockets until the release reaches them. Merge it when the release is about to be deployed and
+promote it promptly. Accepting a superset of subjects in `@cadenway/nest-messaging` would remove
+that window. A removed handler keeps its grant until no running release uses it.
 
 ## Rebuilds
 
@@ -327,4 +355,7 @@ project and proves the above against it; CI runs it on every pull request. For t
 checks that the configuration grants exactly the consumers of its list, each with its four
 subjects and nothing more; that each one works for its owner, on the subjects the kit uses; that
 another backend is refused its create, read, pull, acknowledgement and deletion; and that a name or
-a filter nobody was given is refused to the backend it would belong to.
+a filter nobody was given is refused to the backend it would belong to. For the realtime latch, it
+checks every setting the kit requires, at creation and after each restart, its subjects against
+granted consumers, that only the gateway reads it and no backend clears it, that a terminated
+invalidation is latched and cleared by an operator, and that a lost latch comes back closed.

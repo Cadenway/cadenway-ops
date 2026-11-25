@@ -71,22 +71,40 @@ realtime_advisory_subjects() {
 # no age limit, until an operator purges it (docs/messaging.md#realtime-authorization-advisories).
 # @cadenway/nest-messaging requires exactly this configuration (file storage, limits retention, old
 # messages discarded, one message, no other limit) and an empty stream before the gateway admits a
-# socket. Returns the status of the `nats` command.
+# socket; an edit sets every one of those settings that can change again.
+#
+# The latch starts empty only on first provisioning, while EVENTS has no consumer of the gateway. A
+# latch lost once the gateway consumes (a stream removed, or not recovered by the broker) may have
+# held an advisory, and advisories published while it was missing are lost: it is created again
+# closed, holding a marker an operator purges after reconciling. When the marker cannot be stored,
+# the stream is removed again so that the next pass retries the whole step instead of leaving an
+# empty latch. Returns non-zero when a step fails.
 ensure_realtime_latch() {
   subjects=$(realtime_advisory_subjects)
   description='Last authorization invalidation realtime-gateway gave up on; purged by an operator.'
   if nats stream info REALTIME_AUTHORIZATION_ADVISORIES >/dev/null 2>&1; then
     nats stream edit REALTIME_AUTHORIZATION_ADVISORIES --force \
-      --subjects "$subjects" --description "$description" \
+      --subjects "$subjects" --description "$description" --discard old \
       --max-age 0 --max-bytes=-1 --max-msgs=1 --max-msgs-per-subject=-1 \
       --max-msg-size=-1 >/dev/null
-  else
-    nats stream add REALTIME_AUTHORIZATION_ADVISORIES --defaults \
-      --subjects "$subjects" --description "$description" \
-      --storage file --retention limits --discard old --replicas 1 \
-      --max-age 0 --max-bytes=-1 --max-msgs=1 --max-msgs-per-subject=-1 \
-      --max-msg-size=-1 >/dev/null
+    return
   fi
+  consumers=$(nats consumer ls EVENTS --names) || return 1
+  nats stream add REALTIME_AUTHORIZATION_ADVISORIES --defaults \
+    --subjects "$subjects" --description "$description" \
+    --storage file --retention limits --discard old --replicas 1 \
+    --max-age 0 --max-bytes=-1 --max-msgs=1 --max-msgs-per-subject=-1 \
+    --max-msg-size=-1 >/dev/null || return 1
+  printf '%s\n' "$consumers" | grep -q '^realtime-gateway__' || return 0
+  marker="\$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.EVENTS.realtime-gateway__${REALTIME_INVALIDATION_DURABLES%% *}"
+  if nats request "$marker" \
+    '{"type":"io.cadenway.realtime.latch-recreated","reason":"The latch was lost while the realtime gateway consumed; reconcile, then purge."}' 2>&1 |
+    grep -Fq '"stream":"REALTIME_AUTHORIZATION_ADVISORIES"'; then
+    echo 'nats-streams: REALTIME_AUTHORIZATION_ADVISORIES was lost and is created again closed.' >&2
+    return 0
+  fi
+  nats stream rm REALTIME_AUTHORIZATION_ADVISORIES --force >/dev/null 2>&1
+  return 1
 }
 
 # One pass over the declarations. The two-minute duplicate window is the one the publishers rely
