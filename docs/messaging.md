@@ -218,23 +218,36 @@ These exact subjects keep the shared `intake` prefix from granting either servic
 
 ### Rebuild advisories
 
-`SEARCH_REBUILD_ADVISORIES` captures terminal advisories for the 29 Search source consumers;
-search-service reads its stream information to certify index rebuild progress.
-`BILLING_REBUILD_ADVISORIES` captures terminal advisories for the six Billing usage observation
-consumers; billing-service reads its information to certify rebuild progress and usage reads. A
-held advisory makes the Search rebuild or Billing usage read refuse until an operator clears it.
-Each latch keeps only the last advisory, so reconcile every affected dead letter before clearing it.
+`SEARCH_REBUILD_ADVISORIES` captures the terminal advisories of the 29 Search source consumers, and
+`BILLING_REBUILD_ADVISORIES` those of the six Billing usage observation consumers. Each service
+reads the stream information of its own latch only. Each latch keeps only the last advisory.
 
-Follow the [realtime clearing procedure](#realtime-authorization-advisories), substituting the
-appropriate latch and inspecting `dlq.search-service__<handler>.>` or
-`dlq.billing-service__<handler>.>` for each watched handler. First provisioning when the service
-already consumes creates its latch closed: reconcile and clear the marker in the same way. A latch
-is added allowing two messages, a configuration no service trusts, and takes its single-message
-configuration only once the marker it needs is stored, so a pass interrupted in between never leaves
-an empty latch the services would trust; the next pass finishes it. As for the realtime latch, the
-dead-letter worker of notification-service logs a marker as an unreadable advisory. Changes to
-either durable list require the same [coordinated cutover](#changing-the-invalidation-consumers) as
-the realtime list.
+- **Billing** reads usage only while its latch is empty. A held advisory makes it invalidate the
+  active usage of each organization it advances (`AdvanceUsageRebuild`), so measured usage is
+  unavailable until the latch is cleared and a new usage generation, rebuilt from the
+  organization and storage pages, is promoted. Clearing the latch is safe once that invalidation
+  has happened: the rebuild, not the dead letters, restores the usage.
+- **Search** promotes a new index generation only while its latch is empty; a held advisory blocks
+  the promotion, while an active index keeps serving. Clearing the latch does not repair a change
+  the active index missed: that needs a rebuild of the index from its owners, which search-service
+  starts on its own only when the index or the broker identity changes, and offers no operator
+  command for yet.
+
+The dead letters are not a complete history of what was given up: the dead-letter worker copies
+only the advisories it received while it ran, and `EVENTS_DLQ` keeps 30 days and 256 MiB. Use them
+to find the affected resources, never to prove that nothing else was lost. A latch created closed
+(first provisioning while the service already consumes, or a lost latch) has no history at all.
+Clear a latch with the [realtime procedure](#realtime-authorization-advisories), reading
+`dlq.search-service__<handler>.>` or `dlq.billing-service__<handler>.>` for each watched handler.
+For Search, clear it only when the active index is known to be complete, or when a rebuild of it
+from its owners follows.
+
+A latch is added allowing two messages, a configuration no service trusts, and takes its
+single-message configuration only once the marker it needs is stored, so a pass interrupted in
+between never leaves an empty latch the services would trust; the next pass finishes it. As for
+the realtime latch, the dead-letter worker of notification-service logs a marker as an unreadable
+advisory. Changes to either durable list require the same
+[coordinated cutover](#changing-the-invalidation-consumers) as the realtime list.
 
 The realtime gateway starts its five Git consumers and its two personal notice consumers only when
 its [relay switches](service-environment.md#realtime-relays) are on; the grant is there in every
@@ -383,7 +396,9 @@ themselves are the dead letters the [dead-letter worker](#dead-letters) copied f
    `nats stream view EVENTS_DLQ --subject 'dlq.realtime-gateway__<handler>.>'` for each of them
    (a wildcard covers whole tokens only), and reconcile what each changed: the sessions,
    memberships or visibility it concerned, closing the affected sockets by restarting the gateway
-   if needed.
+   if needed. The dead letters are not a complete history (see
+   [rebuild advisories](#rebuild-advisories)): when the latch holds a marker, or the worker may
+   have missed advisories, restart the gateway so that every socket is authorized again.
 3. Purge up to that sequence only, so that an advisory recorded during the reconciliation stays
    latched: `nats stream purge REALTIME_AUTHORIZATION_ADVISORIES --seq <last sequence + 1> --force`.
 
