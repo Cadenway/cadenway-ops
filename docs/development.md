@@ -36,11 +36,12 @@ After pulling updates to this repository and the service checkouts, refresh the 
 existing PostgreSQL volume, then apply each database service's migrations. From `compose/`:
 
 ```bash
+set -e
 docker compose run --rm internal-token-keys
-docker compose up -d postgres
+docker compose up -d --wait postgres
 docker compose exec postgres sh /docker-entrypoint-initdb.d/10-service-databases.sh
 for service in identity organization billing task document storage notification automation integration search; do
-  docker compose --profile full run --rm --no-deps "${service}-service" node dist/migrate.js
+  docker compose --profile full run --rm --no-deps "${service}-service" node dist/migrate.js     || { echo "migration failed: ${service}-service" >&2; exit 1; }
 done
 ```
 

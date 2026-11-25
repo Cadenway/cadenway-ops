@@ -136,9 +136,9 @@ services:
           memory: 256M
 
   internal-token-keys:
-    # Not part of the stack: run after `cp .env.example .env` and after pulling updates. It appends to
-    # compose/.env the Ed25519 key pair of each backend that signs the internal token, so that no
-    # private key is ever committed, along with cursor and receipt secrets. A second
+    # Not part of the stack: run after `cp .env.example .env` and after pulling updates. It
+    # appends to compose/.env the Ed25519 key pair of each backend that signs the internal token,
+    # so that no private key is ever committed, along with cursor and receipt secrets. A second
     # run changes nothing. `docker compose run --rm internal-token-keys --print` prints fresh pairs
     # instead, for the secrets of an environment. No network, no health check: it exits at once.
     profiles: [setup]
