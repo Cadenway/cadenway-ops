@@ -98,7 +98,7 @@ const { services } = JSON.parse(readFileSync('/work/config.json', 'utf8'));
 const gateway = ['api-gateway'];
 const trusted = {
   'identity-service': ['api-gateway', 'realtime-gateway'],
-  'organization-service': gateway,
+  'organization-service': ['api-gateway', 'realtime-gateway'],
   'billing-service': gateway,
   'task-service': ['api-gateway', 'realtime-gateway', 'automation-service', 'integration-service'],
   'document-service': gateway,
@@ -110,7 +110,7 @@ const trusted = {
 };
 const called = {
   'api-gateway': Object.keys(trusted),
-  'realtime-gateway': ['identity-service', 'task-service'],
+  'realtime-gateway': ['identity-service', 'organization-service', 'task-service'],
   'automation-service': ['task-service', 'notification-service'],
   'integration-service': ['task-service'],
 };
