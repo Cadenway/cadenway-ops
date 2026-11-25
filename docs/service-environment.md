@@ -40,8 +40,8 @@ checked by the called service against the keys of the issuers it trusts.
 | `integration-service`  | task-service                                         | `INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                  |
 
 - `<NAME>_INTERNAL_TOKEN_PRIVATE_JWK` is one line of JSON, a secret, read by that issuer only, as
-  `INTERNAL_TOKEN_PRIVATE_JWK` for gateways, automation and integration; identity and organization
-  read their own `<NAME>_INTERNAL_TOKEN_PRIVATE_JWK` variable.
+  `INTERNAL_TOKEN_PRIVATE_JWK` for gateways, automation, integration, document, search, notification and billing; identity,
+  organization and task read their own `<NAME>_INTERNAL_TOKEN_PRIVATE_JWK` variable.
 - `<NAME>_INTERNAL_TOKEN_PUBLIC_JWKS` is the public key as one line of JSON; several keys separated
   by commas during a rotation. A called service builds `INTERNAL_TOKEN_TRUSTED_ISSUERS` from the
   public keys of the issuers it trusts, in its own definition or from separate public-key variables.
@@ -66,8 +66,11 @@ No private key is committed, not even a development one. Once, after `cp .env.ex
 docker compose run --rm internal-token-keys
 ```
 
-The container runs `compose/internal-token/generate-keys.mjs`, which appends the six key pairs to
-`compose/.env` (never committed). Compose then reads them like any other variable, exactly as it
+The container runs `compose/internal-token/generate-keys.mjs`, which appends the eleven key pairs to
+`compose/.env` (never committed), plus independent cursor secrets and the Storage upload receipt
+keyring. Search projection and palette cursors use canonical unpadded base64url 32-byte keys;
+Automation uses a 32-byte hexadecimal key. The receipt keyring is JSON with `activeKeyId` and a
+`keys` array containing an `id` and a base64url 32-byte `key`. Compose then reads them like any other variable, exactly as it
 reads the secrets on a host. A later run only appends the pairs that are missing and keeps the
 others, so run it again after an update adds an issuer (the identity-service and
 organization-service pairs, for a workstation set up before them); to replace a pair, delete its
@@ -79,11 +82,11 @@ refuse to start, naming `INTERNAL_TOKEN_PRIVATE_JWK` or `INTERNAL_TOKEN_TRUSTED_
 An operator generates them and puts them in the secrets, each environment with its own:
 
 ```bash
-docker compose run --rm internal-token-keys --print   # twelve lines, on the terminal only
+docker compose run --rm internal-token-keys --print   # twenty-two lines, on the terminal only
 sops edit environments/staging/secrets.sops.env       # paste them
 ```
 
-For a new environment, paste the twelve lines. For an existing one, paste only the lines of the
+For a new environment, paste the twenty-two lines. For an existing one, paste only the lines of the
 issuers it lacks and keep every existing pair: replacing a pair outside the rotation procedure below
 breaks internal authentication while services run with different keys.
 
@@ -98,6 +101,14 @@ realtime-gateway.
 
 To rotate the key of an issuer: add the new public key to its `…_PUBLIC_JWKS` after a comma and
 merge; replace its `…_PRIVATE_JWK` and merge; then remove the old public key.
+
+The local overrides also configure Task to call Organization, Document to call Task, Search to
+call Task, Organization, Document and Storage, Notification to call Identity, Organization and
+Task, and Billing to call Organization and Storage. Their recipients receive the corresponding
+issuer public keys through their service-specific public-key inputs. Projection cursor secrets are
+independent per service. The local feature switches use the service defaults unless explicitly
+overridden; the existing local trash and realtime relay defaults remain enabled. Storage uses
+`presigned-post` and its generated upload receipt keyring with Garage.
 
 ## What each definition declares
 
@@ -123,6 +134,9 @@ working, but its running container then holds the credentials that own its schem
 removes the line from its `deploy/compose.yaml`.
 
 ### Per backend
+
+The table describes the released definitions; the local additions used with current service sources
+are listed above.
 
 | Backend              | Trusts                                                                         | Also declares                                                                                                                                                                                                                                                                                                                                                                          |
 | -------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

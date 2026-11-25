@@ -74,7 +74,7 @@ services:
       # changes, not when a file it mounts does: changing this value with the file is what makes
       # every environment restart the broker with the new permissions (tests/nats-permissions.sh
       # checks that the two match).
-      NATS_SERVER_CONF_SHA256: 72412ab2619ababe2c6d391cfe2e42b7d377dd69cbf1ce5808084857ef66ae14
+      NATS_SERVER_CONF_SHA256: defa88ee46c197eb29a1311e710a85ddefa6d3da0122868d9d3ece23e76c159a
       # Read by nats/nats-server.conf: one user per backend, and the user that owns the streams.
       NATS_ADMIN_PASSWORD: ${NATS_ADMIN_PASSWORD}
       IDENTITY_NATS_PASSWORD: ${IDENTITY_NATS_PASSWORD}

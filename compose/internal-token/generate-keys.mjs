@@ -3,7 +3,7 @@
 // A backend that calls another one signs a short-lived token with its private key; the called
 // service checks it with the public key of that issuer (@cadenway/nest-common, "Internal token").
 // No key is committed: a workstation generates its own, an operator generates those of staging and
-// production.
+// production. The file mode also appends missing workstation cursor and upload receipt secrets.
 //
 //   node generate-keys.mjs <env file>   appends the missing pairs to the file (compose/.env),
 //                                       single-quoted so Compose takes the JSON literally;
@@ -28,7 +28,46 @@ const ISSUERS = [
   'ORGANIZATION_SERVICE',
   'AUTOMATION_SERVICE',
   'INTEGRATION_SERVICE',
+  'TASK_SERVICE',
+  'DOCUMENT_SERVICE',
+  'SEARCH_SERVICE',
+  'NOTIFICATION_SERVICE',
+  'BILLING_SERVICE',
 ];
+
+// Independent workstation keys; these remain stable across subsequent runs.
+const CURSOR_SECRETS = [
+  'ORGANIZATION_SEARCH_PROJECTION_CURSOR_SECRET',
+  'ORGANIZATION_BILLING_AUTHORITY_CURSOR_SECRET',
+  'TASK_SEARCH_PROJECTION_CURSOR_SECRET',
+  'DOCUMENT_SEARCH_PROJECTION_CURSOR_SECRET',
+  'STORAGE_SEARCH_PROJECTION_CURSOR_SECRET',
+  'STORAGE_BILLING_PROJECTION_CURSOR_SECRET',
+  'SEARCH_SERVICE_PALETTE_CURSOR_SECRET',
+];
+const LOCAL_SECRETS = [
+  ...CURSOR_SECRETS,
+  'AUTOMATION_CURSOR_SIGNING_KEY',
+  'STORAGE_UPLOAD_RECEIPT_KEYS',
+];
+
+function renderSecrets(names) {
+  return names
+    .map((name) => {
+      const bytes = randomBytes(32);
+      const value =
+        name === 'AUTOMATION_CURSOR_SIGNING_KEY'
+          ? bytes.toString('hex')
+          : name === 'STORAGE_UPLOAD_RECEIPT_KEYS'
+            ? JSON.stringify({
+                activeKeyId: 'local',
+                keys: [{ id: 'local', key: bytes.toString('base64url') }],
+              })
+            : bytes.toString('base64url');
+      return `${name}='${value}'\n`;
+    })
+    .join('');
+}
 
 /**
  * Creates one key pair as two JSON Web Keys that share a key id.
@@ -81,15 +120,21 @@ if (target === '--print') {
   const missing = ISSUERS.filter(
     (issuer) => !new RegExp(`^${issuer}_INTERNAL_TOKEN_PRIVATE_JWK=.`, 'm').test(current),
   );
-  if (missing.length === 0) {
-    console.log('internal-token-keys: every issuer already has its key pair; nothing written.');
+  const missingSecrets = LOCAL_SECRETS.filter(
+    (name) => !new RegExp(`^${name}=.`, 'm').test(current),
+  );
+  if (missing.length === 0 && missingSecrets.length === 0) {
+    console.log('internal-token-keys: all local keys and secrets already exist; nothing written.');
   } else {
     const separator = current === '' || current.endsWith('\n') ? '' : '\n';
     appendFileSync(
       target,
-      `${separator}\n# Internal token key pairs of this workstation (internal-token/generate-keys.mjs).\n` +
-        render(missing, "'"),
+      `${separator}\n# Local keys and secrets (internal-token/generate-keys.mjs).\n` +
+        render(missing, "'") +
+        renderSecrets(missingSecrets),
     );
-    console.log(`internal-token-keys: wrote the key pairs of ${missing.join(', ')}.`);
+    console.log(
+      `internal-token-keys: wrote the key pairs of ${missing.join(', ')} and ${missingSecrets.length} local secrets.`,
+    );
   }
 }

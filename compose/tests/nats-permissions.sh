@@ -9,6 +9,7 @@
 # names and filters nobody was given.
 #
 #   bash compose/tests/nats-permissions.sh
+#   bash compose/tests/nats-permissions.sh --inventory-only  # static grants and hashes, no Docker
 #
 # It creates and removes the Compose project cadenway-test-nats with its own volumes: it never
 # touches the local stack, and must never run on a Cadenway host.
@@ -28,6 +29,69 @@ readonly REFUSED='Permissions Violation'
 # use the consumer (section 12 then tries one of them as every other backend). Section 2 fails when
 # this list and the configuration differ, so a grant always comes with its test.
 readonly CONSUMERS='
+organization EVENTS organization-service__project-seat-entitlement evt.subscription.changed.v1 billing identity
+billing EVENTS billing-service__register-organization evt.organization.created.v1 organization identity
+billing EVENTS billing-service__record-member-joined evt.member.joined.v1 organization identity
+billing EVENTS billing-service__record-member-role-changed evt.member.role-changed.v1 organization identity
+billing EVENTS billing-service__record-member-removed evt.member.removed.v1 organization identity
+billing EVENTS billing-service__record-file-uploaded evt.file.uploaded.v1 storage identity
+billing EVENTS billing-service__record-file-deleted evt.file.deleted.v1 storage identity
+task EVENTS task-service__verify-intake-attachment evt.intake.attachment-verified.v1 storage identity
+task EVENTS task-service__decide-notification-delivery-authorization evt.notification.delivery-authorization-requested.v1 notification identity
+storage EVENTS storage-service__record-task-purge evt.task.purged.v1 task identity
+storage EVENTS storage-service__apply-storage-byte-entitlement evt.subscription.changed.v1 billing identity
+storage EVENTS storage-service__claim-intake-attachment evt.intake.attachment-claimed.v1 task identity
+storage EVENTS storage-service__release-intake-attachment evt.intake.attachment-released.v1 task identity
+storage EVENTS storage-service__apply-avatar-change evt.user.avatar-changed.v1 identity organization
+storage EVENTS storage-service__abandon-avatar-upload evt.user.avatar-upload-abandoned.v1 identity organization
+storage EVENTS storage-service__delete-avatar-owner evt.user.deleted.v1 identity organization
+storage EVENTS storage-service__apply-organization-logo-change evt.organization.logo-changed.v1 organization identity
+storage EVENTS storage-service__abandon-organization-logo-upload evt.organization.logo-upload-abandoned.v1 organization identity
+notification EVENTS notification-service__activity-task-delivery-authorized evt.task.notification-delivery-authorized.v1 task identity
+notification EVENTS notification-service__inbox-task-delivery-authorized evt.task.notification-delivery-authorized.v1 task identity
+notification EVENTS notification-service__inbox-task-assigned evt.task.assigned.v1 task identity
+notification EVENTS notification-service__inbox-task-status-changed evt.task.status-changed.v1 task identity
+notification EVENTS notification-service__inbox-comment-created evt.comment.created.v1 task identity
+notification EVENTS notification-service__inbox-comment-updated evt.comment.updated.v1 task identity
+notification EVENTS notification-service__inbox-description-mentions-changed evt.task.description-mentions-changed.v1 task identity
+notification EVENTS notification-service__inbox-approval-requested evt.approval.requested.v1 task identity
+notification EVENTS notification-service__inbox-approval-decided evt.approval.decided.v1 task identity
+notification EVENTS notification-service__inbox-task-access-requested evt.task.access-requested.v1 task identity
+notification EVENTS notification-service__inbox-task-access-approved evt.task.access-request-decided.v1 task identity
+notification EVENTS notification-service__notify-quota-threshold evt.quota.threshold-reached.v1 billing identity
+notification EVENTS notification-service__reminder-task-delivery-authorized evt.task.notification-delivery-authorized.v1 task identity
+automation EVENTS automation-service__run-task-created-rules evt.task.created.v1 task identity
+automation EVENTS automation-service__run-task-status-changed-rules evt.task.status-changed.v1 task identity
+integration EVENTS integration-service__purge-task-git-links evt.task.purged.v1 task identity
+search EVENTS search-service__index-task-created-v1 evt.task.created.v1 task identity
+search EVENTS search-service__index-task-updated-v1 evt.task.updated.v1 task identity
+search EVENTS search-service__index-task-archived-v1 evt.task.archived.v1 task identity
+search EVENTS search-service__index-task-unarchived-v1 evt.task.unarchived.v1 task identity
+search EVENTS search-service__index-task-trashed-v1 evt.task.trashed.v1 task identity
+search EVENTS search-service__index-task-restored-v1 evt.task.restored.v1 task identity
+search EVENTS search-service__index-task-purged-v1 evt.task.purged.v1 task identity
+search EVENTS search-service__index-task-watcher-changed-v1 evt.task.watcher-changed.v1 task identity
+search EVENTS search-service__index-comment-created-v1 evt.comment.created.v1 task identity
+search EVENTS search-service__index-comment-updated-v1 evt.comment.updated.v1 task identity
+search EVENTS search-service__index-comment-deleted-v1 evt.comment.deleted.v1 task identity
+search EVENTS search-service__index-list-created-v1 evt.list.created.v1 task identity
+search EVENTS search-service__index-list-updated-v1 evt.list.updated.v1 task identity
+search EVENTS search-service__index-list-archived-v1 evt.list.archived.v1 task identity
+search EVENTS search-service__index-list-unarchived-v1 evt.list.unarchived.v1 task identity
+search EVENTS search-service__index-list-deleted-v1 evt.list.deleted.v1 task identity
+search EVENTS search-service__index-list-restored-v1 evt.list.restored.v1 task identity
+search EVENTS search-service__index-list-access-changed-v1 evt.list.access-changed.v1 task identity
+search EVENTS search-service__index-space-created-v1 evt.space.created.v1 task identity
+search EVENTS search-service__index-space-updated-v1 evt.space.updated.v1 task identity
+search EVENTS search-service__index-space-deleted-v1 evt.space.deleted.v1 task identity
+search EVENTS search-service__index-space-restored-v1 evt.space.restored.v1 task identity
+search EVENTS search-service__index-space-access-changed-v1 evt.space.access-changed.v1 task identity
+search EVENTS search-service__index-space-access-republished-v1 evt.space.access-republished.v1 task identity
+search EVENTS search-service__index-doc-created-v1 evt.doc.created.v1 document identity
+search EVENTS search-service__index-doc-updated-v1 evt.doc.updated.v1 document identity
+search EVENTS search-service__index-doc-deleted-v1 evt.doc.deleted.v1 document identity
+search EVENTS search-service__index-file-uploaded-v1 evt.file.uploaded.v1 storage identity
+search EVENTS search-service__index-file-deleted-v1 evt.file.deleted.v1 storage identity
 identity EVENTS identity-service__project-member-joined evt.member.joined.v1 organization organization
 identity EVENTS identity-service__project-member-role-changed evt.member.role-changed.v1 organization notification
 identity EVENTS identity-service__project-member-removed evt.member.removed.v1 organization task
@@ -91,8 +155,6 @@ readonly DEAD_LETTER_ADVISORY='^subscribe \$JS\.EVENT\.ADVISORY\.CONSUMER\.(MAX_
 
 compose() { docker compose -p "$PROJECT" --env-file .env.example -f infra.yaml "$@"; }
 cleanup() { compose down --volumes --remove-orphans >/dev/null 2>&1 || true; }
-trap cleanup EXIT
-cleanup
 
 # Runs the `nats` command line as a backend, with its own inbox prefix as a backend connects.
 # Arguments: user (its local password is its name without hyphens, as compose/.env.example sets
@@ -252,6 +314,15 @@ check 'each durable the realtime latch watches is a granted consumer of the gate
 OUT=$((${#CONSUMER_GRANTS[@]} - 4 * ${#CREATES[@]}))
 check 'and no user has any other consumer or acknowledgement subject' '[[ $OUT == 0 ]]'
 
+if [[ ${1:-} == --inventory-only ]]; then
+  exit "$FAILED"
+fi
+if [[ $# -ne 0 ]]; then
+  echo 'usage: nats-permissions.sh [--inventory-only]' >&2
+  exit 2
+fi
+trap cleanup EXIT
+cleanup
 compose up -d --wait nats nats-streams >/dev/null 2>&1
 
 echo '=== 3. the streams exist, as declared'
