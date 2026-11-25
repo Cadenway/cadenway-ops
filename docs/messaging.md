@@ -226,8 +226,8 @@ These exact subjects keep the shared `intake` prefix from granting either servic
 `BILLING_REBUILD_ADVISORIES` those of the six Billing usage observation consumers. Each service
 reads the stream information of its own latch only. Each latch keeps only the last advisory.
 
-From search-service 0.4.0 and billing-service 0.4.0, both services read their latch with `consumerAdvisoryStreamState` of `@cadenway/nest-messaging`
-(0.9 or later), which reports the latch's creation time and last sequence with its state. The last
+From search-service 0.4.0 and billing-service 0.4.0, both services read their latch with
+`consumerAdvisoryStreamState` of `@cadenway/nest-messaging` (0.9 or later), which reports the latch's creation time and last sequence with its state. The last
 sequence survives a purge and grows with each advisory, and the creation time changes when the
 latch is recreated. Each rebuild is fenced by two clear and identical observations, one when it
 starts and one when it is promoted, and the promoted generation keeps them. Whenever the latch
@@ -256,8 +256,8 @@ to find the affected resources, never to prove that nothing else was lost. A lat
 To clear `SEARCH_REBUILD_ADVISORIES` or `BILLING_REBUILD_ADVISORIES` (`<latch>` below), run the
 commands in the `nats-streams` container, as the `admin` user:
 
-1. Note the last sequence of the latch, `nats stream info <latch>` (`Last Sequence`), and read its
-   advisory with `nats stream view <latch>`.
+1. Note the last sequence and the creation time of the latch, `nats stream info <latch>`
+   (`Last Sequence`, `Created`), and read its advisory with `nats stream view <latch>`.
 2. List the dead letters of its service to find the affected resources, for each watched handler:
    `nats stream view EVENTS_DLQ --subject 'dlq.search-service__<handler>.>'` (Search) or
    `nats stream view EVENTS_DLQ --subject 'dlq.billing-service__<handler>.>'` (Billing).
@@ -273,8 +273,11 @@ commands in the `nats-streams` container, as the `admin` user:
      index has ever been promoted (a first provisioning), or when the active index and any build
      in progress are known to be complete; otherwise leave the latch held, since a purge would let
      a build begun before the advisory be promoted.
-4. Purge up to that sequence only, so that an advisory recorded meanwhile stays latched:
-   `nats stream purge <latch> --seq <last sequence + 1> --force`.
+4. Read `nats stream info <latch>` again: if its creation time changed, the latch was created
+   again meanwhile (a start of `nats-streams` after a durable was removed, or a lost latch) and
+   its sequences start over, so go back to step 1. Otherwise purge up to that sequence only, so
+   that an advisory recorded meanwhile stays latched, right after that read and outside a rollout
+   of `nats-streams`: `nats stream purge <latch> --seq <last sequence + 1> --force`.
 
 These steps never touch `REALTIME_AUTHORIZATION_ADVISORIES`, which has its own
 [procedure](#realtime-authorization-advisories) and reconciliation.
