@@ -20,8 +20,15 @@
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 
-// The backends that sign: the two gateways, and the two services allowed to act on another one.
-const ISSUERS = ['API_GATEWAY', 'REALTIME_GATEWAY', 'AUTOMATION_SERVICE', 'INTEGRATION_SERVICE'];
+// Backends that sign calls to other services.
+const ISSUERS = [
+  'API_GATEWAY',
+  'REALTIME_GATEWAY',
+  'IDENTITY_SERVICE',
+  'ORGANIZATION_SERVICE',
+  'AUTOMATION_SERVICE',
+  'INTEGRATION_SERVICE',
+];
 
 /**
  * Creates one key pair as two JSON Web Keys that share a key id.

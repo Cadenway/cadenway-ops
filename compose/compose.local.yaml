@@ -218,10 +218,13 @@ services:
       WEBAUTHN_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}
       NATS_USER: identity
       NATS_PASSWORD: ${IDENTITY_NATS_PASSWORD}
+      ORGANIZATION_SERVICE_URL: ${ORGANIZATION_SERVICE_URL}
+      IDENTITY_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK: ${IDENTITY_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}
       INTERNAL_TOKEN_AUDIENCE: identity-service
       INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
         {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
-        "realtime-gateway": [${REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+        "realtime-gateway": [${REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
+        "organization-service": [${ORGANIZATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS}]}
     build:
       context: ../../cadenway-identity-service
       secrets: [npmrc]
@@ -237,10 +240,13 @@ services:
       MIGRATION_DATABASE_URL: ${ORGANIZATION_SERVICE_MIGRATION_DATABASE_URL}
       NATS_USER: organization
       NATS_PASSWORD: ${ORGANIZATION_NATS_PASSWORD}
+      IDENTITY_SERVICE_URL: ${IDENTITY_SERVICE_URL}
+      ORGANIZATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK: ${ORGANIZATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}
       INTERNAL_TOKEN_AUDIENCE: organization-service
       INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
         {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
-        "realtime-gateway": [${REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+        "realtime-gateway": [${REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
+        "identity-service": [${IDENTITY_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS}]}
     build:
       context: ../../cadenway-organization-service
       secrets: [npmrc]
