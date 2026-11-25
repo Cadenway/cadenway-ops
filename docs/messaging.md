@@ -226,7 +226,7 @@ These exact subjects keep the shared `intake` prefix from granting either servic
 `BILLING_REBUILD_ADVISORIES` those of the six Billing usage observation consumers. Each service
 reads the stream information of its own latch only. Each latch keeps only the last advisory.
 
-Both services read their latch with `consumerAdvisoryStreamState` of `@cadenway/nest-messaging`
+From search-service 0.4.0 and billing-service 0.4.0, both services read their latch with `consumerAdvisoryStreamState` of `@cadenway/nest-messaging`
 (0.9 or later), which reports the latch's creation time and last sequence with its state. The last
 sequence survives a purge and grows with each advisory, and the creation time changes when the
 latch is recreated. Each rebuild is fenced by two clear and identical observations, one when it
@@ -261,9 +261,18 @@ commands in the `nats-streams` container, as the `admin` user:
 2. List the dead letters of its service to find the affected resources, for each watched handler:
    `nats stream view EVENTS_DLQ --subject 'dlq.search-service__<handler>.>'` (Search) or
    `nats stream view EVENTS_DLQ --subject 'dlq.billing-service__<handler>.>'` (Billing).
-3. Clear once the affected resources are noted. Purging hides nothing from the services: the
-   advisory raised the latch's last sequence, so each projection certified before it is rebuilt
-   once the latch is clear again, whether or not the services read it while it was held.
+3. Check the releases the environment runs, `SEARCH_SERVICE_VERSION` and
+   `BILLING_SERVICE_VERSION` in `environments/<env>/versions.env`, after any rollback too.
+   - From search-service 0.4.0 and billing-service 0.4.0 on, clear once the affected resources
+     are noted. Purging hides nothing from them: the advisory raised the latch's last sequence,
+     so each projection certified before it is rebuilt once the latch is clear again, whether or
+     not they read it while it was held.
+   - With an older release of either, make its projection whole before clearing. Billing: leave
+     the latch held until the usage scheduler, which advances the enrolled organizations page by
+     page every two seconds, has invalidated the usage of each of them. Search: clear only when no
+     index has ever been promoted (a first provisioning), or when the active index and any build
+     in progress are known to be complete; otherwise leave the latch held, since a purge would let
+     a build begun before the advisory be promoted.
 4. Purge up to that sequence only, so that an advisory recorded meanwhile stays latched:
    `nats stream purge <latch> --seq <last sequence + 1> --force`.
 
