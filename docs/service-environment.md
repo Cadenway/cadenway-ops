@@ -68,8 +68,10 @@ docker compose run --rm internal-token-keys
 
 The container runs `compose/internal-token/generate-keys.mjs`, which appends the six key pairs to
 `compose/.env` (never committed). Compose then reads them like any other variable, exactly as it
-reads the secrets on a host. A second run changes nothing; to replace a pair, delete its two lines
-and run it again. Without the keys, Compose warns that the variables are not set and the backends
+reads the secrets on a host. A later run only appends the pairs that are missing and keeps the
+others, so run it again after an update adds an issuer (the identity-service and
+organization-service pairs, for a workstation set up before them); to replace a pair, delete its
+two lines and run it again. Without the keys, Compose warns that the variables are not set and the backends
 refuse to start, naming `INTERNAL_TOKEN_PRIVATE_JWK` or `INTERNAL_TOKEN_TRUSTED_ISSUERS`.
 
 ### Keys of staging and production
@@ -81,8 +83,14 @@ docker compose run --rm internal-token-keys --print   # twelve lines, on the ter
 sops edit environments/staging/secrets.sops.env       # paste them
 ```
 
+For a new environment, paste the twelve lines. For an existing one, paste only the lines of the
+issuers it lacks and keep every existing pair: replacing a pair outside the rotation procedure below
+breaks internal authentication while services run with different keys.
+
 Before the next organization-service and identity-service releases, each hosted environment needs
-identity-service and organization-service key pairs in its encrypted secrets. Their definitions
+identity-service and organization-service key pairs in its encrypted secrets: paste only the four
+`IDENTITY_SERVICE_INTERNAL_TOKEN_*` and `ORGANIZATION_SERVICE_INTERNAL_TOKEN_*` lines of a
+`--print` run. Their definitions
 require `ORGANIZATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK` and
 `IDENTITY_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, respectively. Release the ops keys first,
 then organization-service (which must trust identity-service), then identity-service, and finally
