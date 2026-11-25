@@ -109,13 +109,14 @@ services:
     # nats/ensure-streams.sh at start, then stays to recreate a stream the broker lost; it is
     # healthy while EVENTS, EVENTS_RESTRICTED, EVENTS_DLQ and the three advisory latches exist.
     # Local services and the GitOps agent wait for them. Operators read dead letters here and
-    # clear latches after reconciliation (docs/messaging.md#realtime-authorization-advisories).
+    # clear latches after reconciliation (docs/messaging.md#realtime-authorization-advisories,
+    # docs/messaging.md#rebuild-advisories).
     image: natsio/nats-box:0.20.2-nonroot@sha256:d00bffed51ea1a29e58852698bde37020d306af55585882f88dbcf09dd86f5fe
     restart: unless-stopped
     entrypoint: ['/bin/sh', '/etc/nats/ensure-streams.sh']
     environment:
       # SHA-256 of nats/ensure-streams.sh, for the same reason as NATS_SERVER_CONF_SHA256.
-      ENSURE_STREAMS_SHA256: 061333446e03472739f9928ba05474f47785e2ed1c18535403b11982a8f03a6e
+      ENSURE_STREAMS_SHA256: f9c0944a8e01a0aa539c30f1fe1d847410739a5153459cacb13eb3a3c9dd4d0f
       NATS_URL: ${NATS_URL}
       NATS_USER: admin
       NATS_PASSWORD: ${NATS_ADMIN_PASSWORD}

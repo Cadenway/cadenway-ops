@@ -83,8 +83,13 @@ ensure_stream() {
 # The latch starts empty only while EVENTS has no consumer of the service. A latch missing once the
 # service consumes (a stream removed, not recovered by the broker, or provisioned after the service
 # started) may have missed an advisory: it is created closed, holding a marker an operator purges
-# after reconciling. When the marker cannot be stored, the stream is removed again so that the next
-# pass retries the whole step instead of leaving an empty latch.
+# after reconciling. A new latch is therefore added first with two messages allowed, a
+# configuration no service trusts, and only then are the consumers listed: one created before the
+# add is seen, the advisories of one created after it are captured. The marker, when needed, goes
+# in before the single-message configuration is set. A pass interrupted in between (a stop, a
+# broker outage) leaves the latch untrusted, and the next pass finishes it, from the consumer
+# listing on, instead of taking an empty latch for a clear one. The state is read once: a read that
+# fails ends the pass, so a broker hiccup never puts a marker in a latch that was already trusted.
 # Arguments: stream, service (durable prefix), handlers, description, marker type, marker reason.
 # Returns non-zero when a step fails.
 ensure_latch() {
@@ -101,29 +106,51 @@ ensure_latch() {
       subjects="${subjects:+$subjects,}$subject"
     done
   done
-  if nats stream info "$latch" >/dev/null 2>&1; then
-    nats stream edit "$latch" --force \
-      --subjects "$subjects" --description "$description" --discard old \
-      --max-age 0 --max-bytes=-1 --max-msgs=1 --max-msgs-per-subject=-1 \
-      --max-msg-size=-1 >/dev/null
-    return
+  if info=$(nats stream info "$latch" --json 2>/dev/null); then
+    max_msgs=$(printf '%s\n' "$info" | jq -r '.config.max_msgs')
+    case $max_msgs in '' | *[!0-9-]*) return 1 ;; esac
+    if [ "$max_msgs" = 1 ]; then
+      nats stream edit "$latch" --force \
+        --subjects "$subjects" --description "$description" --discard old \
+        --max-age 0 --max-bytes=-1 --max-msgs=1 --max-msgs-per-subject=-1 \
+        --max-msg-size=-1 >/dev/null
+      return
+    fi
+    echo "nats-streams: $latch was left initializing; finishing it." >&2
+  else
+    # Only a listing that succeeds and lacks the latch proves it missing.
+    names=$(nats stream ls --names) || return 1
+    printf '%s\n' "$names" | grep -Fxq "$latch" && return 1
+    nats stream add "$latch" --defaults \
+      --subjects "$subjects" --description "$description" \
+      --storage file --retention limits --discard old --replicas 1 \
+      --max-age 0 --max-bytes=-1 --max-msgs=2 --max-msgs-per-subject=-1 \
+      --max-msg-size=-1 >/dev/null || return 1
   fi
   consumers=$(nats consumer ls EVENTS --names) || return 1
-  nats stream add "$latch" --defaults \
-    --subjects "$subjects" --description "$description" \
-    --storage file --retention limits --discard old --replicas 1 \
-    --max-age 0 --max-bytes=-1 --max-msgs=1 --max-msgs-per-subject=-1 \
-    --max-msg-size=-1 >/dev/null || return 1
-  printf '%s\n' "$consumers" | grep -q "^${service}__" || return 0
-  marker="\$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.EVENTS.${service}__${durables%% *}"
-  if nats request "$marker" \
-    "{\"type\":\"$marker_type\",\"reason\":\"$marker_reason\"}" 2>&1 |
-    grep -Fq "\"stream\":\"$latch\""; then
-    echo "nats-streams: $latch was lost and is created again closed." >&2
-    return 0
+  if printf '%s\n' "$consumers" | grep -q "^${service}__"; then
+    held=$(nats stream info "$latch" --json | jq -r '.state.messages')
+    case $held in '' | *[!0-9]*) return 1 ;; esac
+    if [ "$held" = 0 ]; then
+      for first in $durables; do break; done
+      marker="\$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.EVENTS.${service}__$first"
+      nats request "$marker" \
+        "{\"type\":\"$marker_type\",\"reason\":\"$marker_reason\"}" 2>&1 |
+        grep -Fq "\"stream\":\"$latch\"" || return 1
+    fi
+    echo "nats-streams: $latch was missing while $service consumed; it is closed." >&2
   fi
-  nats stream rm "$latch" --force >/dev/null 2>&1
-  return 1
+  nats stream edit "$latch" --force \
+    --subjects "$subjects" --description "$description" --discard old \
+    --max-age 0 --max-bytes=-1 --max-msgs=1 --max-msgs-per-subject=-1 \
+    --max-msg-size=-1 >/dev/null
+}
+
+# Whether a latch has finished its initialization: its single-message configuration is the last
+# step ensure_latch takes. Argument: stream. Returns non-zero while it is missing or initializing,
+# and when it cannot be read: the next pass of ensure_latch then decides on a read of its own.
+latch_ready() {
+  nats stream info "$1" --json 2>/dev/null | jq -e '.config.max_msgs == 1' >/dev/null 2>&1
 }
 
 # One pass over the declarations. The two-minute duplicate window is the one the publishers rely
@@ -142,24 +169,24 @@ ensure_streams() {
       "$REALTIME_INVALIDATION_DURABLES" \
       'Last authorization invalidation realtime-gateway gave up on; purged by an operator.' \
       'io.cadenway.realtime.latch-recreated' \
-      'The latch was lost while the realtime gateway consumed; reconcile, then purge.' &&
+      'The latch was missing while the realtime gateway consumed; reconcile, then purge.' &&
     ensure_latch SEARCH_REBUILD_ADVISORIES search-service "$SEARCH_REBUILD_DURABLES" \
       'Last search rebuild source event given up; purged by an operator.' \
       'io.cadenway.search.latch-recreated' \
-      'The latch was lost while search-service consumed; reconcile, then purge.' &&
+      'The latch was missing while search-service consumed; reconcile, then purge.' &&
     ensure_latch BILLING_REBUILD_ADVISORIES billing-service "$BILLING_REBUILD_DURABLES" \
       'Last billing usage observation given up; purged by an operator.' \
       'io.cadenway.billing.latch-recreated' \
-      'The latch was lost while billing-service consumed; reconcile, then purge.'
+      'The latch was missing while billing-service consumed; reconcile, then purge.'
 }
 
 streams_exist() {
   nats stream info EVENTS >/dev/null 2>&1 &&
     nats stream info EVENTS_RESTRICTED >/dev/null 2>&1 &&
     nats stream info EVENTS_DLQ >/dev/null 2>&1 &&
-    nats stream info REALTIME_AUTHORIZATION_ADVISORIES >/dev/null 2>&1 &&
-    nats stream info SEARCH_REBUILD_ADVISORIES >/dev/null 2>&1 &&
-    nats stream info BILLING_REBUILD_ADVISORIES >/dev/null 2>&1
+    latch_ready REALTIME_AUTHORIZATION_ADVISORIES &&
+    latch_ready SEARCH_REBUILD_ADVISORIES &&
+    latch_ready BILLING_REBUILD_ADVISORIES
 }
 
 # `sleep` runs in the background so the shell, as process 1, answers the stop signal at once.

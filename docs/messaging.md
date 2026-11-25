@@ -228,9 +228,13 @@ Each latch keeps only the last advisory, so reconcile every affected dead letter
 Follow the [realtime clearing procedure](#realtime-authorization-advisories), substituting the
 appropriate latch and inspecting `dlq.search-service__<handler>.>` or
 `dlq.billing-service__<handler>.>` for each watched handler. First provisioning when the service
-already consumes creates its latch closed: reconcile and clear the marker in the same way. Changes
-to either durable list require the same [coordinated cutover](#changing-the-invalidation-consumers)
-as the realtime list.
+already consumes creates its latch closed: reconcile and clear the marker in the same way. A latch
+is added allowing two messages, a configuration no service trusts, and takes its single-message
+configuration only once the marker it needs is stored, so a pass interrupted in between never leaves
+an empty latch the services would trust; the next pass finishes it. As for the realtime latch, the
+dead-letter worker of notification-service logs a marker as an unreadable advisory. Changes to
+either durable list require the same [coordinated cutover](#changing-the-invalidation-consumers) as
+the realtime list.
 
 The realtime gateway starts its five Git consumers and its two personal notice consumers only when
 its [relay switches](service-environment.md#realtime-relays) are on; the grant is there in every
@@ -390,9 +394,12 @@ as the `admin` user. No backend may purge or delete the stream.
 gateway, its first provisioning. A latch lost afterwards (removed by hand, or not recovered by the
 broker) may have held an advisory, and those published while it was missing are lost: the script
 creates it again closed, holding a marker (`io.cadenway.realtime.latch-recreated`), which an
-operator clears in the same way. The dead-letter worker of notification-service sees that marker
-on the advisory subject and logs it as an unreadable advisory. A broker that lost `EVENTS` and its
-consumers too starts the latch empty, like a new environment.
+operator clears in the same way. It adds a latch allowing two messages, a configuration the gateway
+does not trust, lists the consumers only then, stores the marker if one is needed, and sets the
+single-message configuration last: a pass stopped in between leaves a latch the next pass finishes,
+never an empty one the gateway would trust. The dead-letter worker of notification-service sees that
+marker on the advisory subject and logs it as an unreadable advisory. A broker that lost `EVENTS`
+and its consumers too starts the latch empty, like a new environment.
 
 ### Changing the invalidation consumers
 

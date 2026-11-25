@@ -154,7 +154,8 @@ relay-task-trashed relay-task-purged relay-task-updated'
 # The independent consumer inventory above names every monitored Search and Billing durable.
 SEARCH_DURABLES=$(awk '$1 == "search" && $3 ~ /^search-service__index-/ { print $3 }' \
   <<<"$CONSUMERS")
-BILLING_DURABLES=$(awk '$1 == "billing" { print $3 }' <<<"$CONSUMERS")
+BILLING_DURABLES=$(awk '$1 == "billing" &&
+  $3 ~ /^billing-service__(register-organization|record-)/ { print $3 }' <<<"$CONSUMERS")
 REALTIME_DURABLES=$(for handler in $REALTIME_INVALIDATIONS; do
   echo "realtime-gateway__$handler"
 done)
@@ -695,6 +696,20 @@ check_latch 'the latch created again' REALTIME_AUTHORIZATION_ADVISORIES "$REALTI
 OUT=$(wait_for SEARCH_REBUILD_ADVISORIES '.state.messages' 1)
 check 'the search latch lost while consuming is created again closed' '[[ $OUT == 1 ]]'
 check_latch 'the search latch created again' SEARCH_REBUILD_ADVISORIES "$SEARCH_DURABLES"
+# A recreation stopped after the add and before the marker leaves the latch empty in its
+# initializing configuration (two messages), which no service trusts; the next pass finishes it.
+compose exec -T nats-streams sh -c 'nats stream purge SEARCH_REBUILD_ADVISORIES --force &&
+  nats stream edit SEARCH_REBUILD_ADVISORIES --max-msgs=2 --force' >/dev/null 2>&1
+LATCH_STATE='[.config.max_msgs, .state.messages] | map(tostring) | join(" ")'
+OUT=$(stream_field SEARCH_REBUILD_ADVISORIES "$LATCH_STATE")
+check 'an interrupted recreation leaves the latch in a configuration no service trusts' \
+  '[[ $OUT == "2 0" ]]'
+for _ in $(seq 1 45); do
+  OUT=$(stream_field SEARCH_REBUILD_ADVISORIES "$LATCH_STATE")
+  [[ $OUT == '1 1' ]] && break
+  sleep 2
+done
+check 'the next pass finishes it closed, holding a marker, not empty' '[[ $OUT == "1 1" ]]'
 compose exec -T nats-streams nats stream purge REALTIME_AUTHORIZATION_ADVISORIES --force \
   >/dev/null 2>&1
 OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.state.messages')
