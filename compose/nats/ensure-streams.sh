@@ -32,6 +32,23 @@ readonly REALTIME_INVALIDATION_DURABLES='relay-session-revoked relay-session-org
   relay-space-access-republished relay-space-deleted relay-list-access-changed relay-list-deleted
   relay-task-trashed relay-task-purged relay-task-updated'
 
+# searchSourceHandlerNames in cadenway-search-service's search-source-events.handler.ts. Changes
+# require the same coordinated cutover as the consumer grants and the realtime latch subjects.
+readonly SEARCH_REBUILD_DURABLES='index-task-created-v1 index-task-updated-v1 index-task-archived-v1
+  index-task-unarchived-v1 index-task-trashed-v1 index-task-restored-v1
+  index-task-purged-v1 index-task-watcher-changed-v1 index-comment-created-v1
+  index-comment-updated-v1 index-comment-deleted-v1 index-list-created-v1
+  index-list-updated-v1 index-list-archived-v1 index-list-unarchived-v1
+  index-list-deleted-v1 index-list-restored-v1 index-list-access-changed-v1
+  index-space-created-v1 index-space-updated-v1 index-space-deleted-v1
+  index-space-restored-v1 index-space-access-changed-v1 index-space-access-republished-v1
+  index-doc-created-v1 index-doc-updated-v1 index-doc-deleted-v1 index-file-uploaded-v1
+  index-file-deleted-v1'
+# usageObservationHandlerNames in cadenway-billing-service's usage-observation-events.handler.ts.
+# Changes require the same coordinated cutover as the consumer grants and realtime latch subjects.
+readonly BILLING_REBUILD_DURABLES='register-organization record-member-joined
+  record-member-role-changed record-member-removed record-file-uploaded record-file-deleted'
+
 # Creates a stream, or updates it when it exists.
 # Arguments: name, subjects, maximum age, maximum size in bytes, description.
 # Returns the status of the `nats` command.
@@ -55,55 +72,57 @@ ensure_stream() {
   fi
 }
 
-# Prints, comma-separated, the advisories the server publishes when a realtime invalidation durable
-# gives a message up, after its last delivery or on a terminate.
-realtime_advisory_subjects() {
+# Creates or updates the advisory latch of a service: it keeps the last advisory the server
+# publishes when one of the listed durables gives a message up (after its last delivery or on a
+# terminate), with no age limit, until an operator purges it (docs/messaging.md#rebuild-advisories,
+# docs/messaging.md#realtime-authorization-advisories). @cadenway/nest-messaging requires exactly
+# this configuration (file storage, limits retention, old messages discarded, one message, no other
+# limit) and an empty stream before the service trusts its consumers; an edit sets every one of
+# those settings that can change again.
+#
+# The latch starts empty only while EVENTS has no consumer of the service. A latch missing once the
+# service consumes (a stream removed, not recovered by the broker, or provisioned after the service
+# started) may have missed an advisory: it is created closed, holding a marker an operator purges
+# after reconciling. When the marker cannot be stored, the stream is removed again so that the next
+# pass retries the whole step instead of leaving an empty latch.
+# Arguments: stream, service (durable prefix), handlers, description, marker type, marker reason.
+# Returns non-zero when a step fails.
+ensure_latch() {
+  latch=$1
+  service=$2
+  durables=$3
+  description=$4
+  marker_type=$5
+  marker_reason=$6
   subjects=''
-  for handler in $REALTIME_INVALIDATION_DURABLES; do
+  for handler in $durables; do
     for kind in MAX_DELIVERIES MSG_TERMINATED; do
-      subjects="${subjects:+$subjects,}\$JS.EVENT.ADVISORY.CONSUMER.$kind.EVENTS.realtime-gateway__$handler"
+      subject="\$JS.EVENT.ADVISORY.CONSUMER.$kind.EVENTS.${service}__$handler"
+      subjects="${subjects:+$subjects,}$subject"
     done
   done
-  printf '%s\n' "$subjects"
-}
-
-# Creates or updates the latch of the realtime gateway: it keeps the last of those advisories, with
-# no age limit, until an operator purges it (docs/messaging.md#realtime-authorization-advisories).
-# @cadenway/nest-messaging requires exactly this configuration (file storage, limits retention, old
-# messages discarded, one message, no other limit) and an empty stream before the gateway admits a
-# socket; an edit sets every one of those settings that can change again.
-#
-# The latch starts empty only on first provisioning, while EVENTS has no consumer of the gateway. A
-# latch lost once the gateway consumes (a stream removed, or not recovered by the broker) may have
-# held an advisory, and advisories published while it was missing are lost: it is created again
-# closed, holding a marker an operator purges after reconciling. When the marker cannot be stored,
-# the stream is removed again so that the next pass retries the whole step instead of leaving an
-# empty latch. Returns non-zero when a step fails.
-ensure_realtime_latch() {
-  subjects=$(realtime_advisory_subjects)
-  description='Last authorization invalidation realtime-gateway gave up on; purged by an operator.'
-  if nats stream info REALTIME_AUTHORIZATION_ADVISORIES >/dev/null 2>&1; then
-    nats stream edit REALTIME_AUTHORIZATION_ADVISORIES --force \
+  if nats stream info "$latch" >/dev/null 2>&1; then
+    nats stream edit "$latch" --force \
       --subjects "$subjects" --description "$description" --discard old \
       --max-age 0 --max-bytes=-1 --max-msgs=1 --max-msgs-per-subject=-1 \
       --max-msg-size=-1 >/dev/null
     return
   fi
   consumers=$(nats consumer ls EVENTS --names) || return 1
-  nats stream add REALTIME_AUTHORIZATION_ADVISORIES --defaults \
+  nats stream add "$latch" --defaults \
     --subjects "$subjects" --description "$description" \
     --storage file --retention limits --discard old --replicas 1 \
     --max-age 0 --max-bytes=-1 --max-msgs=1 --max-msgs-per-subject=-1 \
     --max-msg-size=-1 >/dev/null || return 1
-  printf '%s\n' "$consumers" | grep -q '^realtime-gateway__' || return 0
-  marker="\$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.EVENTS.realtime-gateway__${REALTIME_INVALIDATION_DURABLES%% *}"
+  printf '%s\n' "$consumers" | grep -q "^${service}__" || return 0
+  marker="\$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.EVENTS.${service}__${durables%% *}"
   if nats request "$marker" \
-    '{"type":"io.cadenway.realtime.latch-recreated","reason":"The latch was lost while the realtime gateway consumed; reconcile, then purge."}' 2>&1 |
-    grep -Fq '"stream":"REALTIME_AUTHORIZATION_ADVISORIES"'; then
-    echo 'nats-streams: REALTIME_AUTHORIZATION_ADVISORIES was lost and is created again closed.' >&2
+    "{\"type\":\"$marker_type\",\"reason\":\"$marker_reason\"}" 2>&1 |
+    grep -Fq "\"stream\":\"$latch\""; then
+    echo "nats-streams: $latch was lost and is created again closed." >&2
     return 0
   fi
-  nats stream rm REALTIME_AUTHORIZATION_ADVISORIES --force >/dev/null 2>&1
+  nats stream rm "$latch" --force >/dev/null 2>&1
   return 1
 }
 
@@ -119,14 +138,28 @@ ensure_streams() {
       'Identity events carrying a single-use code or link; read by notification-service only.' &&
     ensure_stream EVENTS_DLQ 'dlq.>' 30d 256MiB \
       'Messages a consumer gave up on, copied by the dead-letter worker.' &&
-    ensure_realtime_latch
+    ensure_latch REALTIME_AUTHORIZATION_ADVISORIES realtime-gateway \
+      "$REALTIME_INVALIDATION_DURABLES" \
+      'Last authorization invalidation realtime-gateway gave up on; purged by an operator.' \
+      'io.cadenway.realtime.latch-recreated' \
+      'The latch was lost while the realtime gateway consumed; reconcile, then purge.' &&
+    ensure_latch SEARCH_REBUILD_ADVISORIES search-service "$SEARCH_REBUILD_DURABLES" \
+      'Last search rebuild source event given up; purged by an operator.' \
+      'io.cadenway.search.latch-recreated' \
+      'The latch was lost while search-service consumed; reconcile, then purge.' &&
+    ensure_latch BILLING_REBUILD_ADVISORIES billing-service "$BILLING_REBUILD_DURABLES" \
+      'Last billing usage observation given up; purged by an operator.' \
+      'io.cadenway.billing.latch-recreated' \
+      'The latch was lost while billing-service consumed; reconcile, then purge.'
 }
 
 streams_exist() {
   nats stream info EVENTS >/dev/null 2>&1 &&
     nats stream info EVENTS_RESTRICTED >/dev/null 2>&1 &&
     nats stream info EVENTS_DLQ >/dev/null 2>&1 &&
-    nats stream info REALTIME_AUTHORIZATION_ADVISORIES >/dev/null 2>&1
+    nats stream info REALTIME_AUTHORIZATION_ADVISORIES >/dev/null 2>&1 &&
+    nats stream info SEARCH_REBUILD_ADVISORIES >/dev/null 2>&1 &&
+    nats stream info BILLING_REBUILD_ADVISORIES >/dev/null 2>&1
 }
 
 # `sleep` runs in the background so the shell, as process 1, answers the stop signal at once.
@@ -141,7 +174,7 @@ while :; do
   if [ -e "$READY" ] && streams_exist; then
     pause "$CHECK_INTERVAL"
   elif ensure_streams; then
-    echo 'nats-streams: the streams and the realtime latch are in place.'
+    echo 'nats-streams: the streams and advisory latches are in place.'
     : >"$READY"
     pause "$CHECK_INTERVAL"
   else

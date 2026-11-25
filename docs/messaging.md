@@ -216,10 +216,21 @@ queues do not require JetStream consumer grants. Task publishes `evt.intake.atta
 and `evt.intake.attachment-released.v1`; Storage publishes `evt.intake.attachment-verified.v1`.
 These exact subjects keep the shared `intake` prefix from granting either service the other's events.
 
-Search and Billing also look for `SEARCH_REBUILD_ADVISORIES` and `BILLING_REBUILD_ADVISORIES`
-when certifying rebuild progress. Those streams are not provisioned by `ensure-streams.sh`; the
-consumer grants alone do not enable those rebuild proofs. Their stream lifecycle and permissions
-still need to be implemented before the corresponding rebuilds can complete.
+### Rebuild advisories
+
+`SEARCH_REBUILD_ADVISORIES` captures terminal advisories for the 29 Search source consumers;
+search-service reads its stream information to certify index rebuild progress.
+`BILLING_REBUILD_ADVISORIES` captures terminal advisories for the six Billing usage observation
+consumers; billing-service reads its information to certify rebuild progress and usage reads. A
+held advisory makes the Search rebuild or Billing usage read refuse until an operator clears it.
+Each latch keeps only the last advisory, so reconcile every affected dead letter before clearing it.
+
+Follow the [realtime clearing procedure](#realtime-authorization-advisories), substituting the
+appropriate latch and inspecting `dlq.search-service__<handler>.>` or
+`dlq.billing-service__<handler>.>` for each watched handler. First provisioning when the service
+already consumes creates its latch closed: reconcile and clear the marker in the same way. Changes
+to either durable list require the same [coordinated cutover](#changing-the-invalidation-consumers)
+as the realtime list.
 
 The realtime gateway starts its five Git consumers and its two personal notice consumers only when
 its [relay switches](service-environment.md#realtime-relays) are on; the grant is there in every
@@ -294,6 +305,8 @@ publishes and consumes the events a service lists in `restrictedEvents` on `rest
 | `EVENTS_RESTRICTED`                 | `restricted.>`       | 1 hour       | 64 MiB    | The restricted events                                                                                             |
 | `EVENTS_DLQ`                        | `dlq.>`              | 30 days      | 256 MiB   | Messages a consumer gave up on (dead letters)                                                                     |
 | `REALTIME_AUTHORIZATION_ADVISORIES` | 26 advisory subjects | until purged | 1 message | The last authorization invalidation the realtime gateway gave up on ([latch](#realtime-authorization-advisories)) |
+| `SEARCH_REBUILD_ADVISORIES`         | 58 advisory subjects | until purged | 1 message | Last Search source consumer advisory ([latch](#rebuild-advisories))                                               |
+| `BILLING_REBUILD_ADVISORIES`        | 12 advisory subjects | until purged | 1 message | Last Billing usage consumer advisory ([latch](#rebuild-advisories))                                               |
 
 File storage, oldest messages dropped first, duplicates of a `Nats-Msg-Id` refused for two minutes.
 The sizes are starting values.
@@ -304,8 +317,8 @@ stream past its use.
 
 No backend can create, change, purge or delete a stream. The `nats-streams` container of
 `compose/infra.yaml` owns them: it runs `compose/nats/ensure-streams.sh` with the `admin` user,
-creates or updates the four streams at start, then checks every minute that they exist and
-creates again one the broker lost. It is healthy while the four exist. A changed limit reaches a
+creates or updates the six streams at start, then checks every minute that they exist and
+creates again one the broker lost. It is healthy while all six exist. A changed limit reaches a
 stream that exists when the container starts again, which a new `ENSURE_STREAMS_SHA256` causes on
 every host (see [changing the permissions](#changing-the-permissions)); a lower age drops the
 older messages at once, and the retention and storage of a stream never change.
@@ -391,7 +404,9 @@ for every environment, while the gateway release reaches staging and then produc
 whenever the new list is merged, the environments whose gateway runs the other list refuse
 sockets until the release reaches them. Merge it when the release is about to be deployed and
 promote it promptly. Accepting a superset of subjects in `@cadenway/nest-messaging` would remove
-that window. A removed handler keeps its grant until no running release uses it.
+that window. A removed handler keeps its grant until no running release uses it. The same
+cutover applies to the Search and Billing rebuild advisory durable lists: a mismatched list blocks
+the corresponding proof until the service release and latch declaration agree.
 
 ## Rebuilds
 
