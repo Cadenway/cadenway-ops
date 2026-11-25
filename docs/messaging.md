@@ -263,8 +263,7 @@ commands in the `nats-streams` container, as the `admin` user:
    `nats stream view EVENTS_DLQ --subject 'dlq.billing-service__<handler>.>'` (Billing).
 3. Check the releases that actually run, not only the desired ones of
    `environments/<env>/versions.env` (a failed rollout keeps the previous container serving): the
-   image tag of every running
-   search-service and billing-service container on the host, `docker ps --format '{{.Image}}'`,
+   image tag of every running search-service and billing-service container on the host, `docker ps --format '{{.Image}}'`,
    and the last deployment outcome. When a tag is older than 0.4.0 or uncertain, follow the second
    case below.
    - From search-service 0.4.0 and billing-service 0.4.0 on, clear once the affected resources
@@ -281,7 +280,9 @@ commands in the `nats-streams` container, as the `admin` user:
    again meanwhile (a start of `nats-streams` after a durable was removed, or a lost latch) and
    its sequences start over, so go back to step 1. Otherwise purge up to that sequence only, so
    that an advisory recorded meanwhile stays latched, right after that read and outside a rollout
-   of `nats-streams`: `nats stream purge <latch> --seq <last sequence + 1> --force`.
+   of `nats-streams`: `nats stream purge <latch> --seq <last sequence + 1> --force`. Then read
+   its creation time once more: if it changed, the purge may have cleared a latch created in
+   between, with the marker of its recreation, so go back to step 1.
 
 These steps never touch `REALTIME_AUTHORIZATION_ADVISORIES`, which has its own
 [procedure](#realtime-authorization-advisories) and reconciliation.
@@ -454,7 +455,9 @@ themselves are the dead letters the [dead-letter worker](#dead-letters) copied f
    the latch was created again during the reconciliation and its sequences start over, so go back
    to step 1. Otherwise purge up to that sequence only, so that an advisory recorded during the
    reconciliation stays latched, right after that read and outside a rollout of `nats-streams`:
-   `nats stream purge REALTIME_AUTHORIZATION_ADVISORIES --seq <last sequence + 1> --force`.
+   `nats stream purge REALTIME_AUTHORIZATION_ADVISORIES --seq <last sequence + 1> --force`. Then
+   read its creation time once more: if it changed, the purge may have cleared a latch created in
+   between, with the marker of its recreation, so go back to step 1 and reconcile again.
 
 Run the commands in the `nats-streams` container (`docker compose exec nats-streams nats ...`),
 as the `admin` user. No backend may purge or delete the stream.
