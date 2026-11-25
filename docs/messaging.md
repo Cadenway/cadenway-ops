@@ -248,8 +248,12 @@ commands in the `nats-streams` container, as the `admin` user:
 3. Make the projection whole before clearing. Billing: leave the latch held until the usage
    scheduler, which advances the enrolled organizations page by page every two seconds, has
    invalidated the usage of each of them; usage cleared too early stays in place for the
-   organizations not advanced yet. Search: clear only when the active index is known to be
-   complete, or when a rebuild of it from its owners follows.
+   organizations not advanced yet. Search: clear only when no index has ever been promoted, which
+   is the case of a first provisioning (a missing or held latch keeps any build from starting, so
+   the first build after the purge exports everything from the owners), or when the active index
+   and any build in progress are known to be complete. Otherwise leave the latch held:
+   search-service offers no operator command to rebuild an index yet, and a purge would let a
+   build begun before the advisory be promoted.
 4. Purge up to that sequence only, so that an advisory recorded meanwhile stays latched:
    `nats stream purge <latch> --seq <last sequence + 1> --force`.
 
