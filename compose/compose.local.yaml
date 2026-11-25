@@ -399,6 +399,11 @@ services:
       SMTP_PORT: ${SMTP_PORT}
       SMTP_USER: ${SMTP_USER}
       SMTP_PASSWORD: ${SMTP_PASSWORD}
+      # Mailpit offers no STARTTLS, and the service requires it unless an unauthenticated local
+      # relay is explicitly allowed, which its configuration refuses under NODE_ENV=production
+      # (the image default). The local stack runs it as development for that exception only.
+      NODE_ENV: development
+      SMTP_ALLOW_INSECURE_LOCAL: 'true'
       MAIL_FROM: ${MAIL_FROM}
       WEB_APP_URL: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}
     build:
