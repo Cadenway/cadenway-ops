@@ -237,10 +237,24 @@ The dead letters are not a complete history of what was given up: the dead-lette
 only the advisories it received while it ran, and `EVENTS_DLQ` keeps 30 days and 256 MiB. Use them
 to find the affected resources, never to prove that nothing else was lost. A latch created closed
 (first provisioning while the service already consumes, or a lost latch) has no history at all.
-Clear a latch with the [realtime procedure](#realtime-authorization-advisories), reading
-`dlq.search-service__<handler>.>` or `dlq.billing-service__<handler>.>` for each watched handler.
-For Search, clear it only when the active index is known to be complete, or when a rebuild of it
-from its owners follows.
+To clear `SEARCH_REBUILD_ADVISORIES` or `BILLING_REBUILD_ADVISORIES` (`<latch>` below), run the
+commands in the `nats-streams` container, as the `admin` user:
+
+1. Note the last sequence of the latch, `nats stream info <latch>` (`Last Sequence`), and read its
+   advisory with `nats stream view <latch>`.
+2. List the dead letters of its service, `nats stream view EVENTS_DLQ --subject
+'dlq.search-service__<handler>.>'` or `'dlq.billing-service__<handler>.>'` for each watched
+   handler, to find the affected resources.
+3. Make the projection whole before clearing. Billing: leave the latch held until the usage
+   scheduler, which advances the enrolled organizations page by page every two seconds, has
+   invalidated the usage of each of them; usage cleared too early stays in place for the
+   organizations not advanced yet. Search: clear only when the active index is known to be
+   complete, or when a rebuild of it from its owners follows.
+4. Purge up to that sequence only, so that an advisory recorded meanwhile stays latched:
+   `nats stream purge <latch> --seq <last sequence + 1> --force`.
+
+These steps never touch `REALTIME_AUTHORIZATION_ADVISORIES`, which has its own
+[procedure](#realtime-authorization-advisories) and reconciliation.
 
 A latch starts empty only while `EVENTS` has no consumer of its service: a new environment, or a
 broker that lost `EVENTS` or those consumers too. Then the empty latch guards a rebuild, not an
