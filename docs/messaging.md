@@ -226,16 +226,28 @@ These exact subjects keep the shared `intake` prefix from granting either servic
 `BILLING_REBUILD_ADVISORIES` those of the six Billing usage observation consumers. Each service
 reads the stream information of its own latch only. Each latch keeps only the last advisory.
 
-- **Billing** reads usage only while its latch is empty. A held advisory makes it invalidate the
-  active usage of each organization it advances (`AdvanceUsageRebuild`), so measured usage is
-  unavailable until the latch is cleared and a new usage generation, rebuilt from the
-  organization and storage pages, is promoted. Clearing the latch is safe once that invalidation
-  has happened: the rebuild, not the dead letters, restores the usage.
-- **Search** promotes a new index generation only while its latch is empty; a held advisory blocks
-  the promotion, while an active index keeps serving. Clearing the latch does not repair a change
-  the active index missed: that needs a rebuild of the index from its owners, which search-service
-  starts on its own only when the index or the broker identity changes, and offers no operator
-  command for yet.
+Both services read their latch with `consumerAdvisoryStreamState` of `@cadenway/nest-messaging`
+(0.9 or later), which reports the latch's creation time and last sequence with its state. The last
+sequence survives a purge and grows with each advisory, and the creation time changes when the
+latch is recreated. Each rebuild is fenced by two clear and identical observations, one when it
+starts and one when it is promoted, and the promoted generation keeps them. Whenever the latch
+later differs from them, even after a purge, the service rebuilds on its own:
+
+- **Billing** reads usage only while its latch is clear and matches the observation certified with
+  the active usage generation. A held advisory, or a latch that changed since that certification,
+  makes it invalidate the active usage of each organization it advances (`AdvanceUsageRebuild`) and
+  rebuild it from the organization and storage pages; measured usage is unavailable until the new
+  generation is promoted, which needs a clear latch.
+- **Search** promotes a new index generation only on clear, identical observations; a held
+  advisory blocks the promotion, while an active index keeps serving. An active index whose latch
+  changed since its certification, an advisory recorded meanwhile even if purged since, or a
+  recreated latch, is rebuilt from its owners.
+
+An `unknown` observation (stream unreadable, configuration not matching) neither certifies nor
+discards a generation. Matching observations prove that no advisory was recorded only while the
+latch kept capturing every monitored subject: provisioning adds subjects and never removes one from
+a live latch, and stops monitoring a subject only by recreating the latch, which changes its
+creation time.
 
 The dead letters are not a complete history of what was given up: the dead-letter worker copies
 only the advisories it received while it ran, and `EVENTS_DLQ` keeps 30 days and 256 MiB. Use them
@@ -249,15 +261,9 @@ commands in the `nats-streams` container, as the `admin` user:
 2. List the dead letters of its service to find the affected resources, for each watched handler:
    `nats stream view EVENTS_DLQ --subject 'dlq.search-service__<handler>.>'` (Search) or
    `nats stream view EVENTS_DLQ --subject 'dlq.billing-service__<handler>.>'` (Billing).
-3. Make the projection whole before clearing. Billing: leave the latch held until the usage
-   scheduler, which advances the enrolled organizations page by page every two seconds, has
-   invalidated the usage of each of them; usage cleared too early stays in place for the
-   organizations not advanced yet. Search: clear only when no index has ever been promoted, which
-   is the case of a first provisioning (a missing or held latch keeps any build from starting, so
-   the first build after the purge exports everything from the owners), or when the active index
-   and any build in progress are known to be complete. Otherwise leave the latch held:
-   search-service offers no operator command to rebuild an index yet, and a purge would let a
-   build begun before the advisory be promoted.
+3. Clear once the affected resources are noted. Purging hides nothing from the services: the
+   advisory raised the latch's last sequence, so each projection certified before it is rebuilt
+   once the latch is clear again, whether or not the services read it while it was held.
 4. Purge up to that sequence only, so that an advisory recorded meanwhile stays latched:
    `nats stream purge <latch> --seq <last sequence + 1> --force`.
 
