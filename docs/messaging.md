@@ -242,9 +242,9 @@ commands in the `nats-streams` container, as the `admin` user:
 
 1. Note the last sequence of the latch, `nats stream info <latch>` (`Last Sequence`), and read its
    advisory with `nats stream view <latch>`.
-2. List the dead letters of its service, `nats stream view EVENTS_DLQ --subject
-'dlq.search-service__<handler>.>'` or `'dlq.billing-service__<handler>.>'` for each watched
-   handler, to find the affected resources.
+2. List the dead letters of its service to find the affected resources, for each watched handler:
+   `nats stream view EVENTS_DLQ --subject 'dlq.search-service__<handler>.>'` (Search) or
+   `nats stream view EVENTS_DLQ --subject 'dlq.billing-service__<handler>.>'` (Billing).
 3. Make the projection whole before clearing. Billing: leave the latch held until the usage
    scheduler, which advances the enrolled organizations page by page every two seconds, has
    invalidated the usage of each of them; usage cleared too early stays in place for the
