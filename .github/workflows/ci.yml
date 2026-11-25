@@ -105,7 +105,8 @@ jobs:
     name: NATS users and streams end to end
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # About eight minutes with the 41 consumers and the realtime latch: leave room for slow runners.
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:

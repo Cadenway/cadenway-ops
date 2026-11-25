@@ -10,6 +10,8 @@ Start from the producing service's AsyncAPI contract and existing outbox/event r
 The service kit builds on the `@nats-io/transport-node` and `@nats-io/jetstream` packages. Use its
 `cw-outbox-design` guidance for subjects, durable consumer names and delayed negative
 acknowledgements. Cadenway Ops provisions the `EVENTS`, `EVENTS_RESTRICTED` and `EVENTS_DLQ`
-streams. See `cadenway-ops/docs/messaging.md` for stream purposes and permissions.
+streams, and the `REALTIME_AUTHORIZATION_ADVISORIES` latch of the realtime gateway, whose subjects
+follow its invalidation handlers. See `cadenway-ops/docs/messaging.md` for stream purposes and
+permissions.
 
 Consult the official documentation for the version actually used: https://docs.nats.io/concepts/jetstream.
