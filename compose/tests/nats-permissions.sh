@@ -714,6 +714,29 @@ for _ in $(seq 1 45); do
   sleep 2
 done
 check 'the next pass finishes it closed, holding a marker, not empty' '[[ $OUT == "1 1" ]]'
+# A subject a live latch watches but no durable declares any more (a handler removed: the new
+# script restarts nats-streams) is never dropped in place: that start creates the latch again,
+# with a new creation time, closed while its service consumes.
+before=$(stream_field SEARCH_REBUILD_ADVISORIES '.created')
+retired='$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.EVENTS.search-service__index-retired'
+compose exec -T nats-streams sh -c 'subjects=$(nats stream info SEARCH_REBUILD_ADVISORIES --json |
+  jq -r ".config.subjects | join(\",\")") &&
+  nats stream edit SEARCH_REBUILD_ADVISORIES --force --subjects "$subjects,$1"' sh "$retired" \
+  >/dev/null 2>&1
+OUT=$(stream_field SEARCH_REBUILD_ADVISORIES '.config.subjects | length')
+check 'a live latch can be left watching a durable nobody declares' \
+  '[[ $OUT == $((2 * $(wc -w <<<"$SEARCH_DURABLES") + 1)) ]]'
+compose restart nats-streams >/dev/null 2>&1
+for _ in $(seq 1 45); do
+  OUT=$(stream_field SEARCH_REBUILD_ADVISORIES '.created')
+  [[ $OUT != "$before" && -n $OUT ]] && break
+  sleep 2
+done
+check 'the start creates that latch again instead of dropping the subject' \
+  '[[ $OUT != "$before" && -n $OUT ]]'
+check_latch 'the latch created for a retired durable' SEARCH_REBUILD_ADVISORIES "$SEARCH_DURABLES"
+OUT=$(wait_for SEARCH_REBUILD_ADVISORIES "$LATCH_STATE" '1 1')
+check 'closed, holding a marker' '[[ $OUT == "1 1" ]]'
 compose exec -T nats-streams nats stream purge REALTIME_AUTHORIZATION_ADVISORIES --force \
   >/dev/null 2>&1
 OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.state.messages')
