@@ -30,19 +30,22 @@ variable is therefore released after the variable exists on the host: the secret
 Every call between backends carries a token signed by the caller with its own Ed25519 key and
 checked by the called service against the keys of the issuers it trusts.
 
-| Issuer                | Calls                              | Its key pair in the stack                                                          |
-| --------------------- | ---------------------------------- | ---------------------------------------------------------------------------------- |
-| `api-gateway`         | every service                      | `API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS` |
-| `realtime-gateway`    | identity-service, task-service     | `REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                     |
-| `automation-service`  | task-service, notification-service | `AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                   |
-| `integration-service` | task-service                       | `INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                  |
+| Issuer                 | Calls                                                | Its key pair in the stack                                                          |
+| ---------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `api-gateway`          | every service                                        | `API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS` |
+| `realtime-gateway`     | identity-service, organization-service, task-service | `REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                     |
+| `identity-service`     | organization-service                                 | `IDENTITY_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                     |
+| `organization-service` | identity-service                                     | `ORGANIZATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                 |
+| `automation-service`   | task-service, notification-service                   | `AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                   |
+| `integration-service`  | task-service                                         | `INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `…_PUBLIC_JWKS`                  |
 
 - `<NAME>_INTERNAL_TOKEN_PRIVATE_JWK` is one line of JSON, a secret, read by that issuer only, as
-  `INTERNAL_TOKEN_PRIVATE_JWK`.
+  `INTERNAL_TOKEN_PRIVATE_JWK` for gateways, automation and integration; identity and organization
+  read their own `<NAME>_INTERNAL_TOKEN_PRIVATE_JWK` variable.
 - `<NAME>_INTERNAL_TOKEN_PUBLIC_JWKS` is the public key as one line of JSON; several keys separated
   by commas during a rotation. A called service builds `INTERNAL_TOKEN_TRUSTED_ISSUERS` from the
-  public keys of the issuers it trusts, in its own definition: who a service trusts is reviewed in
-  the repository of that service.
+  public keys of the issuers it trusts, in its own definition or from separate public-key variables.
+  Who a service trusts is reviewed in the repository of that service.
 
 ```yaml
 INTERNAL_TOKEN_AUDIENCE: task-service
@@ -63,10 +66,12 @@ No private key is committed, not even a development one. Once, after `cp .env.ex
 docker compose run --rm internal-token-keys
 ```
 
-The container runs `compose/internal-token/generate-keys.mjs`, which appends the four key pairs to
+The container runs `compose/internal-token/generate-keys.mjs`, which appends the six key pairs to
 `compose/.env` (never committed). Compose then reads them like any other variable, exactly as it
-reads the secrets on a host. A second run changes nothing; to replace a pair, delete its two lines
-and run it again. Without the keys, Compose warns that the variables are not set and the backends
+reads the secrets on a host. A later run only appends the pairs that are missing and keeps the
+others, so run it again after an update adds an issuer (the identity-service and
+organization-service pairs, for a workstation set up before them); to replace a pair, delete its
+two lines and run it again. Without the keys, Compose warns that the variables are not set and the backends
 refuse to start, naming `INTERNAL_TOKEN_PRIVATE_JWK` or `INTERNAL_TOKEN_TRUSTED_ISSUERS`.
 
 ### Keys of staging and production
@@ -74,9 +79,22 @@ refuse to start, naming `INTERNAL_TOKEN_PRIVATE_JWK` or `INTERNAL_TOKEN_TRUSTED_
 An operator generates them and puts them in the secrets, each environment with its own:
 
 ```bash
-docker compose run --rm internal-token-keys --print   # eight lines, on the terminal only
+docker compose run --rm internal-token-keys --print   # twelve lines, on the terminal only
 sops edit environments/staging/secrets.sops.env       # paste them
 ```
+
+For a new environment, paste the twelve lines. For an existing one, paste only the lines of the
+issuers it lacks and keep every existing pair: replacing a pair outside the rotation procedure below
+breaks internal authentication while services run with different keys.
+
+Before the next organization-service and identity-service releases, each hosted environment needs
+identity-service and organization-service key pairs in its encrypted secrets: paste only the four
+`IDENTITY_SERVICE_INTERNAL_TOKEN_*` and `ORGANIZATION_SERVICE_INTERNAL_TOKEN_*` lines of a
+`--print` run. Their definitions
+require `ORGANIZATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK` and
+`IDENTITY_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, respectively. Release the ops keys first,
+then organization-service (which must trust identity-service), then identity-service, and finally
+realtime-gateway.
 
 To rotate the key of an issuer: add the new public key to its `…_PUBLIC_JWKS` after a comma and
 merge; replace its `…_PRIVATE_JWK` and merge; then remove the old public key.
@@ -106,20 +124,20 @@ removes the line from its `deploy/compose.yaml`.
 
 ### Per backend
 
-| Backend              | Trusts                                                                         | Also declares                                                                                                                                                                                                                                                                                                                                                      |
-| -------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| identity-service     | `api-gateway`, `realtime-gateway`                                              | `PASSWORD_PEPPER: ${IDENTITY_PASSWORD_PEPPER}`, the secret its keys derive from, kept outside the database; `WEBAUTHN_RP_ID: app.${DOMAIN}`, `WEBAUTHN_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}`, the relying party of its security keys                                                                                                                   |
-| organization-service | `api-gateway`                                                                  |                                                                                                                                                                                                                                                                                                                                                                    |
-| billing-service      | `api-gateway`                                                                  |                                                                                                                                                                                                                                                                                                                                                                    |
-| task-service         | `api-gateway`, `realtime-gateway`, `automation-service`, `integration-service` |                                                                                                                                                                                                                                                                                                                                                                    |
-| document-service     | `api-gateway`                                                                  |                                                                                                                                                                                                                                                                                                                                                                    |
-| storage-service      | `api-gateway`                                                                  | `S3_ENDPOINT`, `S3_PUBLIC_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_FORCE_PATH_STYLE`, each from `${STORAGE_S3_…}`                                                                                                                                                                                                      |
-| notification-service | `api-gateway`, `automation-service`                                            | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM`, each from the variable of the same name; `WEB_APP_URL: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}`, the origin of the links in its e-mails                                                                                                                                                       |
-| automation-service   | `api-gateway`                                                                  | `INTERNAL_TOKEN_ISSUER: automation-service`, `INTERNAL_TOKEN_PRIVATE_JWK: ${AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}`, `TASK_SERVICE_URL`, `NOTIFICATION_SERVICE_URL`                                                                                                                                                                                        |
-| integration-service  | `api-gateway`                                                                  | `INTERNAL_TOKEN_ISSUER: integration-service`, `INTERNAL_TOKEN_PRIVATE_JWK: ${INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}`, `TASK_SERVICE_URL`                                                                                                                                                                                                                  |
-| search-service       | `api-gateway`                                                                  | `MEILI_URL: ${MEILI_URL}`, `MEILI_API_KEY: ${MEILI_MASTER_KEY}`                                                                                                                                                                                                                                                                                                    |
-| api-gateway          | nobody: it authenticates the applications itself                               | `ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN},${PUBLIC_SCHEME:-https}://${DOMAIN}`, `INTERNAL_TOKEN_ISSUER: api-gateway`, `INTERNAL_TOKEN_PRIVATE_JWK: ${API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}`, the ten `<NAME>_SERVICE_URL`; `NATS_URL`, `NATS_USER: api-gateway`, `NATS_PASSWORD: ${API_GATEWAY_NATS_PASSWORD}` once it publishes its usage event |
-| realtime-gateway     | nobody: it authenticates the sockets itself                                    | `ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}`, `INTERNAL_TOKEN_ISSUER: realtime-gateway`, `INTERNAL_TOKEN_PRIVATE_JWK: ${REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}`, `IDENTITY_SERVICE_URL`, `TASK_SERVICE_URL`, `NATS_USER: realtime-gateway`, `NATS_PASSWORD: ${REALTIME_GATEWAY_NATS_PASSWORD}`; the [relay switches](#realtime-relays)         |
+| Backend              | Trusts                                                                         | Also declares                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| identity-service     | `api-gateway`, `realtime-gateway`, `organization-service`                      | `PASSWORD_PEPPER: ${IDENTITY_PASSWORD_PEPPER}`, the secret its keys derive from, kept outside the database; `WEBAUTHN_RP_ID: app.${DOMAIN}`, `WEBAUTHN_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}`, the relying party of its security keys; `ORGANIZATION_SERVICE_URL` and `IDENTITY_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK` for membership authorization                            |
+| organization-service | `api-gateway`, `realtime-gateway`, `identity-service`                          | `IDENTITY_SERVICE_URL` and `ORGANIZATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK` for identity lookups                                                                                                                                                                                                                                                                                      |
+| billing-service      | `api-gateway`                                                                  |                                                                                                                                                                                                                                                                                                                                                                                        |
+| task-service         | `api-gateway`, `realtime-gateway`, `automation-service`, `integration-service` |                                                                                                                                                                                                                                                                                                                                                                                        |
+| document-service     | `api-gateway`                                                                  |                                                                                                                                                                                                                                                                                                                                                                                        |
+| storage-service      | `api-gateway`                                                                  | `S3_ENDPOINT`, `S3_PUBLIC_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_FORCE_PATH_STYLE`, each from `${STORAGE_S3_…}`                                                                                                                                                                                                                          |
+| notification-service | `api-gateway`, `automation-service`                                            | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM`, each from the variable of the same name; `WEB_APP_URL: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}`, the origin of the links in its e-mails                                                                                                                                                                           |
+| automation-service   | `api-gateway`                                                                  | `INTERNAL_TOKEN_ISSUER: automation-service`, `INTERNAL_TOKEN_PRIVATE_JWK: ${AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}`, `TASK_SERVICE_URL`, `NOTIFICATION_SERVICE_URL`                                                                                                                                                                                                            |
+| integration-service  | `api-gateway`                                                                  | `INTERNAL_TOKEN_ISSUER: integration-service`, `INTERNAL_TOKEN_PRIVATE_JWK: ${INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}`, `TASK_SERVICE_URL`                                                                                                                                                                                                                                      |
+| search-service       | `api-gateway`                                                                  | `MEILI_URL: ${MEILI_URL}`, `MEILI_API_KEY: ${MEILI_MASTER_KEY}`                                                                                                                                                                                                                                                                                                                        |
+| api-gateway          | nobody: it authenticates the applications itself                               | `ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN},${PUBLIC_SCHEME:-https}://${DOMAIN}`, `INTERNAL_TOKEN_ISSUER: api-gateway`, `INTERNAL_TOKEN_PRIVATE_JWK: ${API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}`, the ten `<NAME>_SERVICE_URL`; `NATS_URL`, `NATS_USER: api-gateway`, `NATS_PASSWORD: ${API_GATEWAY_NATS_PASSWORD}` once it publishes its usage event                     |
+| realtime-gateway     | nobody: it authenticates the sockets itself                                    | `ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}`, `INTERNAL_TOKEN_ISSUER: realtime-gateway`, `INTERNAL_TOKEN_PRIVATE_JWK: ${REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}`, `IDENTITY_SERVICE_URL`, `ORGANIZATION_SERVICE_URL`, `TASK_SERVICE_URL`, `NATS_USER: realtime-gateway`, `NATS_PASSWORD: ${REALTIME_GATEWAY_NATS_PASSWORD}`; the [relay switches](#realtime-relays) |
 
 `ALLOWED_ORIGINS` lists, comma-separated, the exact origins a browser may call a gateway from: CORS
 and the CSRF check of the API gateway read it. The API gateway accepts the web application and the
@@ -194,13 +212,13 @@ workstation: the one exception to the rule above ([database](database.md)).
 Besides those of the [database](database.md#variables) and of the
 [broker](messaging.md#secrets), `secrets.sops.env` of each environment holds:
 
-| Variable                                                                                                                                                                                   | Used by                          |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------- |
-| `API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK` | the issuer named by the variable |
-| `API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS`, `REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS`, `AUTOMATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`, `INTEGRATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS` | the services that trust it       |
-| `IDENTITY_PASSWORD_PEPPER`                                                                                                                                                                 | identity-service                 |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM`                                                                                                                        | notification-service             |
-| `STORAGE_S3_ENDPOINT`, `STORAGE_S3_PUBLIC_ENDPOINT`, `STORAGE_S3_REGION`, `STORAGE_S3_BUCKET`, `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`, `STORAGE_S3_FORCE_PATH_STYLE`   | storage-service                  |
+| Variable                                                                                                                                                                                                                                                                                     | Used by                          |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| `API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK`, `IDENTITY_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `ORGANIZATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `AUTOMATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`, `INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK` | the issuer named by the variable |
+| `API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS`, `REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS`, `IDENTITY_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`, `ORGANIZATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`, `AUTOMATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`, `INTEGRATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS` | the services that trust it       |
+| `IDENTITY_PASSWORD_PEPPER`                                                                                                                                                                                                                                                                   | identity-service                 |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM`                                                                                                                                                                                                                          | notification-service             |
+| `STORAGE_S3_ENDPOINT`, `STORAGE_S3_PUBLIC_ENDPOINT`, `STORAGE_S3_REGION`, `STORAGE_S3_BUCKET`, `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`, `STORAGE_S3_FORCE_PATH_STYLE`                                                                                                     | storage-service                  |
 
 The public keys are not secret; they sit with the private ones so that an environment's keys are
 edited in one place. JSON values need no quoting in the file: the agent writes each value between

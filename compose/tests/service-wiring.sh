@@ -35,7 +35,7 @@ node_run() {
 }
 generate() { node_run /keys/generate-keys.mjs "$@"; }
 
-check() { if eval "$2"; then echo "PASS $1"; else echo "FAIL $1"; echo "${OUT:-}" | tail -5; FAILED=1; fi; }
+check() { if eval "$2"; then echo "PASS $1"; else echo "FAIL $1"; FAILED=1; fi; }
 FAILED=0
 OUT=''
 
@@ -44,15 +44,15 @@ OUT=$(generate /work/.env) && OUT="succeeded: $OUT"
 check 'refuses a file that does not exist' '[[ $OUT == *"copy .env.example to .env first"* && $OUT != succeeded:* ]]'
 cp .env.example "$WORK/.env"
 OUT=$(generate /work/.env) || OUT="failed: $OUT"
-check 'writes the pairs' '[[ $OUT == *"wrote the key pairs of API_GATEWAY, REALTIME_GATEWAY, AUTOMATION_SERVICE, INTEGRATION_SERVICE"* ]]'
+check 'writes the pairs' '[[ $OUT == *"wrote the key pairs of API_GATEWAY, REALTIME_GATEWAY, IDENTITY_SERVICE, ORGANIZATION_SERVICE, AUTOMATION_SERVICE, INTEGRATION_SERVICE"* ]]'
 OUT=$(grep -c '_INTERNAL_TOKEN_\(PRIVATE_JWK\|PUBLIC_JWKS\)=' "$WORK/.env")
-check 'two variables per issuer' '[[ $OUT == 8 ]]'
+check 'two variables per issuer' '[[ $OUT == 12 ]]'
 BEFORE=$(sha256sum "$WORK/.env")
 OUT=$(generate /work/.env) || OUT="failed: $OUT"
 check 'a second run writes nothing' '[[ $OUT == *"nothing written"* && $(sha256sum "$WORK/.env") == "$BEFORE" ]]'
 OUT=$(generate --print) || OUT="failed: $OUT"
-check '--print prints eight unquoted lines' \
-  '[[ $(grep -c "^[A-Z_]*_INTERNAL_TOKEN_[A-Z_]*={\"kty\":\"OKP\"" <<<"$OUT") == 8 ]]'
+check '--print prints twelve unquoted lines' \
+  '[[ $(grep -c "^[A-Z_]*_INTERNAL_TOKEN_[A-Z_]*={\"kty\":\"OKP\"" <<<"$OUT") == 12 ]]'
 check 'and leaves the file alone' '[[ $(sha256sum "$WORK/.env") == "$BEFORE" ]]'
 
 echo '=== 2. the keys sign and verify'
@@ -67,7 +67,7 @@ const variables = Object.fromEntries(
     .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
 );
 const message = Buffer.from('cadenway');
-for (const issuer of ['API_GATEWAY', 'REALTIME_GATEWAY', 'AUTOMATION_SERVICE', 'INTEGRATION_SERVICE']) {
+for (const issuer of ['API_GATEWAY', 'REALTIME_GATEWAY', 'IDENTITY_SERVICE', 'ORGANIZATION_SERVICE', 'AUTOMATION_SERVICE', 'INTEGRATION_SERVICE']) {
   const quotedPrivate = variables[`${issuer}_INTERNAL_TOKEN_PRIVATE_JWK`];
   const quotedPublic = variables[`${issuer}_INTERNAL_TOKEN_PUBLIC_JWKS`];
   if (!/^'.*'$/.test(quotedPrivate) || !/^'.*'$/.test(quotedPublic)) throw new Error('not quoted');
@@ -97,8 +97,8 @@ import { readFileSync } from 'node:fs';
 const { services } = JSON.parse(readFileSync('/work/config.json', 'utf8'));
 const gateway = ['api-gateway'];
 const trusted = {
-  'identity-service': ['api-gateway', 'realtime-gateway'],
-  'organization-service': gateway,
+  'identity-service': ['api-gateway', 'realtime-gateway', 'organization-service'],
+  'organization-service': ['api-gateway', 'realtime-gateway', 'identity-service'],
   'billing-service': gateway,
   'task-service': ['api-gateway', 'realtime-gateway', 'automation-service', 'integration-service'],
   'document-service': gateway,
@@ -110,7 +110,9 @@ const trusted = {
 };
 const called = {
   'api-gateway': Object.keys(trusted),
-  'realtime-gateway': ['identity-service', 'task-service'],
+  'realtime-gateway': ['identity-service', 'organization-service', 'task-service'],
+  'identity-service': ['organization-service'],
+  'organization-service': ['identity-service'],
   'automation-service': ['task-service', 'notification-service'],
   'integration-service': ['task-service'],
 };
@@ -133,8 +135,19 @@ for (const [name, issuers] of Object.entries(trusted)) {
 }
 for (const [name, targets] of Object.entries(called)) {
   const environment = services[name].environment;
-  if (environment.INTERNAL_TOKEN_ISSUER !== name) fail(`${name} issuer`);
-  if (JSON.parse(environment.INTERNAL_TOKEN_PRIVATE_JWK).d === undefined) fail(`${name} private key`);
+  const serviceSigner = name === 'identity-service' || name === 'organization-service';
+  const keyVariable = serviceSigner
+    ? `${name.toUpperCase().replaceAll('-', '_')}_INTERNAL_TOKEN_PRIVATE_JWK`
+    : 'INTERNAL_TOKEN_PRIVATE_JWK';
+  if (!serviceSigner && environment.INTERNAL_TOKEN_ISSUER !== name) fail(`${name} issuer`);
+  const privateKey = JSON.parse(environment[keyVariable]);
+  if (privateKey.d === undefined) fail(`${name} private key`);
+  for (const target of targets) {
+    const publicKey = JSON.parse(services[target].environment.INTERNAL_TOKEN_TRUSTED_ISSUERS)[name]?.[0];
+    if (!publicKey || publicKey.x !== privateKey.x || publicKey.kid !== privateKey.kid) {
+      fail(`${target} does not trust ${name}'s signing key`);
+    }
+  }
   for (const target of targets) {
     const variable = `${target.toUpperCase().replaceAll('-', '_')}_URL`;
     const expected = `http://${target}:${services[target].environment.PORT}`;
