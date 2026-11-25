@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end test of compose/nats against the NATS of compose/infra.yaml, with the local values of
 # compose/.env.example. Covers: the consumers granted by name, the three streams and their limits,
-# the latch stream of the realtime gateway, a backend that publishes its own subjects only, events
+# the advisory latches, a backend that publishes its own subjects only, events
 # read through consumers and never through a subscription, the restricted stream read by
 # notification only, inboxes kept apart, the dead-letter path, streams no backend can change, a
 # lost stream created again, an existing stream brought to its declaration, the hashes that make a
@@ -140,15 +140,26 @@ realtime-gateway EVENTS realtime-gateway__relay-reminder-due evt.reminder.due.v1
 readonly DELIVERY='tries: ([0-9]+) / cons seq: ([0-9]+) / str seq: ([0-9]+)'
 # The system subjects a backend may have besides those of its consumers: the start-up checks of
 # @cadenway/nest-messaging, for notification alone the reads and advisories of the dead-letter
-# worker, and for realtime-gateway alone the information of its latch stream.
+# worker, and for each latch owner alone the information of its latch stream.
 readonly STREAM_INFO='^publish \$JS\.API\.(INFO|STREAM\.NAMES|STREAM\.INFO\.(EVENTS|EVENTS_RESTRICTED|EVENTS_DLQ))$'
 readonly REALTIME_LATCH_INFO='^publish \$JS\.API\.STREAM\.INFO\.REALTIME_AUTHORIZATION_ADVISORIES$'
+readonly SEARCH_LATCH_INFO='^publish \$JS\.API\.STREAM\.INFO\.SEARCH_REBUILD_ADVISORIES$'
+readonly BILLING_LATCH_INFO='^publish \$JS\.API\.STREAM\.INFO\.BILLING_REBUILD_ADVISORIES$'
 # The authorization invalidation durables of realtime-gateway, whose terminal advisories its latch
 # stream captures; the other consumers of the gateway are not part of it.
 readonly REALTIME_INVALIDATIONS='relay-session-revoked relay-session-organization-changed
 relay-member-removed relay-member-role-changed relay-space-updated relay-space-access-changed
 relay-space-access-republished relay-space-deleted relay-list-access-changed relay-list-deleted
 relay-task-trashed relay-task-purged relay-task-updated'
+# The independent consumer inventory above names every monitored Search and Billing durable.
+SEARCH_DURABLES=$(awk '$1 == "search" && $3 ~ /^search-service__index-/ { print $3 }' \
+  <<<"$CONSUMERS")
+BILLING_DURABLES=$(awk '$1 == "billing" &&
+  $3 ~ /^billing-service__(register-organization|record-)/ { print $3 }' <<<"$CONSUMERS")
+REALTIME_DURABLES=$(for handler in $REALTIME_INVALIDATIONS; do
+  echo "realtime-gateway__$handler"
+done)
+readonly SEARCH_DURABLES BILLING_DURABLES REALTIME_DURABLES
 readonly CONSUMER_API='^publish \$JS\.(API\.CONSUMER\.(CREATE|INFO|MSG\.NEXT)|ACK)\.'
 readonly DEAD_LETTER_READ='^publish \$JS\.API\.STREAM\.MSG\.GET\.(EVENTS|EVENTS_RESTRICTED)$'
 readonly DEAD_LETTER_ADVISORY='^subscribe \$JS\.EVENT\.ADVISORY\.CONSUMER\.(MAX_DELIVERIES|MSG_TERMINATED)\.(EVENTS|EVENTS_RESTRICTED)\.>$'
@@ -225,11 +236,10 @@ wait_healthy() {
   printf '%s\n' "$state"
 }
 
-# Checks every field @cadenway/nest-messaging checks before the gateway admits a socket
-# (isEmptyConsumerAdvisoryStream), and the subjects: a latch it does not recognize keeps every
-# socket out. Argument: what is checked, the start of the check titles.
+# Checks the fields and exact subjects required by isEmptyConsumerAdvisoryStream.
+# Arguments: title, stream and complete durable names.
 check_latch() {
-  OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.config | [.storage, .retention, .discard,
+  OUT=$(stream_field "$2" '.config | [.storage, .retention, .discard,
     .max_msgs, .max_age, .max_bytes, .max_msg_size, .max_msgs_per_subject, (.sealed // false),
     (.deny_delete // false), (.discard_new_per_subject // false), (.allow_msg_ttl // false),
     (.allow_msg_schedules // false), (.allow_rollup_hdrs // false), (.mirror == null),
@@ -237,13 +247,13 @@ check_latch() {
     | map(tostring) | join(" ")')
   check "$1 keeps one message, with no age or size limit, and nothing else" \
     '[[ $OUT == "file limits old 1 0 -1 -1 -1 false false false false false false true 0 true true" ]]'
-  EXPECTED=$(for handler in $REALTIME_INVALIDATIONS; do
+  EXPECTED=$(for durable in $3; do
     for kind in MAX_DELIVERIES MSG_TERMINATED; do
-      echo "\$JS.EVENT.ADVISORY.CONSUMER.$kind.EVENTS.realtime-gateway__$handler"
+      echo "\$JS.EVENT.ADVISORY.CONSUMER.$kind.EVENTS.$durable"
     done
   done | sort)
-  OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.config.subjects[]' | sort)
-  check "$1 captures the terminal advisories of the invalidation durables only" \
+  OUT=$(stream_field "$2" '.config.subjects[]' | sort)
+  check "$1 captures the terminal advisories of the declared durables only" \
     '[[ $OUT == "$EXPECTED" ]]'
 }
 
@@ -287,6 +297,9 @@ for grant in "${GRANTS[@]}"; do
     continue
   elif [[ $user == realtime-gateway && "$right $subject" =~ $REALTIME_LATCH_INFO ]]; then
     continue
+  elif [[ $user == search && "$right $subject" =~ $SEARCH_LATCH_INFO ]] ||
+    [[ $user == billing && "$right $subject" =~ $BILLING_LATCH_INFO ]]; then
+    continue
   else
     OUT+=" $user:$subject"
   fi
@@ -313,6 +326,21 @@ for handler in $REALTIME_INVALIDATIONS; do
   [[ ${CREATE_SET["realtime-gateway EVENTS realtime-gateway__$handler"]+present} ]] || OUT+=" $handler"
 done
 check 'each durable the realtime latch watches is a granted consumer of the gateway' '[[ -z $OUT ]]'
+for owner in search billing; do
+  OUT=''
+  if [[ $owner == search ]]; then
+    durables=$SEARCH_DURABLES count=29
+  else
+    durables=$BILLING_DURABLES count=6
+  fi
+  actual=0
+  for durable in $durables; do
+    ((actual+=1))
+    [[ ${CREATE_SET["$owner EVENTS $durable"]+present} ]] || OUT+=" $durable"
+  done
+  check "each $owner latch durable is a granted consumer of its owner" \
+    '[[ -z $OUT && $actual == "$count" ]]'
+done
 OUT=$((${#CONSUMER_GRANTS[@]} - 4 * ${#CREATES[@]}))
 check 'and no user has any other consumer or acknowledgement subject' '[[ $OUT == 0 ]]'
 
@@ -337,7 +365,9 @@ check 'EVENTS_RESTRICTED on restricted.>, limits retention, one hour, 64 MiB' \
   '[[ $OUT == "restricted.> file limits 3600000000000 67108864" ]]'
 OUT=$(stream_field EVENTS_DLQ '[.config.subjects[0], .config.storage, .config.max_age] | join(" ")')
 check 'EVENTS_DLQ on dlq.>, thirty days' '[[ $OUT == "dlq.> file 2592000000000000" ]]'
-check_latch 'the realtime latch, as created,'
+check_latch 'the realtime latch, as created,' REALTIME_AUTHORIZATION_ADVISORIES "$REALTIME_DURABLES"
+check_latch 'the search latch, as created,' SEARCH_REBUILD_ADVISORIES "$SEARCH_DURABLES"
+check_latch 'the billing latch, as created,' BILLING_REBUILD_ADVISORIES "$BILLING_DURABLES"
 OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.state.messages')
 check 'and starts empty' '[[ $OUT == 0 ]]'
 OUT=$(as realtime-gateway request '$JS.API.STREAM.INFO.REALTIME_AUTHORIZATION_ADVISORIES' '')
@@ -347,6 +377,21 @@ OUT=$(as task request '$JS.API.STREAM.INFO.REALTIME_AUTHORIZATION_ADVISORIES' ''
 check 'no other backend does' '[[ $OUT == *"$REFUSED for Publish"* ]]'
 OUT=$(as realtime-gateway stream purge REALTIME_AUTHORIZATION_ADVISORIES --force)
 check 'nor does the gateway clear it: an operator does' '[[ $OUT == *"$REFUSED for Publish"* ]]'
+
+for spec in 'search SEARCH_REBUILD_ADVISORIES' 'billing BILLING_REBUILD_ADVISORIES'; do
+  read -r owner latch <<<"$spec"
+  OUT=$(stream_field "$latch" '.state.messages')
+  check "$latch starts empty" '[[ $OUT == 0 ]]'
+  OUT=$(as "$owner" request "\$JS.API.STREAM.INFO.$latch" '')
+  check "$owner reads its latch information" \
+    '[[ $OUT != *"$REFUSED"* && $OUT == *"\"name\":\"$latch\""* ]]'
+  OUT=$(as task request "\$JS.API.STREAM.INFO.$latch" '')
+  check "another backend cannot read $latch" '[[ $OUT == *"$REFUSED for Publish"* ]]'
+  OUT=$(as "$owner" stream purge "$latch" --force)
+  check "$owner cannot purge $latch" '[[ $OUT == *"$REFUSED for Publish"* ]]'
+  OUT=$(as "$owner" stream rm "$latch" --force)
+  check "$owner cannot delete $latch" '[[ $OUT == *"$REFUSED for Publish"* ]]'
+done
 
 echo '=== 4. a backend publishes its own subjects only'
 OUT=$(as task request evt.task.created.v1 '{"id":"CAD-482"}')
@@ -499,7 +544,11 @@ check 'and the container is healthy' '[[ $OUT == "nats-streams healthy" ]]'
 compose restart nats-streams >/dev/null 2>&1
 OUT=$(wait_healthy)
 check 'a start with nothing to change is healthy too' '[[ $OUT == "nats-streams healthy" ]]'
-check_latch 'the realtime latch, edited at each start,'
+check_latch 'the realtime latch, edited at each start,' REALTIME_AUTHORIZATION_ADVISORIES \
+  "$REALTIME_DURABLES"
+check_latch 'the search latch, edited at each start,' SEARCH_REBUILD_ADVISORIES "$SEARCH_DURABLES"
+check_latch 'the billing latch, edited at each start,' BILLING_REBUILD_ADVISORIES \
+  "$BILLING_DURABLES"
 
 echo '=== 12. each granted consumer works for its owner, and for no other backend'
 # Earlier sections publish and acknowledge messages, but limits retention keeps them in the stream.
@@ -633,7 +682,8 @@ compose exec -T nats-streams nats stream purge REALTIME_AUTHORIZATION_ADVISORIES
 OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.state.messages')
 check 'and an operator clears the latch from the nats-streams container' '[[ $OUT == 0 ]]'
 # Lost once the gateway has its consumers, the latch comes back closed, not empty.
-compose exec -T nats-streams nats stream rm REALTIME_AUTHORIZATION_ADVISORIES --force >/dev/null 2>&1
+compose exec -T nats-streams sh -c 'nats stream rm REALTIME_AUTHORIZATION_ADVISORIES --force &&
+  nats stream rm SEARCH_REBUILD_ADVISORIES --force' >/dev/null 2>&1
 # Within the check interval of nats-streams, a minute, as for the stream of section 10.
 for _ in $(seq 1 45); do
   OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.state.messages')
@@ -642,7 +692,24 @@ for _ in $(seq 1 45); do
 done
 check 'a latch lost while the gateway consumes is created again closed, holding a marker' \
   '[[ $OUT == 1 ]]'
-check_latch 'the latch created again'
+check_latch 'the latch created again' REALTIME_AUTHORIZATION_ADVISORIES "$REALTIME_DURABLES"
+OUT=$(wait_for SEARCH_REBUILD_ADVISORIES '.state.messages' 1)
+check 'the search latch lost while consuming is created again closed' '[[ $OUT == 1 ]]'
+check_latch 'the search latch created again' SEARCH_REBUILD_ADVISORIES "$SEARCH_DURABLES"
+# A recreation stopped after the add and before the marker leaves the latch empty in its
+# initializing configuration (two messages), which no service trusts; the next pass finishes it.
+compose exec -T nats-streams sh -c 'nats stream purge SEARCH_REBUILD_ADVISORIES --force &&
+  nats stream edit SEARCH_REBUILD_ADVISORIES --max-msgs=2 --force' >/dev/null 2>&1
+LATCH_STATE='[.config.max_msgs, .state.messages] | map(tostring) | join(" ")'
+OUT=$(stream_field SEARCH_REBUILD_ADVISORIES "$LATCH_STATE")
+check 'an interrupted recreation leaves the latch in a configuration no service trusts' \
+  '[[ $OUT == "2 0" ]]'
+for _ in $(seq 1 45); do
+  OUT=$(stream_field SEARCH_REBUILD_ADVISORIES "$LATCH_STATE")
+  [[ $OUT == '1 1' ]] && break
+  sleep 2
+done
+check 'the next pass finishes it closed, holding a marker, not empty' '[[ $OUT == "1 1" ]]'
 compose exec -T nats-streams nats stream purge REALTIME_AUTHORIZATION_ADVISORIES --force \
   >/dev/null 2>&1
 OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.state.messages')

@@ -216,10 +216,62 @@ queues do not require JetStream consumer grants. Task publishes `evt.intake.atta
 and `evt.intake.attachment-released.v1`; Storage publishes `evt.intake.attachment-verified.v1`.
 These exact subjects keep the shared `intake` prefix from granting either service the other's events.
 
-Search and Billing also look for `SEARCH_REBUILD_ADVISORIES` and `BILLING_REBUILD_ADVISORIES`
-when certifying rebuild progress. Those streams are not provisioned by `ensure-streams.sh`; the
-consumer grants alone do not enable those rebuild proofs. Their stream lifecycle and permissions
-still need to be implemented before the corresponding rebuilds can complete.
+### Rebuild advisories
+
+`SEARCH_REBUILD_ADVISORIES` captures the terminal advisories of the 29 Search source consumers, and
+`BILLING_REBUILD_ADVISORIES` those of the six Billing usage observation consumers. Each service
+reads the stream information of its own latch only. Each latch keeps only the last advisory.
+
+- **Billing** reads usage only while its latch is empty. A held advisory makes it invalidate the
+  active usage of each organization it advances (`AdvanceUsageRebuild`), so measured usage is
+  unavailable until the latch is cleared and a new usage generation, rebuilt from the
+  organization and storage pages, is promoted. Clearing the latch is safe once that invalidation
+  has happened: the rebuild, not the dead letters, restores the usage.
+- **Search** promotes a new index generation only while its latch is empty; a held advisory blocks
+  the promotion, while an active index keeps serving. Clearing the latch does not repair a change
+  the active index missed: that needs a rebuild of the index from its owners, which search-service
+  starts on its own only when the index or the broker identity changes, and offers no operator
+  command for yet.
+
+The dead letters are not a complete history of what was given up: the dead-letter worker copies
+only the advisories it received while it ran, and `EVENTS_DLQ` keeps 30 days and 256 MiB. Use them
+to find the affected resources, never to prove that nothing else was lost. A latch created closed
+(first provisioning while the service already consumes, or a lost latch) has no history at all.
+To clear `SEARCH_REBUILD_ADVISORIES` or `BILLING_REBUILD_ADVISORIES` (`<latch>` below), run the
+commands in the `nats-streams` container, as the `admin` user:
+
+1. Note the last sequence of the latch, `nats stream info <latch>` (`Last Sequence`), and read its
+   advisory with `nats stream view <latch>`.
+2. List the dead letters of its service to find the affected resources, for each watched handler:
+   `nats stream view EVENTS_DLQ --subject 'dlq.search-service__<handler>.>'` (Search) or
+   `nats stream view EVENTS_DLQ --subject 'dlq.billing-service__<handler>.>'` (Billing).
+3. Make the projection whole before clearing. Billing: leave the latch held until the usage
+   scheduler, which advances the enrolled organizations page by page every two seconds, has
+   invalidated the usage of each of them; usage cleared too early stays in place for the
+   organizations not advanced yet. Search: clear only when no index has ever been promoted, which
+   is the case of a first provisioning (a missing or held latch keeps any build from starting, so
+   the first build after the purge exports everything from the owners), or when the active index
+   and any build in progress are known to be complete. Otherwise leave the latch held:
+   search-service offers no operator command to rebuild an index yet, and a purge would let a
+   build begun before the advisory be promoted.
+4. Purge up to that sequence only, so that an advisory recorded meanwhile stays latched:
+   `nats stream purge <latch> --seq <last sequence + 1> --force`.
+
+These steps never touch `REALTIME_AUTHORIZATION_ADVISORIES`, which has its own
+[procedure](#realtime-authorization-advisories) and reconciliation.
+
+A latch starts empty only while `EVENTS` has no consumer of its service: a new environment, or a
+broker that lost `EVENTS` or those consumers too. Then the empty latch guards a rebuild, not an
+old projection: Search (`brokerIdentityChanged`) and Billing (`BillingUsageBrokerProof`) record
+the creation time of `EVENTS` and of each of their consumers with their active state, and a
+recreated stream or consumer makes Search rebuild its index and Billing invalidate its usage.
+
+A latch is added allowing two messages, a configuration no service trusts, and takes its
+single-message configuration only once the marker it needs is stored, so a pass interrupted in
+between never leaves an empty latch the services would trust; the next pass finishes it. As for
+the realtime latch, the dead-letter worker of notification-service logs a marker as an unreadable
+advisory. Changes to either durable list require the same
+[coordinated cutover](#changing-the-invalidation-consumers) as the realtime list.
 
 The realtime gateway starts its five Git consumers and its two personal notice consumers only when
 its [relay switches](service-environment.md#realtime-relays) are on; the grant is there in every
@@ -294,6 +346,8 @@ publishes and consumes the events a service lists in `restrictedEvents` on `rest
 | `EVENTS_RESTRICTED`                 | `restricted.>`       | 1 hour       | 64 MiB    | The restricted events                                                                                             |
 | `EVENTS_DLQ`                        | `dlq.>`              | 30 days      | 256 MiB   | Messages a consumer gave up on (dead letters)                                                                     |
 | `REALTIME_AUTHORIZATION_ADVISORIES` | 26 advisory subjects | until purged | 1 message | The last authorization invalidation the realtime gateway gave up on ([latch](#realtime-authorization-advisories)) |
+| `SEARCH_REBUILD_ADVISORIES`         | 58 advisory subjects | until purged | 1 message | Last Search source consumer advisory ([latch](#rebuild-advisories))                                               |
+| `BILLING_REBUILD_ADVISORIES`        | 12 advisory subjects | until purged | 1 message | Last Billing usage consumer advisory ([latch](#rebuild-advisories))                                               |
 
 File storage, oldest messages dropped first, duplicates of a `Nats-Msg-Id` refused for two minutes.
 The sizes are starting values.
@@ -304,8 +358,8 @@ stream past its use.
 
 No backend can create, change, purge or delete a stream. The `nats-streams` container of
 `compose/infra.yaml` owns them: it runs `compose/nats/ensure-streams.sh` with the `admin` user,
-creates or updates the four streams at start, then checks every minute that they exist and
-creates again one the broker lost. It is healthy while the four exist. A changed limit reaches a
+creates or updates the six streams at start, then checks every minute that they exist and
+creates again one the broker lost. It is healthy while all six exist. A changed limit reaches a
 stream that exists when the container starts again, which a new `ENSURE_STREAMS_SHA256` causes on
 every host (see [changing the permissions](#changing-the-permissions)); a lower age drops the
 older messages at once, and the retention and storage of a stream never change.
@@ -366,7 +420,9 @@ themselves are the dead letters the [dead-letter worker](#dead-letters) copied f
    `nats stream view EVENTS_DLQ --subject 'dlq.realtime-gateway__<handler>.>'` for each of them
    (a wildcard covers whole tokens only), and reconcile what each changed: the sessions,
    memberships or visibility it concerned, closing the affected sockets by restarting the gateway
-   if needed.
+   if needed. The dead letters are not a complete history (see
+   [rebuild advisories](#rebuild-advisories)): when the latch holds a marker, or the worker may
+   have missed advisories, restart the gateway so that every socket is authorized again.
 3. Purge up to that sequence only, so that an advisory recorded during the reconciliation stays
    latched: `nats stream purge REALTIME_AUTHORIZATION_ADVISORIES --seq <last sequence + 1> --force`.
 
@@ -377,9 +433,12 @@ as the `admin` user. No backend may purge or delete the stream.
 gateway, its first provisioning. A latch lost afterwards (removed by hand, or not recovered by the
 broker) may have held an advisory, and those published while it was missing are lost: the script
 creates it again closed, holding a marker (`io.cadenway.realtime.latch-recreated`), which an
-operator clears in the same way. The dead-letter worker of notification-service sees that marker
-on the advisory subject and logs it as an unreadable advisory. A broker that lost `EVENTS` and its
-consumers too starts the latch empty, like a new environment.
+operator clears in the same way. It adds a latch allowing two messages, a configuration the gateway
+does not trust, lists the consumers only then, stores the marker if one is needed, and sets the
+single-message configuration last: a pass stopped in between leaves a latch the next pass finishes,
+never an empty one the gateway would trust. The dead-letter worker of notification-service sees that
+marker on the advisory subject and logs it as an unreadable advisory. A broker that lost `EVENTS`
+and its consumers too starts the latch empty, like a new environment.
 
 ### Changing the invalidation consumers
 
@@ -391,7 +450,9 @@ for every environment, while the gateway release reaches staging and then produc
 whenever the new list is merged, the environments whose gateway runs the other list refuse
 sockets until the release reaches them. Merge it when the release is about to be deployed and
 promote it promptly. Accepting a superset of subjects in `@cadenway/nest-messaging` would remove
-that window. A removed handler keeps its grant until no running release uses it.
+that window. A removed handler keeps its grant until no running release uses it. The same
+cutover applies to the Search and Billing rebuild advisory durable lists: a mismatched list blocks
+the corresponding proof until the service release and latch declaration agree.
 
 ## Rebuilds
 

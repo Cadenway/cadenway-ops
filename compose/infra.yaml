@@ -74,7 +74,7 @@ services:
       # changes, not when a file it mounts does: changing this value with the file is what makes
       # every environment restart the broker with the new permissions (tests/nats-permissions.sh
       # checks that the two match).
-      NATS_SERVER_CONF_SHA256: defa88ee46c197eb29a1311e710a85ddefa6d3da0122868d9d3ece23e76c159a
+      NATS_SERVER_CONF_SHA256: d4b4272cde24fd0fcc3e1e078374a196a2a5c62636ba7152de5c1000dd8076b8
       # Read by nats/nats-server.conf: one user per backend, and the user that owns the streams.
       NATS_ADMIN_PASSWORD: ${NATS_ADMIN_PASSWORD}
       IDENTITY_NATS_PASSWORD: ${IDENTITY_NATS_PASSWORD}
@@ -107,17 +107,16 @@ services:
   nats-streams:
     # Owner of the JetStream streams: the backends may not create one. It applies
     # nats/ensure-streams.sh at start, then stays to recreate a stream the broker lost; it is
-    # healthy while EVENTS, EVENTS_RESTRICTED, EVENTS_DLQ and the realtime latch
-    # REALTIME_AUTHORIZATION_ADVISORIES exist, which is what the services of the local stack and the
-    # GitOps agent wait for. Operators read the dead letters from it
-    # (`docker compose exec nats-streams nats stream view EVENTS_DLQ`) and clear the latch
-    # (docs/messaging.md#realtime-authorization-advisories).
+    # healthy while EVENTS, EVENTS_RESTRICTED, EVENTS_DLQ and the three advisory latches exist.
+    # Local services and the GitOps agent wait for them. Operators read dead letters here and
+    # clear latches after reconciliation (docs/messaging.md#realtime-authorization-advisories,
+    # docs/messaging.md#rebuild-advisories).
     image: natsio/nats-box:0.20.2-nonroot@sha256:d00bffed51ea1a29e58852698bde37020d306af55585882f88dbcf09dd86f5fe
     restart: unless-stopped
     entrypoint: ['/bin/sh', '/etc/nats/ensure-streams.sh']
     environment:
       # SHA-256 of nats/ensure-streams.sh, for the same reason as NATS_SERVER_CONF_SHA256.
-      ENSURE_STREAMS_SHA256: 632669a36c9d829fc7dbf8aa9a05aeb8238b031713d18c27eb13ef7642441b7d
+      ENSURE_STREAMS_SHA256: b1a8f0979ff78d6922bcc559eff3e58126d8ac565b1b425394613df3abf5935e
       NATS_URL: ${NATS_URL}
       NATS_USER: admin
       NATS_PASSWORD: ${NATS_ADMIN_PASSWORD}
