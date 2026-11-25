@@ -24,13 +24,29 @@ stack builds each service from its sibling folder.
 ```bash
 cd compose
 cp .env.example .env                        # once
-docker compose run --rm internal-token-keys # once: the key pairs of the internal token
+docker compose run --rm internal-token-keys # generate missing local keys and secrets
 docker compose up -d                        # start (stop: docker compose down)
 docker compose watch task-service           # rebuild a service when its sources change
 ```
 
 `compose/.env` sets Compose's own `COMPOSE_FILE` and `COMPOSE_PROFILES`, so the plain commands use
 the local overrides and the `core` profile; set `COMPOSE_PROFILES=full` there for every service.
+
+After pulling updates to this repository and the service checkouts, refresh the local keys and
+existing PostgreSQL volume, then apply each database service's migrations. From `compose/`:
+
+```bash
+set -e
+docker compose run --rm internal-token-keys
+docker compose up -d --wait postgres
+docker compose exec postgres sh /docker-entrypoint-initdb.d/10-service-databases.sh
+for service in identity organization billing task document storage notification automation integration search; do
+  docker compose --profile full run --rm --no-deps "${service}-service" node dist/migrate.js     || { echo "migration failed: ${service}-service" >&2; exit 1; }
+done
+```
+
+The generator preserves existing values; the role script preserves data. Rebuild the service images
+before migrating if their sources changed.
 
 A second stack can run beside the first one, to check a branch for example, under another project
 name and Traefik port: `TRAEFIK_HTTP_PORT=8080 docker compose -p cadenway-check up -d`. It has its

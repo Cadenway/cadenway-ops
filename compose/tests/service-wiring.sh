@@ -44,15 +44,15 @@ OUT=$(generate /work/.env) && OUT="succeeded: $OUT"
 check 'refuses a file that does not exist' '[[ $OUT == *"copy .env.example to .env first"* && $OUT != succeeded:* ]]'
 cp .env.example "$WORK/.env"
 OUT=$(generate /work/.env) || OUT="failed: $OUT"
-check 'writes the pairs' '[[ $OUT == *"wrote the key pairs of API_GATEWAY, REALTIME_GATEWAY, IDENTITY_SERVICE, ORGANIZATION_SERVICE, AUTOMATION_SERVICE, INTEGRATION_SERVICE"* ]]'
+check 'writes the pairs' '[[ $OUT == *"wrote the key pairs of API_GATEWAY, REALTIME_GATEWAY, IDENTITY_SERVICE, ORGANIZATION_SERVICE, AUTOMATION_SERVICE, INTEGRATION_SERVICE, TASK_SERVICE, DOCUMENT_SERVICE, SEARCH_SERVICE, NOTIFICATION_SERVICE, BILLING_SERVICE"* ]]'
 OUT=$(grep -c '_INTERNAL_TOKEN_\(PRIVATE_JWK\|PUBLIC_JWKS\)=' "$WORK/.env")
-check 'two variables per issuer' '[[ $OUT == 12 ]]'
+check 'two variables per issuer' '[[ $OUT == 22 ]]'
 BEFORE=$(sha256sum "$WORK/.env")
 OUT=$(generate /work/.env) || OUT="failed: $OUT"
 check 'a second run writes nothing' '[[ $OUT == *"nothing written"* && $(sha256sum "$WORK/.env") == "$BEFORE" ]]'
 OUT=$(generate --print) || OUT="failed: $OUT"
-check '--print prints twelve unquoted lines' \
-  '[[ $(grep -c "^[A-Z_]*_INTERNAL_TOKEN_[A-Z_]*={\"kty\":\"OKP\"" <<<"$OUT") == 12 ]]'
+check '--print prints twenty-two unquoted lines' \
+  '[[ $(grep -c "^[A-Z_]*_INTERNAL_TOKEN_[A-Z_]*={\"kty\":\"OKP\"" <<<"$OUT") == 22 ]]'
 check 'and leaves the file alone' '[[ $(sha256sum "$WORK/.env") == "$BEFORE" ]]'
 
 echo '=== 2. the keys sign and verify'
@@ -67,7 +67,7 @@ const variables = Object.fromEntries(
     .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
 );
 const message = Buffer.from('cadenway');
-for (const issuer of ['API_GATEWAY', 'REALTIME_GATEWAY', 'IDENTITY_SERVICE', 'ORGANIZATION_SERVICE', 'AUTOMATION_SERVICE', 'INTEGRATION_SERVICE']) {
+for (const issuer of ['API_GATEWAY', 'REALTIME_GATEWAY', 'IDENTITY_SERVICE', 'ORGANIZATION_SERVICE', 'AUTOMATION_SERVICE', 'INTEGRATION_SERVICE', 'TASK_SERVICE', 'DOCUMENT_SERVICE', 'SEARCH_SERVICE', 'NOTIFICATION_SERVICE', 'BILLING_SERVICE']) {
   const quotedPrivate = variables[`${issuer}_INTERNAL_TOKEN_PRIVATE_JWK`];
   const quotedPublic = variables[`${issuer}_INTERNAL_TOKEN_PUBLIC_JWKS`];
   if (!/^'.*'$/.test(quotedPrivate) || !/^'.*'$/.test(quotedPublic)) throw new Error('not quoted');
@@ -115,6 +115,11 @@ const called = {
   'organization-service': ['identity-service'],
   'automation-service': ['task-service', 'notification-service'],
   'integration-service': ['task-service'],
+  'task-service': ['organization-service'],
+  'document-service': ['task-service'],
+  'search-service': ['task-service', 'organization-service', 'document-service', 'storage-service'],
+  'notification-service': ['identity-service', 'organization-service', 'task-service'],
+  'billing-service': ['organization-service', 'storage-service'],
 };
 const port = (name) => /^\d+$/.test(services[name].environment.PORT);
 const fail = (message) => {
@@ -135,15 +140,17 @@ for (const [name, issuers] of Object.entries(trusted)) {
 }
 for (const [name, targets] of Object.entries(called)) {
   const environment = services[name].environment;
-  const serviceSigner = name === 'identity-service' || name === 'organization-service';
+  const serviceSigner = name === 'identity-service' || name === 'organization-service' || name === 'task-service';
   const keyVariable = serviceSigner
     ? `${name.toUpperCase().replaceAll('-', '_')}_INTERNAL_TOKEN_PRIVATE_JWK`
     : 'INTERNAL_TOKEN_PRIVATE_JWK';
-  if (!serviceSigner && environment.INTERNAL_TOKEN_ISSUER !== name) fail(`${name} issuer`);
+  if (!serviceSigner && ['api-gateway', 'realtime-gateway', 'automation-service', 'integration-service'].includes(name) && environment.INTERNAL_TOKEN_ISSUER !== name) fail(`${name} issuer`);
   const privateKey = JSON.parse(environment[keyVariable]);
   if (privateKey.d === undefined) fail(`${name} private key`);
   for (const target of targets) {
-    const publicKey = JSON.parse(services[target].environment.INTERNAL_TOKEN_TRUSTED_ISSUERS)[name]?.[0];
+    const targetEnv = services[target].environment;
+    const fallback = targetEnv[`${name.toUpperCase().replaceAll('-', '_')}_INTERNAL_TOKEN_PUBLIC_JWKS`];
+    const publicKey = JSON.parse(targetEnv.INTERNAL_TOKEN_TRUSTED_ISSUERS)[name]?.[0] ?? (fallback && JSON.parse(fallback));
     if (!publicKey || publicKey.x !== privateKey.x || publicKey.kid !== privateKey.kid) {
       fail(`${target} does not trust ${name}'s signing key`);
     }
@@ -162,6 +169,45 @@ for (const name of Object.keys(services)) {
   const environment = services[name].environment ?? {};
   if (!(name in called) && 'INTERNAL_TOKEN_PRIVATE_JWK' in environment) fail(`${name} has a private key`);
 }
+// These variables are required by the current service definitions and local features.
+const required = {
+  'api-gateway': ['FEDERATED_CONTINUATION_URL'],
+  'realtime-gateway': ['REALTIME_PAGED_RECIPIENTS_ENABLED'],
+  'identity-service': ['AUTHENTICATION_COUNTER_RETENTION_ENABLED', 'NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS'],
+  'organization-service': ['SEARCH_PROJECTION_CURSOR_SECRET', 'BILLING_AUTHORITY_CURSOR_SECRET', 'ORGANIZATION_SEAT_QUOTA_ENABLED', 'ORGANIZATION_SEAT_ENTITLEMENT_EVENTS_ENABLED'],
+  'billing-service': ['BILLING_USAGE_ENABLED'],
+  'task-service': ['TASK_SERVICE_OUTBOX_MODE', 'TASK_MEMBERSHIP_AUTHORITY_MODE', 'SEARCH_PROJECTION_CURSOR_SECRET'],
+  'document-service': ['DOCUMENT_ACCESS_MODE', 'SEARCH_PROJECTION_CURSOR_SECRET'],
+  'storage-service': ['SEARCH_PROJECTION_CURSOR_SECRET', 'BILLING_PROJECTION_CURSOR_SECRET', 'STORAGE_BYTE_QUOTA_ENABLED', 'STORAGE_BILLING_ENTITLEMENTS_ENABLED', 'STORAGE_UPLOAD_TRANSFER_MODE', 'STORAGE_UPLOAD_RECEIPT_KEYS'],
+  'notification-service': ['SITE_CONTACT_SUPPORT_ADDRESS'],
+  'automation-service': ['AUTOMATION_TASK_TRIGGERS_ENABLED', 'AUTOMATION_COMMENT_AND_NOTIFICATION_ACTIONS_ENABLED', 'AUTOMATION_CURSOR_SIGNING_KEY'],
+  'integration-service': ['GIT_WEBHOOK_RECEIVERS', 'GIT_LINK_EVENTS_ENABLED', 'GIT_LINK_PURGE_ENABLED'],
+  'search-service': ['SEARCH_PALETTE_CURSOR_SECRET'],
+};
+for (const [name, variables] of Object.entries(required)) {
+  const environment = services[name].environment;
+  const common = name.endsWith('-service')
+    ? ['PORT', 'DATABASE_URL', 'NATS_URL', 'NATS_USER', 'NATS_PASSWORD', 'INTERNAL_TOKEN_AUDIENCE', 'INTERNAL_TOKEN_TRUSTED_ISSUERS']
+    : ['PORT', 'REDIS_URL', 'ALLOWED_ORIGINS'];
+  for (const variable of [...common, ...variables]) {
+    if (!(variable in environment) || environment[variable] == null ||
+        (environment[variable] === '' && !['FEDERATED_CONTINUATION_URL', 'SITE_CONTACT_SUPPORT_ADDRESS'].includes(variable))) {
+      fail(`${name} missing ${variable}`);
+    }
+  }
+}
+for (const [name, variable] of [
+  ['organization-service', 'SEARCH_PROJECTION_CURSOR_SECRET'], ['organization-service', 'BILLING_AUTHORITY_CURSOR_SECRET'],
+  ['task-service', 'SEARCH_PROJECTION_CURSOR_SECRET'], ['document-service', 'SEARCH_PROJECTION_CURSOR_SECRET'],
+  ['storage-service', 'SEARCH_PROJECTION_CURSOR_SECRET'], ['storage-service', 'BILLING_PROJECTION_CURSOR_SECRET'],
+  ['search-service', 'SEARCH_PALETTE_CURSOR_SECRET'],
+]) {
+  const value = services[name].environment[variable];
+  if (!value || Buffer.from(value, 'base64url').length !== 32 || Buffer.from(value, 'base64url').toString('base64url') !== value) fail(`${name} ${variable}`);
+}
+if (!/^[a-f0-9]{64}$/.test(services['automation-service'].environment.AUTOMATION_CURSOR_SIGNING_KEY)) fail('automation cursor key');
+const receipt = JSON.parse(services['storage-service'].environment.STORAGE_UPLOAD_RECEIPT_KEYS);
+if (receipt.keys.length !== 1 || receipt.activeKeyId !== receipt.keys[0].id || Buffer.from(receipt.keys[0].key, 'base64url').length !== 32 || Buffer.from(receipt.keys[0].key, 'base64url').toString('base64url') !== receipt.keys[0].key) fail('storage receipt keyring');
 const storage = services['storage-service'].environment;
 if (storage.S3_ENDPOINT !== 'http://garage:3900') fail('storage endpoint');
 if (storage.S3_PUBLIC_ENDPOINT !== 'http://s3.cadenway.localhost') fail('storage public endpoint');

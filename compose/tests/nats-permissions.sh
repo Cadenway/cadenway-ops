@@ -9,6 +9,7 @@
 # names and filters nobody was given.
 #
 #   bash compose/tests/nats-permissions.sh
+#   bash compose/tests/nats-permissions.sh --inventory-only  # static grants and hashes, no Docker
 #
 # It creates and removes the Compose project cadenway-test-nats with its own volumes: it never
 # touches the local stack, and must never run on a Cadenway host.
@@ -28,6 +29,69 @@ readonly REFUSED='Permissions Violation'
 # use the consumer (section 12 then tries one of them as every other backend). Section 2 fails when
 # this list and the configuration differ, so a grant always comes with its test.
 readonly CONSUMERS='
+organization EVENTS organization-service__project-seat-entitlement evt.subscription.changed.v1 billing identity
+billing EVENTS billing-service__register-organization evt.organization.created.v1 organization identity
+billing EVENTS billing-service__record-member-joined evt.member.joined.v1 organization identity
+billing EVENTS billing-service__record-member-role-changed evt.member.role-changed.v1 organization identity
+billing EVENTS billing-service__record-member-removed evt.member.removed.v1 organization identity
+billing EVENTS billing-service__record-file-uploaded evt.file.uploaded.v1 storage identity
+billing EVENTS billing-service__record-file-deleted evt.file.deleted.v1 storage identity
+task EVENTS task-service__verify-intake-attachment evt.intake.attachment-verified.v1 storage identity
+task EVENTS task-service__decide-notification-delivery-authorization evt.notification.delivery-authorization-requested.v1 notification identity
+storage EVENTS storage-service__record-task-purge evt.task.purged.v1 task identity
+storage EVENTS storage-service__apply-storage-byte-entitlement evt.subscription.changed.v1 billing identity
+storage EVENTS storage-service__claim-intake-attachment evt.intake.attachment-claimed.v1 task identity
+storage EVENTS storage-service__release-intake-attachment evt.intake.attachment-released.v1 task identity
+storage EVENTS storage-service__apply-avatar-change evt.user.avatar-changed.v1 identity organization
+storage EVENTS storage-service__abandon-avatar-upload evt.user.avatar-upload-abandoned.v1 identity organization
+storage EVENTS storage-service__delete-avatar-owner evt.user.deleted.v1 identity organization
+storage EVENTS storage-service__apply-organization-logo-change evt.organization.logo-changed.v1 organization identity
+storage EVENTS storage-service__abandon-organization-logo-upload evt.organization.logo-upload-abandoned.v1 organization identity
+notification EVENTS notification-service__activity-task-delivery-authorized evt.task.notification-delivery-authorized.v1 task identity
+notification EVENTS notification-service__inbox-task-delivery-authorized evt.task.notification-delivery-authorized.v1 task identity
+notification EVENTS notification-service__inbox-task-assigned evt.task.assigned.v1 task identity
+notification EVENTS notification-service__inbox-task-status-changed evt.task.status-changed.v1 task identity
+notification EVENTS notification-service__inbox-comment-created evt.comment.created.v1 task identity
+notification EVENTS notification-service__inbox-comment-updated evt.comment.updated.v1 task identity
+notification EVENTS notification-service__inbox-description-mentions-changed evt.task.description-mentions-changed.v1 task identity
+notification EVENTS notification-service__inbox-approval-requested evt.approval.requested.v1 task identity
+notification EVENTS notification-service__inbox-approval-decided evt.approval.decided.v1 task identity
+notification EVENTS notification-service__inbox-task-access-requested evt.task.access-requested.v1 task identity
+notification EVENTS notification-service__inbox-task-access-approved evt.task.access-request-decided.v1 task identity
+notification EVENTS notification-service__notify-quota-threshold evt.quota.threshold-reached.v1 billing identity
+notification EVENTS notification-service__reminder-task-delivery-authorized evt.task.notification-delivery-authorized.v1 task identity
+automation EVENTS automation-service__run-task-created-rules evt.task.created.v1 task identity
+automation EVENTS automation-service__run-task-status-changed-rules evt.task.status-changed.v1 task identity
+integration EVENTS integration-service__purge-task-git-links evt.task.purged.v1 task identity
+search EVENTS search-service__index-task-created-v1 evt.task.created.v1 task identity
+search EVENTS search-service__index-task-updated-v1 evt.task.updated.v1 task identity
+search EVENTS search-service__index-task-archived-v1 evt.task.archived.v1 task identity
+search EVENTS search-service__index-task-unarchived-v1 evt.task.unarchived.v1 task identity
+search EVENTS search-service__index-task-trashed-v1 evt.task.trashed.v1 task identity
+search EVENTS search-service__index-task-restored-v1 evt.task.restored.v1 task identity
+search EVENTS search-service__index-task-purged-v1 evt.task.purged.v1 task identity
+search EVENTS search-service__index-task-watcher-changed-v1 evt.task.watcher-changed.v1 task identity
+search EVENTS search-service__index-comment-created-v1 evt.comment.created.v1 task identity
+search EVENTS search-service__index-comment-updated-v1 evt.comment.updated.v1 task identity
+search EVENTS search-service__index-comment-deleted-v1 evt.comment.deleted.v1 task identity
+search EVENTS search-service__index-list-created-v1 evt.list.created.v1 task identity
+search EVENTS search-service__index-list-updated-v1 evt.list.updated.v1 task identity
+search EVENTS search-service__index-list-archived-v1 evt.list.archived.v1 task identity
+search EVENTS search-service__index-list-unarchived-v1 evt.list.unarchived.v1 task identity
+search EVENTS search-service__index-list-deleted-v1 evt.list.deleted.v1 task identity
+search EVENTS search-service__index-list-restored-v1 evt.list.restored.v1 task identity
+search EVENTS search-service__index-list-access-changed-v1 evt.list.access-changed.v1 task identity
+search EVENTS search-service__index-space-created-v1 evt.space.created.v1 task identity
+search EVENTS search-service__index-space-updated-v1 evt.space.updated.v1 task identity
+search EVENTS search-service__index-space-deleted-v1 evt.space.deleted.v1 task identity
+search EVENTS search-service__index-space-restored-v1 evt.space.restored.v1 task identity
+search EVENTS search-service__index-space-access-changed-v1 evt.space.access-changed.v1 task identity
+search EVENTS search-service__index-space-access-republished-v1 evt.space.access-republished.v1 task identity
+search EVENTS search-service__index-doc-created-v1 evt.doc.created.v1 document identity
+search EVENTS search-service__index-doc-updated-v1 evt.doc.updated.v1 document identity
+search EVENTS search-service__index-doc-deleted-v1 evt.doc.deleted.v1 document identity
+search EVENTS search-service__index-file-uploaded-v1 evt.file.uploaded.v1 storage identity
+search EVENTS search-service__index-file-deleted-v1 evt.file.deleted.v1 storage identity
 identity EVENTS identity-service__project-member-joined evt.member.joined.v1 organization organization
 identity EVENTS identity-service__project-member-role-changed evt.member.role-changed.v1 organization notification
 identity EVENTS identity-service__project-member-removed evt.member.removed.v1 organization task
@@ -91,8 +155,6 @@ readonly DEAD_LETTER_ADVISORY='^subscribe \$JS\.EVENT\.ADVISORY\.CONSUMER\.(MAX_
 
 compose() { docker compose -p "$PROJECT" --env-file .env.example -f infra.yaml "$@"; }
 cleanup() { compose down --volumes --remove-orphans >/dev/null 2>&1 || true; }
-trap cleanup EXIT
-cleanup
 
 # Runs the `nats` command line as a backend, with its own inbox prefix as a backend connects.
 # Arguments: user (its local password is its name without hyphens, as compose/.env.example sets
@@ -200,6 +262,7 @@ check 'ENSURE_STREAMS_SHA256 is the hash of ensure-streams.sh' \
 echo '=== 2. each consumer is granted by its exact name to its owner, and nothing else is'
 mapfile -t GRANTS < <(granted_subjects)
 CONSUMER_GRANTS=()
+declare -A GRANT_SET=() CREATE_SET=()
 CREATES=()
 OUT=''
 for grant in "${GRANTS[@]}"; do
@@ -211,11 +274,13 @@ for grant in "${GRANTS[@]}"; do
     continue
   elif [[ "$right $subject" =~ $CONSUMER_API ]]; then
     CONSUMER_GRANTS+=("$user $subject")
+    GRANT_SET["$user $subject"]=1
     stem=$subject
     [[ $stem == '$JS.ACK.'* ]] && stem=${stem%.>}
     [[ $stem == *[*\>]* ]] && OUT+=" $user:$subject"
     if [[ $subject =~ ^\$JS\.API\.CONSUMER\.CREATE\.([^.]+)\.([^.]+)\.(.+)$ ]]; then
       CREATES+=("$user ${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]}")
+      CREATE_SET["$user ${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"]=1
     fi
   elif [[ $user == notification && ("$right $subject" =~ $DEAD_LETTER_READ ||
     "$right $subject" =~ $DEAD_LETTER_ADVISORY) ]]; then
@@ -236,7 +301,7 @@ for row in "${CREATES[@]}"; do
   read -r user stream consumer _ <<<"$row"
   for subject in "\$JS.API.CONSUMER.INFO.$stream.$consumer" \
     "\$JS.API.CONSUMER.MSG.NEXT.$stream.$consumer" "\$JS.ACK.$stream.$consumer.>"; do
-    printf '%s\n' "${CONSUMER_GRANTS[@]}" | grep -Fqx -- "$user $subject" || OUT+=" $user:$subject"
+    [[ ${GRANT_SET["$user $subject"]+present} ]] || OUT+=" $user:$subject"
   done
   [[ $consumer == "$user-service__"* || $consumer == "${user}__"* ]] || OUT+=" $user:$consumer"
 done
@@ -245,13 +310,21 @@ OUT=$(printf '%s\n' "${CREATES[@]}" | awk '$2 == "EVENTS_RESTRICTED" && $1 != "n
 check 'only notification has a consumer on EVENTS_RESTRICTED (decision D7)' '[[ -z $OUT ]]'
 OUT=''
 for handler in $REALTIME_INVALIDATIONS; do
-  printf '%s\n' "${CREATES[@]}" | grep -q "^realtime-gateway EVENTS realtime-gateway__$handler " ||
-    OUT+=" $handler"
+  [[ ${CREATE_SET["realtime-gateway EVENTS realtime-gateway__$handler"]+present} ]] || OUT+=" $handler"
 done
 check 'each durable the realtime latch watches is a granted consumer of the gateway' '[[ -z $OUT ]]'
 OUT=$((${#CONSUMER_GRANTS[@]} - 4 * ${#CREATES[@]}))
 check 'and no user has any other consumer or acknowledgement subject' '[[ $OUT == 0 ]]'
 
+if [[ ${1:-} == --inventory-only ]]; then
+  exit "$FAILED"
+fi
+if [[ $# -ne 0 ]]; then
+  echo 'usage: nats-permissions.sh [--inventory-only]' >&2
+  exit 2
+fi
+trap cleanup EXIT
+cleanup
 compose up -d --wait nats nats-streams >/dev/null 2>&1
 
 echo '=== 3. the streams exist, as declared'
@@ -429,60 +502,95 @@ check 'a start with nothing to change is healthy too' '[[ $OUT == "nats-streams 
 check_latch 'the realtime latch, edited at each start,'
 
 echo '=== 12. each granted consumer works for its owner, and for no other backend'
-# Each step uses the subject @cadenway/nest-messaging uses, sent as is, so a refusal names it. The
-# other backend acknowledges on the reply subject of a message the owner holds: had it the right,
-# the message would leave the owner. The rows are read before the loop, since `docker compose exec`
-# reads the standard input of the commands inside it.
-#
-# Two consumers may filter one event (evt.user.email-changed.v1 feeds organization and
-# notification): the later one finds every copy published here, none taken by the acknowledgements
-# of the other, so the pending counts are kept per filter.
+# Earlier sections publish and acknowledge messages, but limits retention keeps them in the stream.
+# Start from an empty stream so per-filter counts cover exactly the publications in this loop.
+# The restricted-code durable remains: purging removes its acknowledged message, not the consumer.
+for stream in EVENTS EVENTS_RESTRICTED; do
+  compose exec -T nats-streams nats stream purge "$stream" --force >/dev/null 2>&1
+  OUT=$(stream_field "$stream" '.state.messages')
+  check "$stream has no earlier test messages" '[[ $OUT == 0 ]]'
+  if [[ $OUT != 0 ]]; then exit 1; fi
+done
+
+# Each row uses one exec, with the same NATS requests and refusals as the individual checks.
+# Separate durable consumers see every retained publication of their filter, so count per filter.
 mapfile -t ROWS < <(sed '/^$/d' <<<"$CONSUMERS")
 declare -A SENT=()
 for row in "${ROWS[@]}"; do
   read -r owner stream consumer filter publisher other <<<"$row"
-  create="\$JS.API.CONSUMER.CREATE.$stream.$consumer.$filter"
-  info="\$JS.API.CONSUMER.INFO.$stream.$consumer"
-  next="\$JS.API.CONSUMER.MSG.NEXT.$stream.$consumer"
-  delete="\$JS.API.CONSUMER.DELETE.$stream.$consumer"
-  OUT=$(as "$publisher" request "$filter" "{\"event\":\"$filter\"}")
-  check "$publisher publishes $filter" '[[ $OUT == *"\"stream\":\"$stream\""* ]]'
   SENT[$filter]=$((${SENT[$filter]:-0} + 1))
   pending=${SENT[$filter]}
   left=$((pending - 1))
-  OUT=$(as "$owner" request "$filter" '{}')
-  check "$owner cannot publish it" '[[ $OUT == *"$REFUSED for Publish to \"$filter\""* ]]'
-  OUT=$(create_consumer "$other" "$stream" "$consumer" "$filter")
-  check "$other cannot create $consumer" '[[ $OUT == *"$REFUSED for Publish to \"$create\""* ]]'
-  OUT=$(create_consumer "$owner" "$stream" "$consumer" "$filter")
-  check "$owner creates it, or aligns it" \
-    '[[ $OUT == *"\"name\":\"$consumer\""* && $OUT == *"\"num_pending\":$pending"* && $OUT != *"\"error\""* ]]'
-  OUT=$(as "$other" request "$info" '')
-  check "$other cannot read it" \
-    '[[ $OUT == *"$REFUSED for Publish to \"$info\""* && $OUT != *"\"num_pending\""* ]]'
-  OUT=$(as "$other" request "$next" '{"batch":1,"expires":500000000}')
-  check "$other cannot pull from it" \
-    '[[ $OUT == *"$REFUSED for Publish to \"$next\""* && $OUT != *"\"event\""* ]]'
-  OUT=$(as "$owner" consumer next "$stream" "$consumer" --count 1 --no-ack)
-  check "$owner pulls $filter from it" '[[ $OUT == *"{\"event\":\"$filter\"}"* ]]'
-  # The reply subject of that delivery: attempt, stream and consumer sequences, time, pending.
-  ack="\$JS.ACK.$stream.$consumer.unknown"
-  if [[ $OUT =~ $DELIVERY ]]; then
-    ack="\$JS.ACK.$stream.$consumer.${BASH_REMATCH[1]}.${BASH_REMATCH[3]}.${BASH_REMATCH[2]}.0.0"
+  if ! compose exec -T nats-streams sh -s -- \
+    "$owner" "$stream" "$consumer" "$filter" "$publisher" "$other" "$pending" "$left" <<'SH'
+owner=$1 stream=$2 consumer=$3 filter=$4 publisher=$5 other=$6 pending=$7 left=$8
+failed=0
+create="\$JS.API.CONSUMER.CREATE.$stream.$consumer.$filter"
+info="\$JS.API.CONSUMER.INFO.$stream.$consumer"
+next="\$JS.API.CONSUMER.MSG.NEXT.$stream.$consumer"
+delete="\$JS.API.CONSUMER.DELETE.$stream.$consumer"
+config=$(printf '{"stream_name":"%s","action":"create","config":{"name":"%s","durable_name":"%s","filter_subject":"%s","ack_policy":"explicit","deliver_policy":"all","max_deliver":5,"ack_wait":30000000000}}' "$stream" "$consumer" "$consumer" "$filter")
+as_user() {
+  user=$1
+  shift
+  password=$(printf '%s' "$user" | tr -d '-')
+  nats --user "$user" --password "$password" --inbox-prefix "_INBOX.$user" --timeout 1s "$@" 2>&1 || :
+}
+result() {
+  if [ "$1" = true ]; then
+    printf 'PASS %s\n' "$2"
+  else
+    printf 'FAIL %s\n' "$2"
+    printf '%s\n' "$out" | tail -5
+    failed=1
   fi
-  OUT=$(as "$other" pub "$ack" '+ACK')
-  check "$other cannot acknowledge on it" '[[ $OUT == *"$REFUSED for Publish to \"$ack\""* ]]'
-  OUT=$(as "$owner" consumer info "$stream" "$consumer" --json)
-  check 'the message is still held by the owner' '[[ $OUT == *"\"num_ack_pending\": 1"* ]]'
-  OUT=$(as "$owner" pub "$ack" '+ACK')
-  OUT=$OUT$(as "$owner" consumer info "$stream" "$consumer" --json)
-  check "$owner acknowledges it" \
-    '[[ $OUT != *"$REFUSED"* && $OUT == *"\"num_ack_pending\": 0"* && $OUT == *"\"num_pending\": $left"* ]]'
-  OUT=$(as "$other" request "$delete" '')
-  check "$other cannot delete it" '[[ $OUT == *"$REFUSED for Publish to \"$delete\""* ]]'
-  OUT=$(compose exec -T nats-streams nats consumer info "$stream" "$consumer" --json 2>&1 || true)
-  check 'which is still there, on its filter' \
-    '[[ $OUT == *"\"filter_subject\": \"$filter\""* ]]'
+}
+contains() { case "$out" in *"$1"*) true;; *) false;; esac; }
+refused() { contains "Permissions Violation for Publish to \"$1\""; }
+number_field() {
+  case "$out" in
+    *"\"$1\":$2,"*|*"\"$1\":$2}"*|*"\"$1\": $2,"*|*"\"$1\": $2}"*) true;;
+    *) false;;
+  esac
+}
+
+out=$(as_user "$publisher" request "$filter" "{\"event\":\"$filter\"}")
+result "$(contains "\"stream\":\"$stream\"" && echo true || echo false)" "$publisher publishes $filter"
+out=$(as_user "$owner" request "$filter" '{}')
+result "$(refused "$filter" && echo true || echo false)" "$owner cannot publish it"
+out=$(as_user "$other" request "$create" "$config")
+result "$(refused "$create" && echo true || echo false)" "$other cannot create $consumer"
+out=$(as_user "$owner" request "$create" "$config")
+result "$(contains "\"name\":\"$consumer\"" && number_field num_pending "$pending" && ! contains '"error"' && echo true || echo false)" "$owner creates it, or aligns it"
+out=$(as_user "$other" request "$info" '')
+result "$(refused "$info" && ! contains '"num_pending"' && echo true || echo false)" "$other cannot read it"
+out=$(as_user "$other" request "$next" '{"batch":1,"expires":500000000}')
+result "$(refused "$next" && ! contains '"event"' && echo true || echo false)" "$other cannot pull from it"
+out=$(as_user "$owner" consumer next "$stream" "$consumer" --count 1 --no-ack)
+result "$(contains "{\"event\":\"$filter\"}" && echo true || echo false)" "$owner pulls $filter from it"
+# The delivery output gives attempt, consumer sequence and stream sequence, in that order.
+sequences=$(printf '%s\n' "$out" | sed -nE 's/.*tries: ([0-9]+) \/ cons seq: ([0-9]+) \/ str seq: ([0-9]+).*/\1 \2 \3/p')
+ack="\$JS.ACK.$stream.$consumer.unknown"
+if [ -n "$sequences" ]; then
+  set -- $sequences
+  ack="\$JS.ACK.$stream.$consumer.$1.$3.$2.0.0"
+fi
+out=$(as_user "$other" pub "$ack" '+ACK')
+result "$(refused "$ack" && echo true || echo false)" "$other cannot acknowledge on it"
+out=$(as_user "$owner" consumer info "$stream" "$consumer" --json)
+result "$(contains '"num_ack_pending": 1' && echo true || echo false)" 'the message is still held by the owner'
+out=$(as_user "$owner" pub "$ack" '+ACK')
+out="$out$(as_user "$owner" consumer info "$stream" "$consumer" --json)"
+result "$( ! contains 'Permissions Violation' && contains '"num_ack_pending": 0' && number_field num_pending "$left" && echo true || echo false)" "$owner acknowledges it"
+out=$(as_user "$other" request "$delete" '')
+result "$(refused "$delete" && echo true || echo false)" "$other cannot delete it"
+out=$(nats consumer info "$stream" "$consumer" --json 2>&1 || :)
+result "$(contains "\"filter_subject\": \"$filter\"" && echo true || echo false)" 'which is still there, on its filter'
+exit "$failed"
+SH
+  then
+    FAILED=1
+  fi
 done
 # Every other backend, on one consumer that holds a message.
 held=identity-service__project-member-joined

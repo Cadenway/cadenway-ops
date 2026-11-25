@@ -11,24 +11,24 @@ retries) belong to cadenway-service-kit. This page is what the broker enforces.
 `compose/nats/nats-server.conf` declares one user per backend. A connection without a user is
 refused.
 
-| User               | Backend                   | Publishes                                                                                       | Consumes ([consumers](#consumers))            |
-| ------------------ | ------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| `identity`         | identity-service          | `evt.user.>`, `evt.session.>`, `evt.api-token.>`, `restricted.>`                                | three consumers on `EVENTS`                   |
-| `organization`     | organization-service      | `evt.organization.>`, `evt.member.>`, `evt.invitation.>`, `evt.domain.>`                        | six consumers on `EVENTS`                     |
-| `billing`          | billing-service           | `evt.subscription.>`, `evt.quota.>`, `evt.invoice.>`                                            | nothing yet                                   |
-| `task`             | task-service              | `evt.space.>`, `evt.list.>`, `evt.task.>`, `evt.comment.>`, `evt.approval.>`, `evt.milestone.>` | three consumers on `EVENTS`                   |
-| `document`         | document-service          | `evt.doc.>`                                                                                     | nothing yet                                   |
-| `storage`          | storage-service           | `evt.file.>`                                                                                    | nothing yet                                   |
-| `notification`     | notification-service      | `evt.notification.>`, `evt.reminder.>`, `dlq.>`                                                 | seven on `EVENTS`, two on `EVENTS_RESTRICTED` |
-| `automation`       | automation-service        | `evt.automation.>`                                                                              | nothing yet                                   |
-| `integration`      | integration-service       | `evt.git.>`                                                                                     | nothing yet                                   |
-| `search`           | search-service            | nothing                                                                                         | nothing yet                                   |
-| `api-gateway`      | API gateway               | `evt.api-usage.>`                                                                               | nothing                                       |
-| `realtime-gateway` | realtime gateway          | nothing                                                                                         | 22 consumers on `EVENTS`                      |
-| `admin`            | `nats-streams`, operators | everything                                                                                      | everything                                    |
+| User               | Backend                   | Publishes                                                                                                                                                                | Consumes ([consumers](#consumers))             |
+| ------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| `identity`         | identity-service          | `evt.user.>`, `evt.session.>`, `evt.api-token.>`, `restricted.>`                                                                                                         | three consumers on `EVENTS`                    |
+| `organization`     | organization-service      | `evt.organization.>`, `evt.member.>`, `evt.invitation.>`, `evt.domain.>`                                                                                                 | seven on `EVENTS`                              |
+| `billing`          | billing-service           | `evt.subscription.>`, `evt.quota.>`, `evt.invoice.>`                                                                                                                     | six on `EVENTS`                                |
+| `task`             | task-service              | `evt.space.>`, `evt.list.>`, `evt.task.>`, `evt.comment.>`, `evt.approval.>`, `evt.milestone.>`, `evt.intake.attachment-claimed.v1`, `evt.intake.attachment-released.v1` | five on `EVENTS`                               |
+| `document`         | document-service          | `evt.doc.>`                                                                                                                                                              | nothing yet                                    |
+| `storage`          | storage-service           | `evt.file.>`, `evt.intake.attachment-verified.v1`                                                                                                                        | nine on `EVENTS`                               |
+| `notification`     | notification-service      | `evt.notification.>`, `evt.reminder.>`, `dlq.>`                                                                                                                          | twenty on `EVENTS`, two on `EVENTS_RESTRICTED` |
+| `automation`       | automation-service        | `evt.automation.>`                                                                                                                                                       | two on `EVENTS`                                |
+| `integration`      | integration-service       | `evt.git.>`                                                                                                                                                              | one on `EVENTS`                                |
+| `search`           | search-service            | nothing                                                                                                                                                                  | 29 on `EVENTS`                                 |
+| `api-gateway`      | API gateway               | `evt.api-usage.>`                                                                                                                                                        | nothing                                        |
+| `realtime-gateway` | realtime gateway          | nothing                                                                                                                                                                  | 22 consumers on `EVENTS`                       |
+| `admin`            | `nats-streams`, operators | everything                                                                                                                                                               | everything                                     |
 
-A subject is `evt.<event-name>`, and an event name starts with its entity: the entity decides who
-may publish. The lists above are the events each service declares in its `AGENTS.md`, plus the
+A subject is `evt.<event-name>`. The entity normally decides who may publish; the shared
+`intake` prefix uses exact event subjects for its two owners. The lists above are the events each service declares in its `AGENTS.md`, plus the
 decisions of the integration plan: `api-usage.recorded` for the gateway, and `invitation.issued`
 for organization-service, which sends the invitation e-mail through notification-service. The
 plan also keeps invitation events off the restricted stream: accepting an invitation requires a
@@ -142,8 +142,84 @@ release that adds them (see [adding a consumer](#adding-a-consumer)):
 | `realtime-gateway` | `realtime-gateway__relay-notification-created`           | `EVENTS`            | `evt.notification.created.v1`               | notification | The inbox notice, with `REALTIME_PERSONAL_NOTICES_ENABLED`                      |
 | `realtime-gateway` | `realtime-gateway__relay-reminder-due`                   | `EVENTS`            | `evt.reminder.due.v1`                       | notification | The reminder notice, with `REALTIME_PERSONAL_NOTICES_ENABLED`                   |
 
-The other backends consume nothing yet, and keep only the stream information the kit reads at
-start-up. The API gateway consumes nothing.
+The following consumers are also declared by the current service sources. Some start only when
+their feature switch or source connections are configured; the grants are present ahead of time.
+
+| Backend                | Durable                                                    | Filter                                                 | Publisher      |
+| ---------------------- | ---------------------------------------------------------- | ------------------------------------------------------ | -------------- |
+| `organization-service` | `organization-service__project-seat-entitlement`           | `evt.subscription.changed.v1`                          | `billing`      |
+| `billing-service`      | `billing-service__register-organization`                   | `evt.organization.created.v1`                          | `organization` |
+| `billing-service`      | `billing-service__record-member-joined`                    | `evt.member.joined.v1`                                 | `organization` |
+| `billing-service`      | `billing-service__record-member-role-changed`              | `evt.member.role-changed.v1`                           | `organization` |
+| `billing-service`      | `billing-service__record-member-removed`                   | `evt.member.removed.v1`                                | `organization` |
+| `billing-service`      | `billing-service__record-file-uploaded`                    | `evt.file.uploaded.v1`                                 | `storage`      |
+| `billing-service`      | `billing-service__record-file-deleted`                     | `evt.file.deleted.v1`                                  | `storage`      |
+| `task-service`         | `task-service__verify-intake-attachment`                   | `evt.intake.attachment-verified.v1`                    | `storage`      |
+| `task-service`         | `task-service__decide-notification-delivery-authorization` | `evt.notification.delivery-authorization-requested.v1` | `notification` |
+| `storage-service`      | `storage-service__record-task-purge`                       | `evt.task.purged.v1`                                   | `task`         |
+| `storage-service`      | `storage-service__apply-storage-byte-entitlement`          | `evt.subscription.changed.v1`                          | `billing`      |
+| `storage-service`      | `storage-service__claim-intake-attachment`                 | `evt.intake.attachment-claimed.v1`                     | `task`         |
+| `storage-service`      | `storage-service__release-intake-attachment`               | `evt.intake.attachment-released.v1`                    | `task`         |
+| `storage-service`      | `storage-service__apply-avatar-change`                     | `evt.user.avatar-changed.v1`                           | `identity`     |
+| `storage-service`      | `storage-service__abandon-avatar-upload`                   | `evt.user.avatar-upload-abandoned.v1`                  | `identity`     |
+| `storage-service`      | `storage-service__delete-avatar-owner`                     | `evt.user.deleted.v1`                                  | `identity`     |
+| `storage-service`      | `storage-service__apply-organization-logo-change`          | `evt.organization.logo-changed.v1`                     | `organization` |
+| `storage-service`      | `storage-service__abandon-organization-logo-upload`        | `evt.organization.logo-upload-abandoned.v1`            | `organization` |
+| `notification-service` | `notification-service__activity-task-delivery-authorized`  | `evt.task.notification-delivery-authorized.v1`         | `task`         |
+| `notification-service` | `notification-service__inbox-task-delivery-authorized`     | `evt.task.notification-delivery-authorized.v1`         | `task`         |
+| `notification-service` | `notification-service__inbox-task-assigned`                | `evt.task.assigned.v1`                                 | `task`         |
+| `notification-service` | `notification-service__inbox-task-status-changed`          | `evt.task.status-changed.v1`                           | `task`         |
+| `notification-service` | `notification-service__inbox-comment-created`              | `evt.comment.created.v1`                               | `task`         |
+| `notification-service` | `notification-service__inbox-comment-updated`              | `evt.comment.updated.v1`                               | `task`         |
+| `notification-service` | `notification-service__inbox-description-mentions-changed` | `evt.task.description-mentions-changed.v1`             | `task`         |
+| `notification-service` | `notification-service__inbox-approval-requested`           | `evt.approval.requested.v1`                            | `task`         |
+| `notification-service` | `notification-service__inbox-approval-decided`             | `evt.approval.decided.v1`                              | `task`         |
+| `notification-service` | `notification-service__inbox-task-access-requested`        | `evt.task.access-requested.v1`                         | `task`         |
+| `notification-service` | `notification-service__inbox-task-access-approved`         | `evt.task.access-request-decided.v1`                   | `task`         |
+| `notification-service` | `notification-service__notify-quota-threshold`             | `evt.quota.threshold-reached.v1`                       | `billing`      |
+| `notification-service` | `notification-service__reminder-task-delivery-authorized`  | `evt.task.notification-delivery-authorized.v1`         | `task`         |
+| `automation-service`   | `automation-service__run-task-created-rules`               | `evt.task.created.v1`                                  | `task`         |
+| `automation-service`   | `automation-service__run-task-status-changed-rules`        | `evt.task.status-changed.v1`                           | `task`         |
+| `integration-service`  | `integration-service__purge-task-git-links`                | `evt.task.purged.v1`                                   | `task`         |
+| `search-service`       | `search-service__index-task-created-v1`                    | `evt.task.created.v1`                                  | `task`         |
+| `search-service`       | `search-service__index-task-updated-v1`                    | `evt.task.updated.v1`                                  | `task`         |
+| `search-service`       | `search-service__index-task-archived-v1`                   | `evt.task.archived.v1`                                 | `task`         |
+| `search-service`       | `search-service__index-task-unarchived-v1`                 | `evt.task.unarchived.v1`                               | `task`         |
+| `search-service`       | `search-service__index-task-trashed-v1`                    | `evt.task.trashed.v1`                                  | `task`         |
+| `search-service`       | `search-service__index-task-restored-v1`                   | `evt.task.restored.v1`                                 | `task`         |
+| `search-service`       | `search-service__index-task-purged-v1`                     | `evt.task.purged.v1`                                   | `task`         |
+| `search-service`       | `search-service__index-task-watcher-changed-v1`            | `evt.task.watcher-changed.v1`                          | `task`         |
+| `search-service`       | `search-service__index-comment-created-v1`                 | `evt.comment.created.v1`                               | `task`         |
+| `search-service`       | `search-service__index-comment-updated-v1`                 | `evt.comment.updated.v1`                               | `task`         |
+| `search-service`       | `search-service__index-comment-deleted-v1`                 | `evt.comment.deleted.v1`                               | `task`         |
+| `search-service`       | `search-service__index-list-created-v1`                    | `evt.list.created.v1`                                  | `task`         |
+| `search-service`       | `search-service__index-list-updated-v1`                    | `evt.list.updated.v1`                                  | `task`         |
+| `search-service`       | `search-service__index-list-archived-v1`                   | `evt.list.archived.v1`                                 | `task`         |
+| `search-service`       | `search-service__index-list-unarchived-v1`                 | `evt.list.unarchived.v1`                               | `task`         |
+| `search-service`       | `search-service__index-list-deleted-v1`                    | `evt.list.deleted.v1`                                  | `task`         |
+| `search-service`       | `search-service__index-list-restored-v1`                   | `evt.list.restored.v1`                                 | `task`         |
+| `search-service`       | `search-service__index-list-access-changed-v1`             | `evt.list.access-changed.v1`                           | `task`         |
+| `search-service`       | `search-service__index-space-created-v1`                   | `evt.space.created.v1`                                 | `task`         |
+| `search-service`       | `search-service__index-space-updated-v1`                   | `evt.space.updated.v1`                                 | `task`         |
+| `search-service`       | `search-service__index-space-deleted-v1`                   | `evt.space.deleted.v1`                                 | `task`         |
+| `search-service`       | `search-service__index-space-restored-v1`                  | `evt.space.restored.v1`                                | `task`         |
+| `search-service`       | `search-service__index-space-access-changed-v1`            | `evt.space.access-changed.v1`                          | `task`         |
+| `search-service`       | `search-service__index-space-access-republished-v1`        | `evt.space.access-republished.v1`                      | `task`         |
+| `search-service`       | `search-service__index-doc-created-v1`                     | `evt.doc.created.v1`                                   | `document`     |
+| `search-service`       | `search-service__index-doc-updated-v1`                     | `evt.doc.updated.v1`                                   | `document`     |
+| `search-service`       | `search-service__index-doc-deleted-v1`                     | `evt.doc.deleted.v1`                                   | `document`     |
+| `search-service`       | `search-service__index-file-uploaded-v1`                   | `evt.file.uploaded.v1`                                 | `storage`      |
+| `search-service`       | `search-service__index-file-deleted-v1`                    | `evt.file.deleted.v1`                                  | `storage`      |
+
+Document and the API gateway declare no JetStream consumers. PostgreSQL-backed `nest-jobs`
+queues do not require JetStream consumer grants. Task publishes `evt.intake.attachment-claimed.v1`
+and `evt.intake.attachment-released.v1`; Storage publishes `evt.intake.attachment-verified.v1`.
+These exact subjects keep the shared `intake` prefix from granting either service the other's events.
+
+Search and Billing also look for `SEARCH_REBUILD_ADVISORIES` and `BILLING_REBUILD_ADVISORIES`
+when certifying rebuild progress. Those streams are not provisioned by `ensure-streams.sh`; the
+consumer grants alone do not enable those rebuild proofs. Their stream lifecycle and permissions
+still need to be implemented before the corresponding rebuilds can complete.
 
 The realtime gateway starts its five Git consumers and its two personal notice consumers only when
 its [relay switches](service-environment.md#realtime-relays) are on; the grant is there in every
@@ -177,7 +253,9 @@ $JS.ACK.<stream>.<service>__<handler>.>
 The pull request here adds them to the user in `compose/nats/nats-server.conf`, adds the consumer
 to the list at the top of `compose/tests/nats-permissions.sh` (with the backend that publishes the
 event and another backend that must be refused) and to the table above, and changes
-`NATS_SERVER_CONF_SHA256`. The test fails when the configuration and its list differ.
+`NATS_SERVER_CONF_SHA256`. The test fails when the configuration and its list differ. Run its static portion without Docker
+using `bash compose/tests/nats-permissions.sh --inventory-only`. The list is a reviewed snapshot;
+checking for newly declared service consumers also requires comparing it with the service sources.
 
 The service repository adds the same four subjects to the copy of these permissions its own
 development broker runs (`compose.dev.yaml`), so that its integration tests meet the refusal the
