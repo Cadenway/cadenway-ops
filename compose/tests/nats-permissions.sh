@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # End-to-end test of compose/nats against the NATS of compose/infra.yaml, with the local values of
 # compose/.env.example. Covers: the consumers granted by name, the three streams and their limits,
-# a backend that publishes its own subjects only, events read through consumers and never through
-# a subscription, the restricted stream read by notification only, inboxes kept apart, the
-# dead-letter path, streams no backend can change, a lost stream created again, an existing stream
-# brought to its declaration, the hashes that make a host restart the broker, each granted consumer
-# used by its owner and by no other backend, and the names and filters nobody was given.
+# the latch stream of the realtime gateway, a backend that publishes its own subjects only, events
+# read through consumers and never through a subscription, the restricted stream read by
+# notification only, inboxes kept apart, the dead-letter path, streams no backend can change, a
+# lost stream created again, an existing stream brought to its declaration, the hashes that make a
+# host restart the broker, each granted consumer used by its owner and by no other backend, and the
+# names and filters nobody was given.
 #
 #   bash compose/tests/nats-permissions.sh
 #
@@ -48,13 +49,42 @@ notification EVENTS notification-service__request-deletion-cancelled-email evt.u
 notification EVENTS notification-service__request-two-step-email evt.user.two-step-verification-changed.v1 identity organization
 notification EVENTS_RESTRICTED notification-service__request-code-email restricted.one-time-code.issued.v1 identity identity
 notification EVENTS_RESTRICTED notification-service__request-password-reset-email restricted.password-reset-link.issued.v1 identity organization
+realtime-gateway EVENTS realtime-gateway__relay-session-revoked evt.session.revoked.v1 identity organization
+realtime-gateway EVENTS realtime-gateway__relay-session-organization-changed evt.session.organization-changed.v1 identity task
+realtime-gateway EVENTS realtime-gateway__relay-member-removed evt.member.removed.v1 organization notification
+realtime-gateway EVENTS realtime-gateway__relay-member-role-changed evt.member.role-changed.v1 organization search
+realtime-gateway EVENTS realtime-gateway__relay-space-updated evt.space.updated.v1 task api-gateway
+realtime-gateway EVENTS realtime-gateway__relay-space-access-changed evt.space.access-changed.v1 task billing
+realtime-gateway EVENTS realtime-gateway__relay-space-access-republished evt.space.access-republished.v1 task document
+realtime-gateway EVENTS realtime-gateway__relay-space-deleted evt.space.deleted.v1 task storage
+realtime-gateway EVENTS realtime-gateway__relay-list-access-changed evt.list.access-changed.v1 task automation
+realtime-gateway EVENTS realtime-gateway__relay-list-deleted evt.list.deleted.v1 task integration
+realtime-gateway EVENTS realtime-gateway__relay-task-trashed evt.task.trashed.v1 task identity
+realtime-gateway EVENTS realtime-gateway__relay-task-purged evt.task.purged.v1 task organization
+realtime-gateway EVENTS realtime-gateway__relay-task-updated evt.task.updated.v1 task notification
+realtime-gateway EVENTS realtime-gateway__relay-task-status-changed evt.task.status-changed.v1 task search
+realtime-gateway EVENTS realtime-gateway__relay-comment-created evt.comment.created.v1 task api-gateway
+realtime-gateway EVENTS realtime-gateway__relay-git-branch-created evt.git.branch-created.v1 integration billing
+realtime-gateway EVENTS realtime-gateway__relay-git-pr-opened evt.git.pr-opened.v1 integration document
+realtime-gateway EVENTS realtime-gateway__relay-git-pr-merged evt.git.pr-merged.v1 integration storage
+realtime-gateway EVENTS realtime-gateway__relay-git-pr-closed evt.git.pr-closed.v1 integration automation
+realtime-gateway EVENTS realtime-gateway__relay-git-checks-completed evt.git.checks-completed.v1 integration identity
+realtime-gateway EVENTS realtime-gateway__relay-notification-created evt.notification.created.v1 notification organization
+realtime-gateway EVENTS realtime-gateway__relay-reminder-due evt.reminder.due.v1 notification task
 '
 # What `nats consumer next` prints of a delivery: the attempt, the consumer and stream sequences.
 readonly DELIVERY='tries: ([0-9]+) / cons seq: ([0-9]+) / str seq: ([0-9]+)'
 # The system subjects a backend may have besides those of its consumers: the start-up checks of
-# @cadenway/nest-messaging, and for notification alone the reads and advisories of the dead-letter
-# worker.
+# @cadenway/nest-messaging, for notification alone the reads and advisories of the dead-letter
+# worker, and for realtime-gateway alone the information of its latch stream.
 readonly STREAM_INFO='^publish \$JS\.API\.(INFO|STREAM\.NAMES|STREAM\.INFO\.(EVENTS|EVENTS_RESTRICTED|EVENTS_DLQ))$'
+readonly REALTIME_LATCH_INFO='^publish \$JS\.API\.STREAM\.INFO\.REALTIME_AUTHORIZATION_ADVISORIES$'
+# The authorization invalidation durables of realtime-gateway, whose terminal advisories its latch
+# stream captures; the other consumers of the gateway are not part of it.
+readonly REALTIME_INVALIDATIONS='relay-session-revoked relay-session-organization-changed
+relay-member-removed relay-member-role-changed relay-space-updated relay-space-access-changed
+relay-space-access-republished relay-space-deleted relay-list-access-changed relay-list-deleted
+relay-task-trashed relay-task-purged relay-task-updated'
 readonly CONSUMER_API='^publish \$JS\.(API\.CONSUMER\.(CREATE|INFO|MSG\.NEXT)|ACK)\.'
 readonly DEAD_LETTER_READ='^publish \$JS\.API\.STREAM\.MSG\.GET\.(EVENTS|EVENTS_RESTRICTED)$'
 readonly DEAD_LETTER_ADVISORY='^subscribe \$JS\.EVENT\.ADVISORY\.CONSUMER\.(MAX_DELIVERIES|MSG_TERMINATED)\.(EVENTS|EVENTS_RESTRICTED)\.>$'
@@ -168,11 +198,13 @@ for grant in "${GRANTS[@]}"; do
   elif [[ $user == notification && ("$right $subject" =~ $DEAD_LETTER_READ ||
     "$right $subject" =~ $DEAD_LETTER_ADVISORY) ]]; then
     continue
+  elif [[ $user == realtime-gateway && "$right $subject" =~ $REALTIME_LATCH_INFO ]]; then
+    continue
   else
     OUT+=" $user:$subject"
   fi
 done
-check 'no backend has a system subject beyond its consumers, its streams and the dead letters' \
+check 'no backend has a system subject beyond its consumers, its streams, the dead letters and the latch' \
   '[[ ${#GRANTS[@]} -gt 0 && -z $OUT ]]'
 EXPECTED=$(sed '/^$/d' <<<"$CONSUMERS" | cut -d ' ' -f 1-4 | sort)
 OUT=$(printf '%s\n' "${CREATES[@]}" | sort)
@@ -204,6 +236,32 @@ check 'EVENTS_RESTRICTED on restricted.>, limits retention, one hour, 64 MiB' \
   '[[ $OUT == "restricted.> file limits 3600000000000 67108864" ]]'
 OUT=$(stream_field EVENTS_DLQ '[.config.subjects[0], .config.storage, .config.max_age] | join(" ")')
 check 'EVENTS_DLQ on dlq.>, thirty days' '[[ $OUT == "dlq.> file 2592000000000000" ]]'
+# Every field @cadenway/nest-messaging checks before the gateway admits a socket
+# (isEmptyConsumerAdvisoryStream): a latch it does not recognize keeps every socket out.
+OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.config | [.storage, .retention, .discard,
+  .max_msgs, .max_age, .max_bytes, .max_msg_size, .max_msgs_per_subject, (.sealed // false),
+  (.deny_delete // false), (.discard_new_per_subject // false), (.allow_msg_ttl // false),
+  (.allow_rollup_hdrs // false), (.mirror == null), ((.sources // []) | length),
+  (.subject_transform == null), (.republish == null)] | map(tostring) | join(" ")')
+check 'the realtime latch keeps one message, with no age or size limit, and nothing else' \
+  '[[ $OUT == "file limits old 1 0 -1 -1 -1 false false false false false true 0 true true" ]]'
+EXPECTED=$(for handler in $REALTIME_INVALIDATIONS; do
+  for kind in MAX_DELIVERIES MSG_TERMINATED; do
+    echo "\$JS.EVENT.ADVISORY.CONSUMER.$kind.EVENTS.realtime-gateway__$handler"
+  done
+done | sort)
+OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.config.subjects[]' | sort)
+check 'it captures the terminal advisories of the invalidation durables, and no other subject' \
+  '[[ $OUT == "$EXPECTED" ]]'
+OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.state.messages')
+check 'and starts empty' '[[ $OUT == 0 ]]'
+OUT=$(as realtime-gateway request '$JS.API.STREAM.INFO.REALTIME_AUTHORIZATION_ADVISORIES' '')
+check 'the realtime gateway reads its information' \
+  '[[ $OUT != *"$REFUSED"* && $OUT == *"\"name\":\"REALTIME_AUTHORIZATION_ADVISORIES\""* ]]'
+OUT=$(as task request '$JS.API.STREAM.INFO.REALTIME_AUTHORIZATION_ADVISORIES' '')
+check 'no other backend does' '[[ $OUT == *"$REFUSED for Publish"* ]]'
+OUT=$(as realtime-gateway stream purge REALTIME_AUTHORIZATION_ADVISORIES --force)
+check 'nor does the gateway clear it: an operator does' '[[ $OUT == *"$REFUSED for Publish"* ]]'
 
 echo '=== 4. a backend publishes its own subjects only'
 OUT=$(as task request evt.task.created.v1 '{"id":"CAD-482"}')
@@ -437,6 +495,22 @@ for user in organization billing task document storage notification automation i
       && $OUT == *"$REFUSED for Publish to \"$next\""* && $OUT == *"$REFUSED for Publish to \"$ack\""*
       && $OUT == *"$REFUSED for Publish to \"$delete\""* && $OUT != *"\"event\":\"held\""* ]]'
 done
+# A terminated authorization invalidation is latched until an operator clears it.
+revoked=realtime-gateway__relay-session-revoked
+as identity request evt.session.revoked.v1 '{"event":"terminated"}' >/dev/null
+OUT=$(as realtime-gateway consumer next EVENTS "$revoked" --count 1 --no-ack)
+term="\$JS.ACK.EVENTS.$revoked.unknown"
+if [[ $OUT =~ $DELIVERY ]]; then
+  term="\$JS.ACK.EVENTS.$revoked.${BASH_REMATCH[1]}.${BASH_REMATCH[3]}.${BASH_REMATCH[2]}.0.0"
+fi
+OUT=$(as realtime-gateway pub "$term" '+TERM')
+OUT=$OUT$(wait_for REALTIME_AUTHORIZATION_ADVISORIES '.state.messages' 1)
+check 'a message the gateway terminates on an invalidation durable is latched' \
+  '[[ $OUT != *"$REFUSED"* && $OUT == *1 ]]'
+compose exec -T nats-streams nats stream purge REALTIME_AUTHORIZATION_ADVISORIES --force \
+  >/dev/null 2>&1
+OUT=$(stream_field REALTIME_AUTHORIZATION_ADVISORIES '.state.messages')
+check 'and an operator clears the latch from the nats-streams container' '[[ $OUT == 0 ]]'
 OUT=$(as identity consumer info EVENTS "$held" --json)
 check 'the message is still held by identity' '[[ $OUT == *"\"num_ack_pending\": 1"* ]]'
 OUT=$(as identity pub "$ack" '+ACK')

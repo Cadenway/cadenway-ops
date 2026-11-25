@@ -24,7 +24,7 @@ refused.
 | `integration`      | integration-service       | `evt.git.>`                                                                                     | nothing yet                                   |
 | `search`           | search-service            | nothing                                                                                         | nothing yet                                   |
 | `api-gateway`      | API gateway               | `evt.api-usage.>`                                                                               | nothing                                       |
-| `realtime-gateway` | realtime gateway          | nothing                                                                                         | nothing yet                                   |
+| `realtime-gateway` | realtime gateway          | nothing                                                                                         | 22 consumers on `EVENTS`                      |
 | `admin`            | `nats-streams`, operators | everything                                                                                      | everything                                    |
 
 A subject is `evt.<event-name>`, and an event name starts with its entity: the entity decides who
@@ -96,32 +96,59 @@ acknowledgement subjects (`manageConsumers: false` in `@cadenway/nest-messaging`
 The consumers granted today, as the services declare them on their `main` branch or will in the
 release that adds them (see [adding a consumer](#adding-a-consumer)):
 
-| User           | Consumer                                                 | Stream              | Filter                                      | Published by | For                                                                             |
-| -------------- | -------------------------------------------------------- | ------------------- | ------------------------------------------- | ------------ | ------------------------------------------------------------------------------- |
-| `identity`     | `identity-service__project-member-joined`                | `EVENTS`            | `evt.member.joined.v1`                      | organization | Its projection of the memberships, checked when a session switches organization |
-| `identity`     | `identity-service__project-member-role-changed`          | `EVENTS`            | `evt.member.role-changed.v1`                | organization | The same projection                                                             |
-| `identity`     | `identity-service__project-member-removed`               | `EVENTS`            | `evt.member.removed.v1`                     | organization | The same projection                                                             |
-| `organization` | `organization-service__project-user-signed-up`           | `EVENTS`            | `evt.user.signed-up.v1`                     | identity     | Its directory of the users: names and e-mails in the member list                |
-| `organization` | `organization-service__project-user-email-verified`      | `EVENTS`            | `evt.user.email-verified.v1`                | identity     | The same directory                                                              |
-| `organization` | `organization-service__project-user-profile-updated`     | `EVENTS`            | `evt.user.profile-updated.v1`               | identity     | The same directory                                                              |
-| `organization` | `organization-service__project-user-email-changed`       | `EVENTS`            | `evt.user.email-changed.v1`                 | identity     | The same directory                                                              |
-| `organization` | `organization-service__project-user-two-step`            | `EVENTS`            | `evt.user.two-step-verification-changed.v1` | identity     | The same directory: the two-step verification column of the member list         |
-| `organization` | `organization-service__remove-deleted-user`              | `EVENTS`            | `evt.user.deleted.v1`                       | identity     | Removing the memberships of a deleted account                                   |
-| `task`         | `task-service__project-member-joined`                    | `EVENTS`            | `evt.member.joined.v1`                      | organization | Its projection of the memberships: the roles it checks and the valid assignees  |
-| `task`         | `task-service__project-member-role-changed`              | `EVENTS`            | `evt.member.role-changed.v1`                | organization | The same projection                                                             |
-| `task`         | `task-service__project-member-removed`                   | `EVENTS`            | `evt.member.removed.v1`                     | organization | The same projection, which also unassigns a removed member                      |
-| `notification` | `notification-service__request-invitation-email`         | `EVENTS`            | `evt.invitation.issued.v1`                  | organization | The invitation e-mail                                                           |
-| `notification` | `notification-service__request-password-changed-email`   | `EVENTS`            | `evt.user.password-changed.v1`              | identity     | The password-changed security e-mail                                            |
-| `notification` | `notification-service__request-email-changed-email`      | `EVENTS`            | `evt.user.email-changed.v1`                 | identity     | The address-changed security e-mail                                             |
-| `notification` | `notification-service__request-new-device-email`         | `EVENTS`            | `evt.session.opened-on-new-device.v1`       | identity     | The new-device sign-in security e-mail                                          |
-| `notification` | `notification-service__request-deletion-scheduled-email` | `EVENTS`            | `evt.user.deletion-scheduled.v1`            | identity     | The deletion-scheduled security e-mail                                          |
-| `notification` | `notification-service__request-deletion-cancelled-email` | `EVENTS`            | `evt.user.deletion-cancelled.v1`            | identity     | The deletion-cancelled security e-mail                                          |
-| `notification` | `notification-service__request-two-step-email`           | `EVENTS`            | `evt.user.two-step-verification-changed.v1` | identity     | The two-step verification security e-mail                                       |
-| `notification` | `notification-service__request-code-email`               | `EVENTS_RESTRICTED` | `restricted.one-time-code.issued.v1`        | identity     | The code e-mail (see [restricted events](#restricted-events))                   |
-| `notification` | `notification-service__request-password-reset-email`     | `EVENTS_RESTRICTED` | `restricted.password-reset-link.issued.v1`  | identity     | The password reset e-mail (see [restricted events](#restricted-events))         |
+| User               | Consumer                                                 | Stream              | Filter                                      | Published by | For                                                                             |
+| ------------------ | -------------------------------------------------------- | ------------------- | ------------------------------------------- | ------------ | ------------------------------------------------------------------------------- |
+| `identity`         | `identity-service__project-member-joined`                | `EVENTS`            | `evt.member.joined.v1`                      | organization | Its projection of the memberships, checked when a session switches organization |
+| `identity`         | `identity-service__project-member-role-changed`          | `EVENTS`            | `evt.member.role-changed.v1`                | organization | The same projection                                                             |
+| `identity`         | `identity-service__project-member-removed`               | `EVENTS`            | `evt.member.removed.v1`                     | organization | The same projection                                                             |
+| `organization`     | `organization-service__project-user-signed-up`           | `EVENTS`            | `evt.user.signed-up.v1`                     | identity     | Its directory of the users: names and e-mails in the member list                |
+| `organization`     | `organization-service__project-user-email-verified`      | `EVENTS`            | `evt.user.email-verified.v1`                | identity     | The same directory                                                              |
+| `organization`     | `organization-service__project-user-profile-updated`     | `EVENTS`            | `evt.user.profile-updated.v1`               | identity     | The same directory                                                              |
+| `organization`     | `organization-service__project-user-email-changed`       | `EVENTS`            | `evt.user.email-changed.v1`                 | identity     | The same directory                                                              |
+| `organization`     | `organization-service__project-user-two-step`            | `EVENTS`            | `evt.user.two-step-verification-changed.v1` | identity     | The same directory: the two-step verification column of the member list         |
+| `organization`     | `organization-service__remove-deleted-user`              | `EVENTS`            | `evt.user.deleted.v1`                       | identity     | Removing the memberships of a deleted account                                   |
+| `task`             | `task-service__project-member-joined`                    | `EVENTS`            | `evt.member.joined.v1`                      | organization | Its projection of the memberships: the roles it checks and the valid assignees  |
+| `task`             | `task-service__project-member-role-changed`              | `EVENTS`            | `evt.member.role-changed.v1`                | organization | The same projection                                                             |
+| `task`             | `task-service__project-member-removed`                   | `EVENTS`            | `evt.member.removed.v1`                     | organization | The same projection, which also unassigns a removed member                      |
+| `notification`     | `notification-service__request-invitation-email`         | `EVENTS`            | `evt.invitation.issued.v1`                  | organization | The invitation e-mail                                                           |
+| `notification`     | `notification-service__request-password-changed-email`   | `EVENTS`            | `evt.user.password-changed.v1`              | identity     | The password-changed security e-mail                                            |
+| `notification`     | `notification-service__request-email-changed-email`      | `EVENTS`            | `evt.user.email-changed.v1`                 | identity     | The address-changed security e-mail                                             |
+| `notification`     | `notification-service__request-new-device-email`         | `EVENTS`            | `evt.session.opened-on-new-device.v1`       | identity     | The new-device sign-in security e-mail                                          |
+| `notification`     | `notification-service__request-deletion-scheduled-email` | `EVENTS`            | `evt.user.deletion-scheduled.v1`            | identity     | The deletion-scheduled security e-mail                                          |
+| `notification`     | `notification-service__request-deletion-cancelled-email` | `EVENTS`            | `evt.user.deletion-cancelled.v1`            | identity     | The deletion-cancelled security e-mail                                          |
+| `notification`     | `notification-service__request-two-step-email`           | `EVENTS`            | `evt.user.two-step-verification-changed.v1` | identity     | The two-step verification security e-mail                                       |
+| `notification`     | `notification-service__request-code-email`               | `EVENTS_RESTRICTED` | `restricted.one-time-code.issued.v1`        | identity     | The code e-mail (see [restricted events](#restricted-events))                   |
+| `notification`     | `notification-service__request-password-reset-email`     | `EVENTS_RESTRICTED` | `restricted.password-reset-link.issued.v1`  | identity     | The password reset e-mail (see [restricted events](#restricted-events))         |
+| `realtime-gateway` | `realtime-gateway__relay-session-revoked`                | `EVENTS`            | `evt.session.revoked.v1`                    | identity     | Closing the sockets of a revoked session (invalidation)                         |
+| `realtime-gateway` | `realtime-gateway__relay-session-organization-changed`   | `EVENTS`            | `evt.session.organization-changed.v1`       | identity     | Closing the sockets of a session that switched organization (invalidation)      |
+| `realtime-gateway` | `realtime-gateway__relay-member-removed`                 | `EVENTS`            | `evt.member.removed.v1`                     | organization | Closing the sockets of a removed member (invalidation)                          |
+| `realtime-gateway` | `realtime-gateway__relay-member-role-changed`            | `EVENTS`            | `evt.member.role-changed.v1`                | organization | Re-checking the rooms of a member whose role changed (invalidation)             |
+| `realtime-gateway` | `realtime-gateway__relay-space-updated`                  | `EVENTS`            | `evt.space.updated.v1`                      | task         | Re-checking space rooms when its visibility or owner changes (invalidation)     |
+| `realtime-gateway` | `realtime-gateway__relay-space-access-changed`           | `EVENTS`            | `evt.space.access-changed.v1`               | task         | Re-checking space rooms (invalidation)                                          |
+| `realtime-gateway` | `realtime-gateway__relay-space-access-republished`       | `EVENTS`            | `evt.space.access-republished.v1`           | task         | Re-checking space rooms (invalidation)                                          |
+| `realtime-gateway` | `realtime-gateway__relay-space-deleted`                  | `EVENTS`            | `evt.space.deleted.v1`                      | task         | Re-checking space rooms (invalidation)                                          |
+| `realtime-gateway` | `realtime-gateway__relay-list-access-changed`            | `EVENTS`            | `evt.list.access-changed.v1`                | task         | Re-checking list rooms (invalidation)                                           |
+| `realtime-gateway` | `realtime-gateway__relay-list-deleted`                   | `EVENTS`            | `evt.list.deleted.v1`                       | task         | Re-checking list rooms (invalidation)                                           |
+| `realtime-gateway` | `realtime-gateway__relay-task-trashed`                   | `EVENTS`            | `evt.task.trashed.v1`                       | task         | Reconciling the rooms of a trashed task (invalidation)                          |
+| `realtime-gateway` | `realtime-gateway__relay-task-purged`                    | `EVENTS`            | `evt.task.purged.v1`                        | task         | Reconciling the rooms of a purged task (invalidation)                           |
+| `realtime-gateway` | `realtime-gateway__relay-task-updated`                   | `EVENTS`            | `evt.task.updated.v1`                       | task         | The task change notice; a move re-checks its rooms (invalidation)               |
+| `realtime-gateway` | `realtime-gateway__relay-task-status-changed`            | `EVENTS`            | `evt.task.status-changed.v1`                | task         | The task change notice                                                          |
+| `realtime-gateway` | `realtime-gateway__relay-comment-created`                | `EVENTS`            | `evt.comment.created.v1`                    | task         | The comment notice                                                              |
+| `realtime-gateway` | `realtime-gateway__relay-git-branch-created`             | `EVENTS`            | `evt.git.branch-created.v1`                 | integration  | The Git link notice, with `REALTIME_GIT_RELAYS_ENABLED`                         |
+| `realtime-gateway` | `realtime-gateway__relay-git-pr-opened`                  | `EVENTS`            | `evt.git.pr-opened.v1`                      | integration  | The Git link notice, with `REALTIME_GIT_RELAYS_ENABLED`                         |
+| `realtime-gateway` | `realtime-gateway__relay-git-pr-merged`                  | `EVENTS`            | `evt.git.pr-merged.v1`                      | integration  | The Git link notice, with `REALTIME_GIT_RELAYS_ENABLED`                         |
+| `realtime-gateway` | `realtime-gateway__relay-git-pr-closed`                  | `EVENTS`            | `evt.git.pr-closed.v1`                      | integration  | The Git link notice, with `REALTIME_GIT_RELAYS_ENABLED`                         |
+| `realtime-gateway` | `realtime-gateway__relay-git-checks-completed`           | `EVENTS`            | `evt.git.checks-completed.v1`               | integration  | The Git link notice, with `REALTIME_GIT_RELAYS_ENABLED`                         |
+| `realtime-gateway` | `realtime-gateway__relay-notification-created`           | `EVENTS`            | `evt.notification.created.v1`               | notification | The inbox notice, with `REALTIME_PERSONAL_NOTICES_ENABLED`                      |
+| `realtime-gateway` | `realtime-gateway__relay-reminder-due`                   | `EVENTS`            | `evt.reminder.due.v1`                       | notification | The reminder notice, with `REALTIME_PERSONAL_NOTICES_ENABLED`                   |
 
 The other backends consume nothing yet, and keep only the stream information the kit reads at
 start-up. The API gateway consumes nothing.
+
+The realtime gateway starts its five Git consumers and its two personal notice consumers only when
+its [relay switches](service-environment.md#realtime-relays) are on; the grant is there in every
+environment either way, and a consumer it does not start uses none of it. Its thirteen
+invalidation consumers also feed the [realtime latch](#realtime-authorization-advisories).
 
 ### Adding a consumer
 
@@ -183,11 +210,12 @@ publishes and consumes the events a service lists in `restrictedEvents` on `rest
 
 ## Streams
 
-| Stream              | Subjects       | Kept    | Size cap | Holds                                         |
-| ------------------- | -------------- | ------- | -------- | --------------------------------------------- |
-| `EVENTS`            | `evt.>`        | 7 days  | 1 GiB    | Every event                                   |
-| `EVENTS_RESTRICTED` | `restricted.>` | 1 hour  | 64 MiB   | The restricted events                         |
-| `EVENTS_DLQ`        | `dlq.>`        | 30 days | 256 MiB  | Messages a consumer gave up on (dead letters) |
+| Stream                              | Subjects             | Kept         | Size cap  | Holds                                                                                                             |
+| ----------------------------------- | -------------------- | ------------ | --------- | ----------------------------------------------------------------------------------------------------------------- |
+| `EVENTS`                            | `evt.>`              | 7 days       | 1 GiB     | Every event                                                                                                       |
+| `EVENTS_RESTRICTED`                 | `restricted.>`       | 1 hour       | 64 MiB    | The restricted events                                                                                             |
+| `EVENTS_DLQ`                        | `dlq.>`              | 30 days      | 256 MiB   | Messages a consumer gave up on (dead letters)                                                                     |
+| `REALTIME_AUTHORIZATION_ADVISORIES` | 26 advisory subjects | until purged | 1 message | The last authorization invalidation the realtime gateway gave up on ([latch](#realtime-authorization-advisories)) |
 
 File storage, oldest messages dropped first, duplicates of a `Nats-Msg-Id` refused for two minutes.
 The sizes are starting values.
@@ -198,8 +226,8 @@ stream past its use.
 
 No backend can create, change, purge or delete a stream. The `nats-streams` container of
 `compose/infra.yaml` owns them: it runs `compose/nats/ensure-streams.sh` with the `admin` user,
-creates or updates the three streams at start, then checks every minute that they exist and
-creates again one the broker lost. It is healthy while the three exist. A changed limit reaches a
+creates or updates the four streams at start, then checks every minute that they exist and
+creates again one the broker lost. It is healthy while the four exist. A changed limit reaches a
 stream that exists when the container starts again, which a new `ENSURE_STREAMS_SHA256` causes on
 every host (see [changing the permissions](#changing-the-permissions)); a lower age drops the
 older messages at once, and the retention and storage of a stream never change.
@@ -232,6 +260,32 @@ No backend consumes `EVENTS_DLQ`. An operator reads it from the `nats-streams` c
 ```bash
 docker compose exec nats-streams nats stream view EVENTS_DLQ
 ```
+
+## Realtime authorization advisories
+
+The realtime gateway closes or re-checks a socket whose session, membership or room visibility an
+event invalidates. When one of its thirteen invalidation consumers gives a message up, after its
+last delivery or on a terminate, a socket could keep a right it lost. The server then publishes an
+advisory, `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.EVENTS.<consumer>` or `MSG_TERMINATED`, and
+the stream `REALTIME_AUTHORIZATION_ADVISORIES` captures those 26 subjects: it keeps one message,
+the last, with no age or size limit.
+
+Each replica of the gateway reads the stream information, its user's only right on the stream,
+about every second. It admits a socket, and answers ready, only while the stream exists with exactly
+that configuration and holds no message (`isEmptyConsumerAdvisoryStream` of
+`@cadenway/nest-messaging` checks every field). An advisory therefore takes every replica out of
+service until an operator, having reconciled what the lost event changed (the sessions,
+memberships or visibility it concerned), clears the latch:
+
+```bash
+docker compose exec nats-streams nats stream view REALTIME_AUTHORIZATION_ADVISORIES
+docker compose exec nats-streams nats stream purge REALTIME_AUTHORIZATION_ADVISORIES --force
+```
+
+`compose/nats/ensure-streams.sh` creates it, keeps its configuration and lists the invalidation
+consumers, the `relayInvalidationHandlers` of the gateway: a handler added, renamed or removed there
+changes that list and the grant in the same pull request, deployed before the release. No backend
+may purge or delete the stream.
 
 ## Rebuilds
 

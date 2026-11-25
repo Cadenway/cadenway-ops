@@ -119,7 +119,7 @@ removes the line from its `deploy/compose.yaml`.
 | integration-service  | `api-gateway`                                                                  | `INTERNAL_TOKEN_ISSUER: integration-service`, `INTERNAL_TOKEN_PRIVATE_JWK: ${INTEGRATION_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK}`, `TASK_SERVICE_URL`                                                                                                                                                                                                                  |
 | search-service       | `api-gateway`                                                                  | `MEILI_URL: ${MEILI_URL}`, `MEILI_API_KEY: ${MEILI_MASTER_KEY}`                                                                                                                                                                                                                                                                                                    |
 | api-gateway          | nobody: it authenticates the applications itself                               | `ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN},${PUBLIC_SCHEME:-https}://${DOMAIN}`, `INTERNAL_TOKEN_ISSUER: api-gateway`, `INTERNAL_TOKEN_PRIVATE_JWK: ${API_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}`, the ten `<NAME>_SERVICE_URL`; `NATS_URL`, `NATS_USER: api-gateway`, `NATS_PASSWORD: ${API_GATEWAY_NATS_PASSWORD}` once it publishes its usage event |
-| realtime-gateway     | nobody: it authenticates the sockets itself                                    | `ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}`, `INTERNAL_TOKEN_ISSUER: realtime-gateway`, `INTERNAL_TOKEN_PRIVATE_JWK: ${REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}`, `IDENTITY_SERVICE_URL`, `TASK_SERVICE_URL`, `NATS_USER: realtime-gateway`, `NATS_PASSWORD: ${REALTIME_GATEWAY_NATS_PASSWORD}`                                                 |
+| realtime-gateway     | nobody: it authenticates the sockets itself                                    | `ALLOWED_ORIGINS: ${PUBLIC_SCHEME:-https}://app.${DOMAIN}`, `INTERNAL_TOKEN_ISSUER: realtime-gateway`, `INTERNAL_TOKEN_PRIVATE_JWK: ${REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}`, `IDENTITY_SERVICE_URL`, `TASK_SERVICE_URL`, `NATS_USER: realtime-gateway`, `NATS_PASSWORD: ${REALTIME_GATEWAY_NATS_PASSWORD}`; the [relay switches](#realtime-relays)         |
 
 `ALLOWED_ORIGINS` lists, comma-separated, the exact origins a browser may call a gateway from: CORS
 and the CSRF check of the API gateway read it. The API gateway accepts the web application and the
@@ -150,6 +150,26 @@ internal network, the same in every environment.
 `S3_ENDPOINT` is where the service reaches the object storage; `S3_PUBLIC_ENDPOINT` is the host the
 browser follows in a signed URL. They differ on a workstation only (`http://garage:3900` and
 `http://s3.cadenway.localhost`).
+
+### Realtime relays
+
+The realtime gateway always relays the session, member, space, list, task and comment events through
+the consumers its NATS user is granted ([messaging](messaging.md#consumers)). Two switches start the
+other relays, each once the broker grants their durables, which it does in every environment:
+
+| Variable                            | Starts                                                                    | Definition default | Locally |
+| ----------------------------------- | ------------------------------------------------------------------------- | ------------------ | ------- |
+| `REALTIME_GIT_RELAYS_ENABLED`       | the five Git branch, pull request and checks relays (`git.links-changed`) | `false`            | `true`  |
+| `REALTIME_PERSONAL_NOTICES_ENABLED` | the inbox and reminder notices (`notification.created`, `reminder.due`)   | `false`            | `true`  |
+
+The gateway's `deploy/compose.yaml` declares both as `${<VARIABLE>:-false}`, so a hosted environment
+runs without them until it sets the variable: no host needs anything new. To enable one in an
+environment, once the gateway release that has the relay runs there, add `<VARIABLE>=true` to its
+`secrets.sops.env` (edited with `sops`, like any setting specific to the environment); once the
+agent applies that commit, Compose recreates the gateway with it. Remove the line, or set `false`,
+to stop the relay: its durable stays on the broker until an operator removes it.
+`REALTIME_PAGED_RECIPIENTS_ENABLED` is a rollout switch of the gateway, not a relay: it is enabled
+only once every replica answers the paged recipient protocol, and keeps its default here.
 
 `compose/compose.local.yaml` repeats these entries for the local stack, which runs the definitions
 of the last release with images built from the sources: keep the two in step. It also gives each
