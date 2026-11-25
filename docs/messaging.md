@@ -261,8 +261,11 @@ commands in the `nats-streams` container, as the `admin` user:
 2. List the dead letters of its service to find the affected resources, for each watched handler:
    `nats stream view EVENTS_DLQ --subject 'dlq.search-service__<handler>.>'` (Search) or
    `nats stream view EVENTS_DLQ --subject 'dlq.billing-service__<handler>.>'` (Billing).
-3. Check the releases the environment runs, `SEARCH_SERVICE_VERSION` and
-   `BILLING_SERVICE_VERSION` in `environments/<env>/versions.env`, after any rollback too.
+3. Check the releases that actually run, not only the desired ones of `environments/<env>/versions.env`
+   (a failed rollout keeps the previous container serving): the image tag of every running
+   search-service and billing-service container on the host, `docker ps --format '{{.Image}}'`,
+   and the last deployment outcome. When a tag is older than 0.4.0 or uncertain, follow the second
+   case below.
    - From search-service 0.4.0 and billing-service 0.4.0 on, clear once the affected resources
      are noted. Purging hides nothing from them: the advisory raised the latch's last sequence,
      so each projection certified before it is rebuilt once the latch is clear again, whether or
