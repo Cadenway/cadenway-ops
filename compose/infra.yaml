@@ -116,7 +116,7 @@ services:
     entrypoint: ['/bin/sh', '/etc/nats/ensure-streams.sh']
     environment:
       # SHA-256 of nats/ensure-streams.sh, for the same reason as NATS_SERVER_CONF_SHA256.
-      ENSURE_STREAMS_SHA256: f9c0944a8e01a0aa539c30f1fe1d847410739a5153459cacb13eb3a3c9dd4d0f
+      ENSURE_STREAMS_SHA256: b1a8f0979ff78d6922bcc559eff3e58126d8ac565b1b425394613df3abf5935e
       NATS_URL: ${NATS_URL}
       NATS_USER: admin
       NATS_PASSWORD: ${NATS_ADMIN_PASSWORD}

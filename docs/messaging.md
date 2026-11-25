@@ -242,6 +242,12 @@ Clear a latch with the [realtime procedure](#realtime-authorization-advisories),
 For Search, clear it only when the active index is known to be complete, or when a rebuild of it
 from its owners follows.
 
+A latch starts empty only while `EVENTS` has no consumer of its service: a new environment, or a
+broker that lost `EVENTS` or those consumers too. Then the empty latch guards a rebuild, not an
+old projection: Search (`brokerIdentityChanged`) and Billing (`BillingUsageBrokerProof`) record
+the creation time of `EVENTS` and of each of their consumers with their active state, and a
+recreated stream or consumer makes Search rebuild its index and Billing invalidate its usage.
+
 A latch is added allowing two messages, a configuration no service trusts, and takes its
 single-message configuration only once the marker it needs is stored, so a pass interrupted in
 between never leaves an empty latch the services would trust; the next pass finishes it. As for

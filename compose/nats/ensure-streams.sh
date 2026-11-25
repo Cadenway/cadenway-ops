@@ -80,7 +80,12 @@ ensure_stream() {
 # limit) and an empty stream before the service trusts its consumers; an edit sets every one of
 # those settings that can change again.
 #
-# The latch starts empty only while EVENTS has no consumer of the service. A latch missing once the
+# The latch starts empty only while EVENTS has no consumer of the service: a new environment, or a
+# broker that lost EVENTS or the consumers of the service too. In the second case the services do
+# not trust their projections anyway: each compares the creation time of EVENTS and of each of its
+# consumers with the one recorded with its active state (brokerIdentityChanged in search-service,
+# BillingUsageBrokerProof in billing-service), so a recreated stream or consumer starts a rebuild
+# there, and the empty latch guards that rebuild. A latch missing once the
 # service consumes (a stream removed, not recovered by the broker, or provisioned after the service
 # started) may have missed an advisory: it is created closed, holding a marker an operator purges
 # after reconciling. A new latch is therefore added first with two messages allowed, a
