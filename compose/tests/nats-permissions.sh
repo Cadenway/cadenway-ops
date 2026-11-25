@@ -127,6 +127,8 @@ realtime-gateway EVENTS realtime-gateway__relay-task-created evt.task.created.v1
 realtime-gateway EVENTS realtime-gateway__relay-task-archived evt.task.archived.v1 task identity
 realtime-gateway EVENTS realtime-gateway__relay-task-unarchived evt.task.unarchived.v1 task identity
 realtime-gateway EVENTS realtime-gateway__relay-task-restored evt.task.restored.v1 task identity
+realtime-gateway EVENTS realtime-gateway__relay-task-trashed-list evt.task.trashed.v1 task document
+realtime-gateway EVENTS realtime-gateway__relay-task-moved-list evt.task.updated.v1 task storage
 realtime-gateway EVENTS realtime-gateway__relay-task-trashed evt.task.trashed.v1 task identity
 realtime-gateway EVENTS realtime-gateway__relay-task-purged evt.task.purged.v1 task organization
 realtime-gateway EVENTS realtime-gateway__relay-task-updated evt.task.updated.v1 task notification
