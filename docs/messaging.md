@@ -304,7 +304,7 @@ the realtime latch, the dead-letter worker of notification-service logs a marker
 advisory. Changes to either durable list require the same
 [coordinated cutover](#changing-the-invalidation-consumers) as the realtime list.
 
-The realtime gateway starts its five Git consumers and its two personal notice consumers only when
+The realtime gateway starts its seven Git consumers and its two personal notice consumers only when
 its [relay switches](service-environment.md#realtime-relays) are on; the grant is there in every
 environment either way, and a consumer it does not start uses none of it. Its thirteen
 invalidation consumers also feed the [realtime latch](#realtime-authorization-advisories).

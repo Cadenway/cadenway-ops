@@ -191,7 +191,7 @@ other relays, each once the broker grants their durables, which it does in every
 
 | Variable                            | Starts                                                                    | Definition default | Locally |
 | ----------------------------------- | ------------------------------------------------------------------------- | ------------------ | ------- |
-| `REALTIME_GIT_RELAYS_ENABLED`       | the five Git branch, pull request and checks relays (`git.links-changed`) | `false`            | `true`  |
+| `REALTIME_GIT_RELAYS_ENABLED`       | the seven Git branch, pull request, link update and checks relays (`git.links-changed`) | `false`            | `true`  |
 | `REALTIME_PERSONAL_NOTICES_ENABLED` | the inbox and reminder notices (`notification.created`, `reminder.due`)   | `false`            | `true`  |
 
 The gateway's `deploy/compose.yaml` declares both as `${<VARIABLE>:-false}`, so a hosted environment
