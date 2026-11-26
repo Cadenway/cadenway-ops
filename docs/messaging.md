@@ -145,6 +145,8 @@ release that adds them (see [adding a consumer](#adding-a-consumer)):
 | `realtime-gateway` | `realtime-gateway__relay-git-pr-merged`                  | `EVENTS`            | `evt.git.pr-merged.v1`                      | integration  | The Git link notice, with `REALTIME_GIT_RELAYS_ENABLED`                         |
 | `realtime-gateway` | `realtime-gateway__relay-git-pr-closed`                  | `EVENTS`            | `evt.git.pr-closed.v1`                      | integration  | The Git link notice, with `REALTIME_GIT_RELAYS_ENABLED`                         |
 | `realtime-gateway` | `realtime-gateway__relay-git-checks-completed`           | `EVENTS`            | `evt.git.checks-completed.v1`               | integration  | The Git link notice, with `REALTIME_GIT_RELAYS_ENABLED`                         |
+| `realtime-gateway` | `realtime-gateway__relay-git-pr-reopened`                | `EVENTS`            | `evt.git.pr-reopened.v1`                    | integration  | The Git link notice, with `REALTIME_GIT_RELAYS_ENABLED`                         |
+| `realtime-gateway` | `realtime-gateway__relay-git-link-updated`               | `EVENTS`            | `evt.git.link-updated.v1`                   | integration  | The Git link notice, with `REALTIME_GIT_RELAYS_ENABLED`                         |
 | `realtime-gateway` | `realtime-gateway__relay-notification-created`           | `EVENTS`            | `evt.notification.created.v1`               | notification | The inbox notice, with `REALTIME_PERSONAL_NOTICES_ENABLED`                      |
 | `realtime-gateway` | `realtime-gateway__relay-reminder-due`                   | `EVENTS`            | `evt.reminder.due.v1`                       | notification | The reminder notice, with `REALTIME_PERSONAL_NOTICES_ENABLED`                   |
 
@@ -302,7 +304,7 @@ the realtime latch, the dead-letter worker of notification-service logs a marker
 advisory. Changes to either durable list require the same
 [coordinated cutover](#changing-the-invalidation-consumers) as the realtime list.
 
-The realtime gateway starts its five Git consumers and its two personal notice consumers only when
+The realtime gateway starts its seven Git consumers and its two personal notice consumers only when
 its [relay switches](service-environment.md#realtime-relays) are on; the grant is there in every
 environment either way, and a consumer it does not start uses none of it. Its thirteen
 invalidation consumers also feed the [realtime latch](#realtime-authorization-advisories).

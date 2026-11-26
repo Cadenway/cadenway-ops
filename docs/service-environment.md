@@ -189,10 +189,10 @@ The realtime gateway always relays the session, member, space, list, task and co
 the consumers its NATS user is granted ([messaging](messaging.md#consumers)). Two switches start the
 other relays, each once the broker grants their durables, which it does in every environment:
 
-| Variable                            | Starts                                                                    | Definition default | Locally |
-| ----------------------------------- | ------------------------------------------------------------------------- | ------------------ | ------- |
-| `REALTIME_GIT_RELAYS_ENABLED`       | the five Git branch, pull request and checks relays (`git.links-changed`) | `false`            | `true`  |
-| `REALTIME_PERSONAL_NOTICES_ENABLED` | the inbox and reminder notices (`notification.created`, `reminder.due`)   | `false`            | `true`  |
+| Variable                            | Starts                                                                                  | Definition default | Locally |
+| ----------------------------------- | --------------------------------------------------------------------------------------- | ------------------ | ------- |
+| `REALTIME_GIT_RELAYS_ENABLED`       | the seven Git branch, pull request, link update and checks relays (`git.links-changed`) | `false`            | `true`  |
+| `REALTIME_PERSONAL_NOTICES_ENABLED` | the inbox and reminder notices (`notification.created`, `reminder.due`)                 | `false`            | `true`  |
 
 The gateway's `deploy/compose.yaml` declares both as `${<VARIABLE>:-false}`, so a hosted environment
 runs without them until it sets the variable: no host needs anything new. To enable one in an
