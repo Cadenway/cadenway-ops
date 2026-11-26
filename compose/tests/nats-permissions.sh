@@ -139,6 +139,8 @@ realtime-gateway EVENTS realtime-gateway__relay-git-pr-opened evt.git.pr-opened.
 realtime-gateway EVENTS realtime-gateway__relay-git-pr-merged evt.git.pr-merged.v1 integration storage
 realtime-gateway EVENTS realtime-gateway__relay-git-pr-closed evt.git.pr-closed.v1 integration automation
 realtime-gateway EVENTS realtime-gateway__relay-git-checks-completed evt.git.checks-completed.v1 integration identity
+realtime-gateway EVENTS realtime-gateway__relay-git-pr-reopened evt.git.pr-reopened.v1 integration search
+realtime-gateway EVENTS realtime-gateway__relay-git-link-updated evt.git.link-updated.v1 integration notification
 realtime-gateway EVENTS realtime-gateway__relay-notification-created evt.notification.created.v1 notification organization
 realtime-gateway EVENTS realtime-gateway__relay-reminder-due evt.reminder.due.v1 notification task
 '
